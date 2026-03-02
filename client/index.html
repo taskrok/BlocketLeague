@@ -1,0 +1,44 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Blocket League</title>
+  <link rel="stylesheet" href="style.css" />
+</head>
+<body>
+  <div id="game-container">
+    <canvas id="game-canvas"></canvas>
+    <div id="hud">
+      <div id="hud-top">
+        <div id="timer">5:00</div>
+        <div id="scoreboard">
+          <span id="score-blue" class="score blue">0</span>
+          <span class="score-divider">-</span>
+          <span id="score-orange" class="score orange">0</span>
+        </div>
+      </div>
+      <div id="hud-bottom">
+        <div id="boost-container">
+          <svg id="boost-meter" viewBox="0 0 120 120">
+            <circle class="boost-bg" cx="60" cy="60" r="52" />
+            <circle id="boost-arc" class="boost-fill" cx="60" cy="60" r="52" />
+            <text class="boost-text" x="60" y="64">33</text>
+          </svg>
+        </div>
+      </div>
+      <div id="speed-bar">
+        <div id="speed-fill"></div>
+      </div>
+    </div>
+    <div id="overlay">
+      <div id="countdown"></div>
+      <div id="goal-text"></div>
+    </div>
+    <div id="controls-hint">
+      <p>WASD - Drive | SPACE - Jump | SHIFT - Boost | C - Ball Cam</p>
+    </div>
+  </div>
+  <script type="module" src="src/main.js"></script>
+</body>
+</html>

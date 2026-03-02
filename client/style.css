@@ -1,0 +1,195 @@
+* {
+  margin: 0;
+  padding: 0;
+  box-sizing: border-box;
+}
+
+body {
+  background: #000;
+  overflow: hidden;
+  font-family: 'Segoe UI', system-ui, -apple-system, sans-serif;
+  color: #fff;
+}
+
+#game-container {
+  width: 100vw;
+  height: 100vh;
+  position: relative;
+}
+
+#game-canvas {
+  width: 100%;
+  height: 100%;
+  display: block;
+}
+
+/* HUD */
+#hud {
+  position: absolute;
+  top: 0;
+  left: 0;
+  width: 100%;
+  height: 100%;
+  pointer-events: none;
+}
+
+#hud-top {
+  position: absolute;
+  top: 20px;
+  left: 50%;
+  transform: translateX(-50%);
+  text-align: center;
+}
+
+#timer {
+  font-size: 18px;
+  font-weight: 600;
+  color: #ccc;
+  letter-spacing: 2px;
+  text-shadow: 0 0 10px rgba(0, 255, 255, 0.5);
+}
+
+#scoreboard {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin-top: 4px;
+}
+
+.score {
+  font-size: 48px;
+  font-weight: 800;
+  min-width: 50px;
+  text-align: center;
+}
+
+.score.blue {
+  color: #0088ff;
+  text-shadow: 0 0 20px rgba(0, 136, 255, 0.7);
+}
+
+.score.orange {
+  color: #ff6600;
+  text-shadow: 0 0 20px rgba(255, 102, 0, 0.7);
+}
+
+.score-divider {
+  font-size: 36px;
+  color: #666;
+  font-weight: 300;
+}
+
+/* Boost Meter */
+#hud-bottom {
+  position: absolute;
+  bottom: 30px;
+  right: 40px;
+}
+
+#boost-meter {
+  width: 100px;
+  height: 100px;
+}
+
+.boost-bg {
+  fill: none;
+  stroke: rgba(255, 255, 255, 0.1);
+  stroke-width: 8;
+}
+
+.boost-fill {
+  fill: none;
+  stroke: #ff8800;
+  stroke-width: 8;
+  stroke-linecap: round;
+  stroke-dasharray: 326.7;
+  stroke-dashoffset: 0;
+  transform: rotate(-90deg);
+  transform-origin: center;
+  transition: stroke-dashoffset 0.1s ease;
+  filter: drop-shadow(0 0 6px rgba(255, 136, 0, 0.6));
+}
+
+.boost-text {
+  fill: #fff;
+  font-size: 24px;
+  font-weight: 800;
+  text-anchor: middle;
+  dominant-baseline: middle;
+}
+
+/* Speed Bar */
+#speed-bar {
+  position: absolute;
+  bottom: 30px;
+  left: 50%;
+  transform: translateX(-50%);
+  width: 200px;
+  height: 4px;
+  background: rgba(255, 255, 255, 0.1);
+  border-radius: 2px;
+  overflow: hidden;
+}
+
+#speed-fill {
+  height: 100%;
+  width: 0%;
+  background: linear-gradient(90deg, #00ffff, #ff00ff);
+  border-radius: 2px;
+  transition: width 0.1s ease;
+  box-shadow: 0 0 8px rgba(0, 255, 255, 0.5);
+}
+
+/* Overlay */
+#overlay {
+  position: absolute;
+  top: 0;
+  left: 0;
+  width: 100%;
+  height: 100%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  pointer-events: none;
+}
+
+#countdown {
+  font-size: 120px;
+  font-weight: 900;
+  color: #fff;
+  text-shadow: 0 0 40px rgba(0, 255, 255, 0.8), 0 0 80px rgba(0, 255, 255, 0.4);
+  opacity: 0;
+  transition: opacity 0.2s;
+}
+
+#goal-text {
+  position: absolute;
+  font-size: 80px;
+  font-weight: 900;
+  letter-spacing: 8px;
+  text-transform: uppercase;
+  opacity: 0;
+  transition: opacity 0.3s;
+}
+
+/* Controls Hint */
+#controls-hint {
+  position: absolute;
+  bottom: 60px;
+  left: 50%;
+  transform: translateX(-50%);
+  text-align: center;
+  pointer-events: none;
+  opacity: 0.5;
+  transition: opacity 2s;
+}
+
+#controls-hint p {
+  font-size: 12px;
+  color: #888;
+  letter-spacing: 1px;
+}
+
+#controls-hint.hidden {
+  opacity: 0;
+}

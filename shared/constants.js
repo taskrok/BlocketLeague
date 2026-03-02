@@ -1,0 +1,160 @@
+// ============================================
+// BLOCKET LEAGUE - Shared Game Constants
+// ============================================
+
+// Arena dimensions (in game units)
+export const ARENA = {
+  LENGTH: 130,      // Z-axis (goal to goal)
+  WIDTH: 90,        // X-axis
+  HEIGHT: 25,       // Y-axis
+  WALL_THICKNESS: 2,
+  GOAL_WIDTH: 18,
+  GOAL_HEIGHT: 10,
+  GOAL_DEPTH: 10,
+  CURVE_RADIUS: 8,       // floor/wall/ceiling transition fillet radius
+  CORNER_RADIUS: 20,     // XZ plane vertical corner radius (side-to-end wall)
+  GOAL_EDGE_RADIUS: 3,   // fillet radius on goal opening frame (posts + crossbar)
+  CURVE_SEGMENTS: 10,    // segments per quarter-circle arc
+  GRID_CELL_SIZE: 5,     // grid spacing in world units
+};
+
+// Car properties
+export const CAR = {
+  WIDTH: 2.2,
+  HEIGHT: 1.1,
+  LENGTH: 3.6,
+  MASS: 50,
+  MAX_SPEED: 28,
+  BOOST_MAX_SPEED: 42,
+  ACCELERATION: 28,
+  BRAKE_FORCE: 35,
+  TURN_SPEED: 2.8,
+  JUMP_FORCE: 13,
+  DOUBLE_JUMP_FORCE: 11,
+  DODGE_FORCE: 18,
+  DODGE_VERTICAL: 5,
+  BOOST_ACCELERATION: 38,
+  MAX_BOOST: 100,
+  BOOST_USAGE_RATE: 33,       // per second
+  AIR_ROLL_SPEED: 4.5,
+  AIR_PITCH_SPEED: 4.5,
+  AIR_YAW_SPEED: 3.0,
+  GROUND_OFFSET: 0.55,        // half height - how high car sits
+  JUMP_COOLDOWN: 1500,        // ms for double jump window
+  SIDEWAYS_GRIP: 0.05,        // 0 = full grip, 1 = ice
+  LINEAR_DAMPING: 0.3,
+  ANGULAR_DAMPING: 0.95,
+  GROUND_RAY_LENGTH: 1.2,     // raycast distance for ground check
+  WALL_STICK_FORCE: 30,       // force keeping car on walls
+};
+
+// Ball properties
+export const BALL = {
+  RADIUS: 1.8,
+  MASS: 3,
+  RESTITUTION: 0.6,
+  FRICTION: 0.4,
+  LINEAR_DAMPING: 0.25,
+  ANGULAR_DAMPING: 0.1,
+};
+
+// Boost pads
+export const BOOST_PAD = {
+  SMALL_AMOUNT: 12,
+  LARGE_AMOUNT: 100,
+  SMALL_RESPAWN_TIME: 4,      // seconds
+  LARGE_RESPAWN_TIME: 10,
+  SMALL_RADIUS: 1.2,
+  LARGE_RADIUS: 2.0,
+  SMALL_HEIGHT: 0.8,
+  LARGE_HEIGHT: 1.5,
+};
+
+// Game rules
+export const GAME = {
+  MATCH_DURATION: 300,         // 5 minutes
+  COUNTDOWN_DURATION: 3,
+  GOAL_RESET_TIME: 3,
+  OVERTIME_TEXT: 'OVERTIME',
+};
+
+// Physics
+export const PHYSICS = {
+  TIMESTEP: 1 / 60,
+  GRAVITY: -30,
+  MAX_SUBSTEPS: 3,
+};
+
+// Collision filter groups (bitmasks)
+export const COLLISION_GROUPS = {
+  ARENA_TRIMESH: 1,   // curved arena for ball collisions
+  ARENA_BOXES: 2,     // simplified boxes for car collisions
+  BALL: 4,
+  CAR: 8,
+};
+
+// Network
+export const NETWORK = {
+  TICK_RATE: 60,               // server physics ticks per second
+  SEND_RATE: 30,               // network updates per second
+  INTERPOLATION_DELAY: 100,    // ms
+};
+
+// Boost pad positions (normalized -1 to 1 range, mapped to arena)
+export const BOOST_PAD_LAYOUT = {
+  large: [
+    { x: -0.45, z: 0 },       // mid-left
+    { x: 0.45, z: 0 },        // mid-right
+    { x: -0.45, z: -0.7 },    // back-left
+    { x: 0.45, z: -0.7 },     // back-right
+    { x: -0.45, z: 0.7 },     // front-left
+    { x: 0.45, z: 0.7 },      // front-right
+  ],
+  small: [
+    // Center line
+    { x: 0, z: 0 },
+    { x: -0.2, z: 0 },
+    { x: 0.2, z: 0 },
+    // Quarter lines
+    { x: 0, z: -0.35 },
+    { x: -0.25, z: -0.35 },
+    { x: 0.25, z: -0.35 },
+    { x: 0, z: 0.35 },
+    { x: -0.25, z: 0.35 },
+    { x: 0.25, z: 0.35 },
+    // Near goals
+    { x: -0.15, z: -0.6 },
+    { x: 0.15, z: -0.6 },
+    { x: -0.15, z: 0.6 },
+    { x: 0.15, z: 0.6 },
+    // Wide positions
+    { x: -0.4, z: -0.35 },
+    { x: 0.4, z: -0.35 },
+    { x: -0.4, z: 0.35 },
+    { x: 0.4, z: 0.35 },
+  ],
+};
+
+// Colors (neon theme)
+export const COLORS = {
+  CYAN: 0x00ffff,
+  MAGENTA: 0xff00ff,
+  ORANGE: 0xff8800,
+  BLUE: 0x0088ff,
+  GREEN: 0x00ff88,
+  YELLOW: 0xffff00,
+  WHITE: 0xffffff,
+  BALL: 0xffaa00,
+  FLOOR: 0x0a0a1a,
+  WALL: 0x0d0d24,
+  GOAL_BLUE: 0x0044ff,
+  GOAL_ORANGE: 0xff4400,
+  GRID: 0x00ffff,
+  AMBIENT: 0x111133,
+};
+
+// Player spawn positions
+export const SPAWNS = {
+  PLAYER1: { x: 0, y: 2, z: -40 },
+  PLAYER2: { x: 0, y: 2, z: 40 },
+};
