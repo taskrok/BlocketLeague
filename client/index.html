@@ -2,8 +2,11 @@
 <html lang="en">
 <head>
   <meta charset="UTF-8" />
-  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no" />
   <title>Blocket League</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=Orbitron:wght@800&display=swap" rel="stylesheet" />
   <link rel="stylesheet" href="style.css" />
 </head>
 <body>
@@ -34,16 +37,28 @@
     <div id="overlay">
       <div id="countdown"></div>
       <div id="goal-text"></div>
+      <div id="demo-text"></div>
       <div id="status-text"></div>
     </div>
     <div id="controls-hint">
       <p>WASD - Drive | SPACE - Jump | SHIFT - Boost | C - Ball Cam</p>
     </div>
     <div id="lobby">
-      <h1 class="lobby-title">BLOCKET LEAGUE</h1>
+      <div class="lobby-title-wrap">
+        <span class="lobby-title">BLOCKET LEAGUE</span>
+        <span class="lobby-title lobby-title-reflect">BLOCKET LEAGUE</span>
+      </div>
       <div class="lobby-buttons">
         <button id="btn-singleplayer" class="lobby-btn">Play vs AI</button>
         <button id="btn-multiplayer" class="lobby-btn lobby-btn-online">Play Online</button>
+      </div>
+      <div id="car-selector">
+        <canvas id="car-preview"></canvas>
+        <div class="car-selector-buttons">
+          <button id="btn-randomize" class="lobby-btn">Randomize</button>
+          <button id="btn-letsgo" class="lobby-btn">Let's Go</button>
+        </div>
+        <button id="btn-back" class="lobby-btn lobby-btn-back">Back</button>
       </div>
     </div>
   </div>

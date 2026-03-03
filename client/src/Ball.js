@@ -14,6 +14,11 @@ export class Ball {
 
     this._createPhysics();
     this._createMesh();
+
+    // Visual rotation tracked separately — cannon-es doesn't reliably
+    // generate angular velocity from friction on trimesh contacts.
+    this._spinQuat = new THREE.Quaternion();
+    this._rollAxis = new THREE.Vector3();
   }
 
   _createPhysics() {
@@ -98,16 +103,50 @@ export class Ball {
   }
 
   update(dt) {
-    // Sync mesh to physics
+    // Clamp ball speed
+    const vel = this.body.velocity;
+    const speed = vel.length();
+    if (speed > BALL.MAX_SPEED) {
+      const scale = BALL.MAX_SPEED / speed;
+      vel.x *= scale;
+      vel.y *= scale;
+      vel.z *= scale;
+    }
+
+    // Clamp angular velocity
+    const av = this.body.angularVelocity;
+    const avMag = Math.sqrt(av.x * av.x + av.y * av.y + av.z * av.z);
+    if (avMag > BALL.MAX_ANGULAR_VELOCITY) {
+      const avScale = BALL.MAX_ANGULAR_VELOCITY / avMag;
+      av.x *= avScale;
+      av.y *= avScale;
+      av.z *= avScale;
+    }
+
+    // Sync position from physics
     this.mesh.position.copy(this.body.position);
-    this.mesh.quaternion.copy(this.body.quaternion);
+
+    // Derive visual spin from linear velocity (rolling ball: ω = v / r)
+    const curSpeed = vel.length();
+    if (curSpeed > 0.5) {
+      // Roll axis = cross(velocity, up) — perpendicular to both
+      this._rollAxis.set(vel.z, 0, -vel.x).normalize();
+      if (this._rollAxis.lengthSq() > 0.001) {
+        const angularSpeed = curSpeed / BALL.RADIUS;
+        const delta = new THREE.Quaternion().setFromAxisAngle(
+          this._rollAxis, angularSpeed * dt
+        );
+        this._spinQuat.premultiply(delta);
+        this._spinQuat.normalize();
+      }
+    }
+    this.mesh.quaternion.copy(this._spinQuat);
 
     // Update light intensity based on speed
-    const speed = this.body.velocity.length();
-    this.light.intensity = 0.8 + Math.min(speed * 0.05, 1.5);
+    this.light.intensity = 0.8 + Math.min(curSpeed * 0.05, 1.5);
 
     // Emissive intensity based on speed
-    const intensity = 0.3 + Math.min(speed * 0.02, 0.8);
+    const intensity = 0.3 + Math.min(curSpeed * 0.02, 0.8);
     this.sphere.material.emissiveIntensity = intensity;
 
     // Update shadow indicator position (always on ground below ball)
@@ -126,6 +165,7 @@ export class Ball {
     this.body.position.set(0, BALL.RADIUS + 0.5, 0);
     this.body.velocity.set(0, 0, 0);
     this.body.angularVelocity.set(0, 0, 0);
+    this._spinQuat.identity();
   }
 
   getPosition() {

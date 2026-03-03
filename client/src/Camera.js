@@ -3,7 +3,6 @@
 // ============================================
 
 import * as THREE from 'three';
-import { ARENA } from '../../shared/constants.js';
 
 export class CameraController {
   constructor(camera) {
@@ -31,6 +30,25 @@ export class CameraController {
 
   setBallTarget(ball) {
     this.ballTarget = ball;
+  }
+
+  getSettings() {
+    return {
+      fov: this.camera.fov,
+      distance: this.distance,
+      height: this.height,
+      smoothness: this.smoothSpeed,
+    };
+  }
+
+  setSettings(settings) {
+    if (settings.fov !== undefined) {
+      this.camera.fov = settings.fov;
+      this.camera.updateProjectionMatrix();
+    }
+    if (settings.distance !== undefined) this.distance = settings.distance;
+    if (settings.height !== undefined) this.height = settings.height;
+    if (settings.smoothness !== undefined) this.smoothSpeed = settings.smoothness;
   }
 
   update(dt, ballCamEnabled) {
@@ -96,13 +114,8 @@ export class CameraController {
     this.currentPos.lerp(desiredPos, lerpFactor);
     this.currentLookAt.lerp(desiredLookAt, lerpFactor);
 
-    // Clamp camera inside arena bounds (with small margin)
-    const margin = 2;
-    const hw = ARENA.WIDTH / 2 - margin;
-    const hl = ARENA.LENGTH / 2 - margin;
-    this.currentPos.x = Math.max(-hw, Math.min(hw, this.currentPos.x));
-    this.currentPos.z = Math.max(-hl, Math.min(hl, this.currentPos.z));
-    this.currentPos.y = Math.max(1, Math.min(ARENA.HEIGHT - margin, this.currentPos.y));
+    // Keep camera above ground
+    this.currentPos.y = Math.max(1, this.currentPos.y);
 
     // Apply
     this.camera.position.copy(this.currentPos);

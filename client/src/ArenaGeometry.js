@@ -88,6 +88,18 @@ export function createArenaGeometry() {
     shellParts.push(makeGoalCornerPatch(side, 1));
   }
 
+  // 12) Goal-zone floor strips (fill gap from flatHL to HL in front of goal mouths)
+  //     The floor-to-end-wall fillet is cut out for the goal opening, but the flat
+  //     floor only reaches flatHL. This strip fills the 8-unit gap at y=0.
+  for (const side of [-1, 1]) {
+    shellParts.push(makeFlatQuad(
+      new THREE.Vector3(-GW, 0, side * flatHL),
+      new THREE.Vector3(GW, 0, side * flatHL),
+      new THREE.Vector3(GW, 0, side * HL),
+      new THREE.Vector3(-GW, 0, side * HL)
+    ));
+  }
+
   const shell = mergeBufferGeometries(shellParts);
   ensureInwardNormals(shell);
 
@@ -806,8 +818,9 @@ function makeGoalPostFillet(side, postSide) {
   // Quarter-cylinder along Y-axis rounding the edge where end wall meets goal side wall
   // side: -1 or +1 for which end of the arena (Z direction)
   // postSide: -1 (left post) or +1 (right post)
+  // The fillet curves from the end wall face INTO the goal (not into the arena).
   const cx = postSide * (GW - GER);
-  const cz = side * (HL - GER);
+  const cz = side * (HL + GER);
   const yBot = 0;
   const yTop = GH - GER;
 
@@ -818,9 +831,9 @@ function makeGoalPostFillet(side, postSide) {
   for (let i = 0; i <= S; i++) {
     const t = i / S;
     const angle = (Math.PI / 2) * t;
-    // Arc sweeps from end-wall tangent (facing into arena on Z) to goal-side-wall tangent (facing inward on X)
+    // Arc sweeps from end-wall face (z=side*HL) into the goal interior
     const lx = cx + postSide * GER * Math.sin(angle);
-    const lz = cz + side * GER * Math.cos(angle);
+    const lz = cz - side * GER * Math.cos(angle);
 
     for (let j = 0; j <= 1; j++) {
       const y = j === 0 ? yBot : yTop;
@@ -848,8 +861,9 @@ function makeGoalPostFillet(side, postSide) {
 function makeGoalCrossbarFillet(side) {
   // Quarter-cylinder along X-axis rounding the edge where end wall meets goal ceiling
   // side: -1 or +1 for which end of the arena
+  // The fillet curves from the end wall face INTO the goal (not into the arena).
   const cy = GH - GER;
-  const cz = side * (HL - GER);
+  const cz = side * (HL + GER);
   const xMin = -(GW - GER);
   const xMax = GW - GER;
 
@@ -860,9 +874,9 @@ function makeGoalCrossbarFillet(side) {
   for (let i = 0; i <= S; i++) {
     const t = i / S;
     const angle = (Math.PI / 2) * t;
-    // Arc sweeps from end-wall tangent (facing into arena on Z) to goal-ceiling tangent (facing down on Y)
+    // Arc sweeps from end-wall face (z=side*HL) into the goal interior
     const ly = cy + GER * Math.sin(angle);
-    const lz = cz + side * GER * Math.cos(angle);
+    const lz = cz - side * GER * Math.cos(angle);
 
     for (let j = 0; j <= 1; j++) {
       const x = j === 0 ? xMin : xMax;
@@ -888,10 +902,10 @@ function makeGoalCrossbarFillet(side) {
 
 function makeGoalCornerPatch(side, postSide) {
   // 1/8 sphere at the junction where a goal post fillet meets the crossbar fillet
-  // Fills the gap at the post-crossbar corner
+  // Fills the gap at the post-crossbar corner. Curves INTO the goal, not the arena.
   const cx = postSide * (GW - GER);
   const cy = GH - GER;
-  const cz = side * (HL - GER);
+  const cz = side * (HL + GER);
   const r = GER;
 
   const N = Math.max(S, 6);
@@ -909,7 +923,7 @@ function makeGoalCornerPatch(side, postSide) {
 
       const lx = cx + postSide * r * Math.sin(phi) * Math.sin(theta);
       const ly = cy + r * Math.cos(phi);
-      const lz = cz + side * r * Math.sin(phi) * Math.cos(theta);
+      const lz = cz - side * r * Math.sin(phi) * Math.cos(theta);
 
       positions.push(lx, ly, lz);
       uvs.push(lx, lz);

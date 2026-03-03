@@ -172,6 +172,19 @@ body {
   transition: opacity 0.3s;
 }
 
+#demo-text {
+  position: absolute;
+  top: 35%;
+  font-size: 52px;
+  font-weight: 900;
+  letter-spacing: 6px;
+  text-transform: uppercase;
+  color: #ff3300;
+  text-shadow: 0 0 30px rgba(255, 51, 0, 0.8), 0 0 60px rgba(255, 51, 0, 0.4);
+  opacity: 0;
+  transition: opacity 0.3s;
+}
+
 /* Controls Hint */
 #controls-hint {
   position: absolute;
@@ -222,13 +235,61 @@ body {
   z-index: 100;
 }
 
-.lobby-title {
-  font-size: 64px;
-  font-weight: 900;
-  letter-spacing: 8px;
-  color: #fff;
-  text-shadow: 0 0 40px rgba(0, 255, 255, 0.6), 0 0 80px rgba(0, 255, 255, 0.3);
+.lobby-title-wrap {
+  position: relative;
   margin-bottom: 60px;
+  height: clamp(3rem, 12vw, 10rem);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.lobby-title {
+  font-size: clamp(2rem, 10vw, 7rem);
+  font-family: 'Orbitron', sans-serif;
+  font-weight: 800;
+  letter-spacing: 0.05em;
+  position: absolute;
+  white-space: nowrap;
+  z-index: 99;
+  background: linear-gradient(
+    180deg,
+    #ff1a5c 0%,
+    #ff1a5c 70%,
+    #3399ff 75%,
+    transparent 80%,
+    transparent 100%
+  );
+  background-size: 300px 400px;
+  background-position: 0 -400px;
+  background-repeat: repeat-x;
+  background-color: transparent;
+  -webkit-background-clip: text;
+  background-clip: text;
+  color: transparent;
+  -webkit-text-stroke: clamp(1px, 0.06em, 8px) #88ff44;
+  user-select: none;
+  animation: title-sweep 8s linear infinite;
+}
+
+.lobby-title-reflect {
+  -webkit-box-reflect: below calc(-0.35em)
+    linear-gradient(
+      to top,
+      rgba(255, 255, 255, 0.35),
+      rgba(255, 255, 255, 0.25) 18%,
+      rgba(255, 255, 255, 0.15) 45%,
+      rgba(255, 255, 255, 0.05) 80%
+    );
+  filter: saturate(0.68) contrast(0.68);
+  z-index: 98;
+}
+
+@keyframes title-sweep {
+  0%    { background-position: 0 -400px; }
+  25%   { background-position: 0 0; }
+  62.5% { background-position: 0 0; }
+  100%  { background-position: 0 -400px; }
 }
 
 .lobby-buttons {
@@ -266,4 +327,398 @@ body {
 .lobby-btn-online:hover {
   background: rgba(255, 136, 0, 0.25);
   box-shadow: 0 0 20px rgba(255, 136, 0, 0.4);
+}
+
+/* Car Selector */
+#car-selector {
+  display: none;
+  flex-direction: column;
+  align-items: center;
+  gap: 24px;
+}
+
+#car-preview {
+  width: 400px;
+  height: 280px;
+  border-radius: 8px;
+  border: 1px solid rgba(0, 255, 255, 0.3);
+  box-shadow: 0 0 20px rgba(0, 255, 255, 0.15), inset 0 0 20px rgba(0, 255, 255, 0.05);
+}
+
+.car-selector-buttons {
+  display: flex;
+  gap: 24px;
+}
+
+.lobby-btn-back {
+  border-color: rgba(255, 255, 255, 0.25);
+  color: rgba(255, 255, 255, 0.5);
+  background: transparent;
+  padding: 10px 32px;
+  font-size: 14px;
+}
+
+.lobby-btn-back:hover {
+  background: rgba(255, 255, 255, 0.08);
+  box-shadow: 0 0 12px rgba(255, 255, 255, 0.15);
+  color: rgba(255, 255, 255, 0.8);
+}
+
+/* ===== Touch Controls ===== */
+
+#touch-controls {
+  position: absolute;
+  top: 0;
+  left: 0;
+  width: 100%;
+  height: 100%;
+  pointer-events: none;
+  z-index: 50;
+  touch-action: none;
+}
+
+/* Joystick */
+.touch-joy-zone {
+  position: absolute;
+  bottom: 24px;
+  left: 20px;
+  width: 140px;
+  height: 140px;
+  pointer-events: auto;
+  touch-action: none;
+}
+
+.touch-joy-base {
+  width: 120px;
+  height: 120px;
+  border-radius: 50%;
+  border: 2px solid rgba(0, 255, 255, 0.25);
+  background: rgba(0, 255, 255, 0.04);
+  position: absolute;
+  bottom: 0;
+  left: 0;
+  transition: border-color 0.15s, background 0.15s;
+}
+
+.touch-joy-base.active {
+  border-color: rgba(0, 255, 255, 0.5);
+  background: rgba(0, 255, 255, 0.08);
+}
+
+.touch-joy-stick {
+  width: 48px;
+  height: 48px;
+  border-radius: 50%;
+  background: rgba(0, 255, 255, 0.15);
+  border: 2px solid rgba(0, 255, 255, 0.6);
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  transform: translate(-50%, -50%);
+  box-shadow: 0 0 12px rgba(0, 255, 255, 0.25);
+}
+
+/* Button Zone - diamond layout */
+.touch-btn-zone {
+  position: absolute;
+  bottom: 24px;
+  right: 20px;
+  width: 160px;
+  height: 160px;
+  pointer-events: none;
+}
+
+.touch-btn {
+  position: absolute;
+  border-radius: 50%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-family: inherit;
+  font-weight: 700;
+  letter-spacing: 1px;
+  pointer-events: auto;
+  touch-action: none;
+  user-select: none;
+  -webkit-user-select: none;
+  transition: background 0.1s, border-color 0.1s, box-shadow 0.1s;
+}
+
+/* BOOST - bottom center (most used, thumb rests here) */
+.touch-btn-boost {
+  width: 68px;
+  height: 68px;
+  bottom: 0;
+  left: 50%;
+  transform: translateX(-50%);
+  border: 2px solid rgba(255, 136, 0, 0.45);
+  background: rgba(255, 136, 0, 0.08);
+  color: rgba(255, 136, 0, 0.8);
+  font-size: 10px;
+  box-shadow: 0 0 10px rgba(255, 136, 0, 0.15);
+}
+
+.touch-btn-boost.pressed {
+  background: rgba(255, 136, 0, 0.3);
+  border-color: rgba(255, 136, 0, 0.9);
+  box-shadow: 0 0 20px rgba(255, 136, 0, 0.5);
+}
+
+/* JUMP - right (frequent taps) */
+.touch-btn-jump {
+  width: 60px;
+  height: 60px;
+  right: 0;
+  top: 50%;
+  transform: translateY(-50%);
+  border: 2px solid rgba(0, 255, 255, 0.45);
+  background: rgba(0, 255, 255, 0.08);
+  color: rgba(0, 255, 255, 0.8);
+  font-size: 10px;
+  box-shadow: 0 0 10px rgba(0, 255, 255, 0.15);
+}
+
+.touch-btn-jump.pressed {
+  background: rgba(0, 255, 255, 0.3);
+  border-color: rgba(0, 255, 255, 0.9);
+  box-shadow: 0 0 20px rgba(0, 255, 255, 0.5);
+}
+
+/* DRIFT - left (occasional) */
+.touch-btn-drift {
+  width: 52px;
+  height: 52px;
+  left: 0;
+  top: 50%;
+  transform: translateY(-50%);
+  border: 2px solid rgba(255, 0, 255, 0.35);
+  background: rgba(255, 0, 255, 0.06);
+  color: rgba(255, 0, 255, 0.7);
+  font-size: 9px;
+  box-shadow: 0 0 8px rgba(255, 0, 255, 0.12);
+}
+
+.touch-btn-drift.pressed {
+  background: rgba(255, 0, 255, 0.25);
+  border-color: rgba(255, 0, 255, 0.8);
+  box-shadow: 0 0 16px rgba(255, 0, 255, 0.4);
+}
+
+/* CAM - top center (toggle) */
+.touch-btn-cam {
+  width: 46px;
+  height: 46px;
+  top: 0;
+  left: 50%;
+  transform: translateX(-50%);
+  border: 2px solid rgba(255, 255, 255, 0.25);
+  background: rgba(255, 255, 255, 0.04);
+  color: rgba(255, 255, 255, 0.55);
+  font-size: 9px;
+  box-shadow: 0 0 6px rgba(255, 255, 255, 0.08);
+}
+
+.touch-btn-cam.pressed {
+  background: rgba(255, 255, 255, 0.18);
+  border-color: rgba(255, 255, 255, 0.7);
+  box-shadow: 0 0 12px rgba(255, 255, 255, 0.25);
+}
+
+/* ===== Camera Settings Panel ===== */
+
+#camera-settings-gear {
+  display: none;
+  position: absolute;
+  top: 16px;
+  right: 16px;
+  z-index: 60;
+  width: 44px;
+  height: 44px;
+  border-radius: 50%;
+  border: 2px solid rgba(0, 255, 255, 0.35);
+  background: rgba(0, 10, 20, 0.5);
+  color: rgba(0, 255, 255, 0.7);
+  cursor: pointer;
+  align-items: center;
+  justify-content: center;
+  pointer-events: auto;
+  transition: background 0.2s, border-color 0.2s;
+}
+
+#camera-settings-gear.active {
+  border-color: rgba(0, 255, 255, 0.8);
+  background: rgba(0, 255, 255, 0.15);
+}
+
+@media (pointer: coarse) {
+  #camera-settings-gear {
+    display: flex;
+  }
+}
+
+#camera-settings-panel {
+  position: absolute;
+  top: 0;
+  left: 0;
+  width: 260px;
+  height: 100%;
+  z-index: 55;
+  background: rgba(5, 5, 20, 0.92);
+  border-right: 1px solid rgba(0, 255, 255, 0.15);
+  backdrop-filter: blur(12px);
+  -webkit-backdrop-filter: blur(12px);
+  padding: 28px 20px;
+  transform: translateX(-100%);
+  transition: transform 0.3s ease;
+  pointer-events: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 20px;
+  overflow-y: auto;
+}
+
+#camera-settings-panel.open {
+  transform: translateX(0);
+}
+
+.cs-title {
+  font-size: 14px;
+  font-weight: 700;
+  letter-spacing: 3px;
+  text-transform: uppercase;
+  color: #00ffff;
+  text-shadow: 0 0 12px rgba(0, 255, 255, 0.4);
+  margin: 0;
+}
+
+.cs-sliders {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+
+.cs-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+}
+
+.cs-label {
+  font-size: 12px;
+  font-weight: 600;
+  letter-spacing: 1px;
+  color: rgba(255, 255, 255, 0.7);
+  flex: 1;
+}
+
+.cs-value {
+  font-size: 13px;
+  font-weight: 700;
+  color: #00ffff;
+  min-width: 36px;
+  text-align: right;
+}
+
+.cs-slider {
+  -webkit-appearance: none;
+  appearance: none;
+  width: 100%;
+  height: 4px;
+  border-radius: 2px;
+  background: rgba(255, 255, 255, 0.1);
+  outline: none;
+  flex-basis: 100%;
+}
+
+.cs-slider::-webkit-slider-thumb {
+  -webkit-appearance: none;
+  appearance: none;
+  width: 16px;
+  height: 16px;
+  border-radius: 50%;
+  background: #00ffff;
+  cursor: pointer;
+  box-shadow: 0 0 8px rgba(0, 255, 255, 0.6);
+  border: none;
+}
+
+.cs-slider::-moz-range-thumb {
+  width: 16px;
+  height: 16px;
+  border-radius: 50%;
+  background: #00ffff;
+  cursor: pointer;
+  box-shadow: 0 0 8px rgba(0, 255, 255, 0.6);
+  border: none;
+}
+
+.cs-reset {
+  padding: 8px 16px;
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 1px;
+  text-transform: uppercase;
+  border: 1px solid rgba(255, 255, 255, 0.2);
+  border-radius: 4px;
+  background: rgba(255, 255, 255, 0.05);
+  color: rgba(255, 255, 255, 0.6);
+  cursor: pointer;
+  transition: all 0.2s;
+  font-family: inherit;
+}
+
+.cs-reset:hover {
+  background: rgba(255, 255, 255, 0.12);
+  border-color: rgba(255, 255, 255, 0.4);
+  color: #fff;
+}
+
+.cs-hint {
+  font-size: 10px;
+  color: rgba(255, 255, 255, 0.3);
+  letter-spacing: 1px;
+  margin-top: auto;
+}
+
+/* Adjust HUD on mobile to avoid overlapping touch controls */
+@media (max-width: 768px) and (pointer: coarse) {
+  #hud-bottom {
+    bottom: 200px;
+    right: 20px;
+  }
+
+  #boost-meter {
+    width: 70px;
+    height: 70px;
+  }
+
+  #speed-bar {
+    bottom: 190px;
+    width: 120px;
+  }
+
+  .score {
+    font-size: 36px;
+  }
+
+  .lobby-title-wrap {
+    margin-bottom: 30px;
+    height: clamp(2.5rem, 10vw, 5rem);
+  }
+
+  .lobby-buttons {
+    flex-direction: column;
+    gap: 16px;
+  }
+
+  .lobby-btn {
+    padding: 14px 32px;
+    font-size: 16px;
+  }
+
+  #car-preview {
+    width: 300px;
+    height: 210px;
+  }
 }

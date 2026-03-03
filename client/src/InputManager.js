@@ -1,5 +1,6 @@
 // ============================================
 // Input Manager - Keyboard + Gamepad input
+// Touch controls loaded lazily on mobile only
 // ============================================
 
 // Gamepad constants
@@ -76,6 +77,19 @@ export class InputManager {
         this._showGamepadNotification('Controller disconnected');
       }
     });
+
+    // Lazy-load touch controls only on actual touch devices
+    this._touchState = null;
+    if (window.matchMedia('(hover: none) and (pointer: coarse)').matches) {
+      import('./TouchControls.js').then(({ TouchControls }) => {
+        try {
+          this._touch = new TouchControls();
+          this._touchState = this._touch.state;
+        } catch (e) {
+          console.warn('Touch controls failed to init:', e);
+        }
+      }).catch(() => {});
+    }
   }
 
   _applyDeadzone(value) {
@@ -167,11 +181,15 @@ export class InputManager {
 
     const kbHandbrake = !!(k['ControlLeft'] || k['ControlRight']);
 
+    // --- Touch (mobile only, lazy-loaded) ---
+    if (this._touch) this._touch.update();
+    const tc = this._touchState;
+
     // --- Gamepad ---
     const gp = this._pollGamepad();
 
-    if (!gp) {
-      // No gamepad — use keyboard only (original behavior)
+    if (!gp && !tc) {
+      // No gamepad or touch — use keyboard only
       this.state.throttle = kbThrottle;
       this.state.steer = kbSteer;
       this.state.jump = kbJumpDown;
@@ -188,33 +206,39 @@ export class InputManager {
     // --- Merge: max-magnitude for analog, OR for digital ---
 
     // Throttle: max-magnitude
-    this.state.throttle = Math.abs(gp.throttle) > Math.abs(kbThrottle) ? gp.throttle : kbThrottle;
+    let throttle = kbThrottle;
+    if (gp && Math.abs(gp.throttle) > Math.abs(throttle)) throttle = gp.throttle;
+    if (tc && Math.abs(tc.throttle) > Math.abs(throttle)) throttle = tc.throttle;
+    this.state.throttle = throttle;
 
     // Steer: max-magnitude
-    this.state.steer = Math.abs(gp.steer) > Math.abs(kbSteer) ? gp.steer : kbSteer;
+    let steer = kbSteer;
+    if (gp && Math.abs(gp.steer) > Math.abs(steer)) steer = gp.steer;
+    if (tc && Math.abs(tc.steer) > Math.abs(steer)) steer = tc.steer;
+    this.state.steer = steer;
 
-    // Jump: OR
-    this.state.jump = kbJumpDown || gp.jump;
-    this.state.jumpPressed = kbJumpPressed || gp.jumpPressed;
+    // Jump: OR (!! coerce — tc guard can return null instead of false)
+    this.state.jump = !!(kbJumpDown || (gp && gp.jump) || (tc && tc.jump));
+    this.state.jumpPressed = !!(kbJumpPressed || (gp && gp.jumpPressed) || (tc && tc.jumpPressed));
 
-    // Boost: OR
-    this.state.boost = kbBoost || gp.boost;
+    // Boost: OR (!! ensures boolean — null from tc guard would bypass Three.js visible===false check)
+    this.state.boost = !!(kbBoost || (gp && gp.boost) || (tc && tc.boost));
 
     // Ball cam: either source can toggle
-    if (kbBallCamToggled || gp.ballCamToggled) {
+    if (kbBallCamToggled || (gp && gp.ballCamToggled) || (tc && tc.ballCamToggled)) {
       this.state.ballCam = !this.state.ballCam;
     }
 
-    // Air roll: OR (gamepad LB/RB as -1/+1, merge with keyboard)
-    const gpAirRoll = (gp.airRollLeft ? -1 : 0) + (gp.airRollRight ? 1 : 0);
+    // Air roll: gamepad/keyboard only (no touch air roll)
+    const gpAirRoll = gp ? (gp.airRollLeft ? -1 : 0) + (gp.airRollRight ? 1 : 0) : 0;
     this.state.airRoll = gpAirRoll !== 0 ? gpAirRoll : kbAirRoll;
 
-    // Pitch: OR
-    this.state.pitchUp = kbPitchUp || gp.pitchUp;
-    this.state.pitchDown = kbPitchDown || gp.pitchDown;
+    // Pitch: OR (!! coerce — tc guard can return null instead of false)
+    this.state.pitchUp = !!(kbPitchUp || (gp && gp.pitchUp) || (tc && tc.pitchUp));
+    this.state.pitchDown = !!(kbPitchDown || (gp && gp.pitchDown) || (tc && tc.pitchDown));
 
-    // Handbrake: OR
-    this.state.handbrake = kbHandbrake || gp.handbrake;
+    // Handbrake: OR (!! coerce — tc guard can return null instead of false)
+    this.state.handbrake = !!(kbHandbrake || (gp && gp.handbrake) || (tc && tc.handbrake));
   }
 
   _showGamepadNotification(message) {

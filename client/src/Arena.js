@@ -9,6 +9,7 @@ import * as CANNON from 'cannon-es';
 import { ARENA, COLORS, COLLISION_GROUPS } from '../../shared/constants.js';
 import { createArenaGeometry } from './ArenaGeometry.js';
 import { createArenaMaterial } from './ArenaShader.js';
+const logoSvgUrl = '/BlocketLeagueLogo.svg';
 
 const HW = ARENA.WIDTH / 2;
 const HL = ARENA.LENGTH / 2;
@@ -32,6 +33,7 @@ export class Arena {
     this._buildGoals();
     this._buildLighting();
     this._buildFieldMarkings();
+    this._buildFieldText();
   }
 
   // ========== GRASS FLOOR ==========
@@ -486,6 +488,63 @@ export class Arena {
     redRing.rotation.x = -Math.PI / 2;
     redRing.position.y = 0.06;
     this.scene.add(redRing);
+  }
+
+  // ========== FIELD TEXT (painted on grass) ==========
+
+  _buildFieldText() {
+    const scene = this.scene;
+    const meshes = this.meshes;
+
+    // SVG dimensions from viewBox
+    const svgW = 889;
+    const svgH = 507;
+
+    // Height stays the same, narrow the width to fix stretched look
+    const planeWidth = 28.5;
+    const planeLength = planeWidth * (svgW / svgH);
+
+    const geo = new THREE.PlaneGeometry(planeLength, planeWidth);
+    geo.rotateX(-Math.PI / 2);
+
+    // Load SVG as image → canvas → texture
+    const img = new Image();
+    img.onload = () => {
+      const canvas = document.createElement('canvas');
+      canvas.width = 2048;
+      canvas.height = Math.round(2048 * (svgH / svgW));
+      const ctx = canvas.getContext('2d');
+      ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
+
+      const texture = new THREE.CanvasTexture(canvas);
+      texture.minFilter = THREE.LinearFilter;
+      texture.magFilter = THREE.LinearFilter;
+
+      const mat = new THREE.MeshStandardMaterial({
+        map: texture,
+        transparent: true,
+        opacity: 0.5,
+        depthWrite: false,
+        emissive: 0xffffff,
+        emissiveIntensity: 0.2,
+        emissiveMap: texture,
+        polygonOffset: true,
+        polygonOffsetFactor: -1,
+        polygonOffsetUnits: -1,
+      });
+
+      // One on each sideline, rotated so logo runs along the Z axis
+      const xOffset = HW * 0.55;
+      [-1, 1].forEach(side => {
+        const mesh = new THREE.Mesh(geo, mat);
+        mesh.position.set(side * xOffset, 0.03, 0);
+        mesh.rotation.y = side * Math.PI / 2;
+        mesh.renderOrder = 2;
+        scene.add(mesh);
+        meshes.push(mesh);
+      });
+    };
+    img.src = logoSvgUrl;
   }
 
   // ========== GOAL DETECTION ==========

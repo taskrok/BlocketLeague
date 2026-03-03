@@ -15,7 +15,7 @@ export function createArenaMaterial() {
     side: THREE.DoubleSide,
     transparent: true,
     opacity: 1.0,
-    depthWrite: true,
+    depthWrite: false,
   });
 
   material.onBeforeCompile = (shader) => {
@@ -81,13 +81,11 @@ export function createArenaMaterial() {
       }`
     );
 
-    // Back faces (camera outside arena) become transparent
+    // Transparent shell — only neon grid lines are visible
     shader.fragmentShader = shader.fragmentShader.replace(
       '#include <output_fragment>',
       `#include <output_fragment>
-      if (!gl_FrontFacing) {
-        gl_FragColor.a = 0.06 + arenaGridFactor * 0.35;
-      }`
+      gl_FragColor.a = arenaGridFactor * 0.85;`
     );
   };
 

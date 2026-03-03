@@ -57,6 +57,10 @@ export class NetworkManager {
       this._emit('gameState', data);
     });
 
+    this.socket.on('demolition', (data) => {
+      this._emit('demolition', data);
+    });
+
     this.socket.on('goalScored', (data) => {
       this._emit('goalScored', data);
     });
@@ -170,6 +174,7 @@ export class NetworkManager {
     entity.avy = a.avy + (b.avy - a.avy) * t;
     entity.avz = a.avz + (b.avz - a.avz) * t;
     entity.boost = a.boost + (b.boost - a.boost) * t;
+    entity.demolished = b.demolished;
     entity.lastProcessedInput = b.lastProcessedInput;
     return entity;
   }

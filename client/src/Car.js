@@ -5,7 +5,7 @@
 
 import * as THREE from 'three';
 import * as CANNON from 'cannon-es';
-import { CAR, ARENA, COLORS, COLLISION_GROUPS, PHYSICS } from '../../shared/constants.js';
+import { CAR, ARENA, COLORS, COLLISION_GROUPS, PHYSICS, DEMOLITION } from '../../shared/constants.js';
 import { checkCurveSurface } from '../../shared/CurveSurface.js';
 import { buildCarMesh } from './CarMeshBuilder.js';
 
@@ -33,12 +33,18 @@ export class Car {
     this.dodgeTime = 0;
     this.jumpLockout = 0;         // timestamp: suppress ground check briefly after jump
     this._dodgeAngVel = null;     // world-space angular velocity maintained during dodge
+    this._dodgeDecaying = false;  // vertical momentum decay after dodge torque phase
+    this._dodgeDecayStart = 0;    // timestamp when decay phase began
     this._stuckTimer = 0;         // time spent tilted near floor (for auto self-right)
 
     // Surface tracking for wall driving
     this.surfaceNormal = new CANNON.Vec3(0, 1, 0);
     this.onWall = false;
     this.onGoalSurface = false;
+
+    // Demolition state
+    this.demolished = false;
+    this.respawnTimer = 0;
 
     this._createPhysics(position);
     this._createMesh();
@@ -218,12 +224,15 @@ export class Car {
   }
 
   update(input, dt) {
+    if (this.demolished) return;
     this._checkGround();
     this._handleSelfRight(input, dt);
     this._handleMovement(input, dt);
     this._handleJump(input, dt);
     this._handleBoost(input, dt);
+    this._handleAirThrottle(input, dt);
     this._handleAirControl(input, dt);
+    this._clampAngularVelocity();
     this._applyStickyForce(dt);
     this._syncMesh();
     this._updateEffects(input, dt);
@@ -295,6 +304,7 @@ export class Car {
       this.hasJumped = false;
       this.canDoubleJump = false;
       this.isDodging = false;
+      this._dodgeDecaying = false;
     }
   }
 
@@ -565,7 +575,9 @@ export class Car {
     // Throttle
     if (input.throttle !== 0) {
       const maxSpeed = (input.boost && this.boost > 0) ? CAR.BOOST_MAX_SPEED : CAR.MAX_SPEED;
-      const accel = input.throttle > 0 ? CAR.ACCELERATION : CAR.BRAKE_FORCE;
+      // Use brake force when throttle opposes current velocity (counter-braking)
+      const opposing = (input.throttle > 0 && forwardSpeed < -0.5) || (input.throttle < 0 && forwardSpeed > 0.5);
+      const accel = opposing ? CAR.BRAKE_FORCE : (input.throttle > 0 ? CAR.ACCELERATION : CAR.BRAKE_FORCE);
       let targetSpeed = forwardSpeed + input.throttle * accel * dt;
       targetSpeed = Math.max(-maxSpeed, Math.min(maxSpeed, targetSpeed));
 
@@ -574,22 +586,39 @@ export class Car {
       vel.y += forward.y * dv;
       vel.z += forward.z * dv;
     } else {
-      // Deceleration — project velocity onto surface and decay
-      const drag = Math.pow(0.02, dt);
+      // Linear deceleration when coasting (no throttle)
       const surfVelFwd = vel.dot(forward);
       const surfVelRight = vel.dot(right);
+      const decel = CAR.COAST_DECEL * dt;
+
+      // Decelerate forward component
+      let newFwd = surfVelFwd;
+      if (Math.abs(surfVelFwd) > decel) {
+        newFwd -= Math.sign(surfVelFwd) * decel;
+      } else {
+        newFwd = 0;
+      }
+
+      // Decelerate sideways component
+      let newRight = surfVelRight;
+      if (Math.abs(surfVelRight) > decel) {
+        newRight -= Math.sign(surfVelRight) * decel;
+      } else {
+        newRight = 0;
+      }
+
       const normalVel = vel.dot(normal);
       vel.set(
-        forward.x * surfVelFwd * drag + right.x * surfVelRight * drag + normal.x * normalVel,
-        forward.y * surfVelFwd * drag + right.y * surfVelRight * drag + normal.y * normalVel,
-        forward.z * surfVelFwd * drag + right.z * surfVelRight * drag + normal.z * normalVel
+        forward.x * newFwd + right.x * newRight + normal.x * normalVel,
+        forward.y * newFwd + right.y * newRight + normal.y * normalVel,
+        forward.z * newFwd + right.z * newRight + normal.z * normalVel
       );
     }
 
     // Steering — rotate around surface normal
     const handbraking = !!input.handbrake;
     if (input.steer !== 0 && (Math.abs(forwardSpeed) > 0.5 || handbraking)) {
-      const turnDir = forwardSpeed >= 0 ? 1 : -1;
+      const turnDir = input.throttle !== 0 ? Math.sign(input.throttle) : (forwardSpeed >= 0 ? 1 : -1);
       const turnMultiplier = handbraking ? CAR.HANDBRAKE_TURN_MULTIPLIER : 1;
       const turnAmount = input.steer * CAR.TURN_SPEED * turnDir * turnMultiplier;
       // Set angular velocity along surface normal
@@ -721,20 +750,22 @@ export class Car {
         // Speed burst in dodge direction
         this.body.velocity.x += dodgeDir.x * CAR.DODGE_FORCE;
         this.body.velocity.z += dodgeDir.z * CAR.DODGE_FORCE;
-        this.body.velocity.y = CAR.DODGE_VERTICAL;
+        this.body.velocity.y = Math.max(this.body.velocity.y, CAR.DODGE_VERTICAL);
 
-        // Flip spin in car's local frame, transformed to world space
-        // pitch around local X (right axis), roll around local Z (forward axis)
-        // 20 rad/s completes a full rotation (~360°) within the 350ms dodge window
+        // Flip spin using DODGE_SPIN_SPEED (one rotation in DODGE_DURATION)
+        // Normalize so diagonal flips have the same rotation speed as cardinal
         const localSpin = new CANNON.Vec3(
-          input.throttle * 20,
+          input.throttle,
           0,
-          -input.steer * 20
+          -input.steer
         );
+        const spinLen = localSpin.length();
+        if (spinLen > 0) localSpin.scale(CAR.DODGE_SPIN_SPEED / spinLen, localSpin);
         this._dodgeAngVel = this.body.quaternion.vmult(localSpin);
         this.body.angularVelocity.copy(this._dodgeAngVel);
 
         this.isDodging = true;
+        this._dodgeDecaying = false;
         this.dodgeTime = now;
       } else {
         // No directional input → small upward pop
@@ -743,14 +774,30 @@ export class Car {
       this.canDoubleJump = false;
     }
 
-    // Maintain flip spin during dodge (counteracts angular damping)
+    // Maintain flip spin during dodge torque phase
     if (this.isDodging) {
       this.body.angularVelocity.copy(this._dodgeAngVel);
     }
 
-    // End dodge spin after 350ms (~one full rotation at 20 rad/s)
-    if (this.isDodging && (now - this.dodgeTime) > 350) {
+    // End dodge torque phase after DODGE_DURATION, enter decay
+    if (this.isDodging && (now - this.dodgeTime) > CAR.DODGE_DURATION) {
       this.isDodging = false;
+      // Zero angular velocity and snap to wheels-down (preserve yaw only)
+      this.body.angularVelocity.set(0, 0, 0);
+      const euler = new CANNON.Vec3();
+      this.body.quaternion.toEuler(euler);
+      this.body.quaternion.setFromEuler(0, euler.y, 0);
+      this._dodgeDecaying = true;
+      this._dodgeDecayStart = now;
+    }
+
+    // Decay vertical momentum for 150ms after dodge torque ends
+    if (this._dodgeDecaying) {
+      if ((now - this._dodgeDecayStart) < 150) {
+        this.body.velocity.y *= 0.65;
+      } else {
+        this._dodgeDecaying = false;
+      }
     }
   }
 
@@ -764,6 +811,39 @@ export class Car {
       vel.x += forward.x * CAR.BOOST_ACCELERATION * dt;
       vel.y += forward.y * CAR.BOOST_ACCELERATION * dt;
       vel.z += forward.z * CAR.BOOST_ACCELERATION * dt;
+
+      // Clamp total speed to boost max
+      const speed = vel.length();
+      if (speed > CAR.BOOST_MAX_SPEED) {
+        const scale = CAR.BOOST_MAX_SPEED / speed;
+        vel.x *= scale;
+        vel.y *= scale;
+        vel.z *= scale;
+      }
+    }
+  }
+
+  _handleAirThrottle(input, dt) {
+    if (this.isGrounded || !input.throttle) return;
+
+    const forward = this.body.quaternion.vmult(new CANNON.Vec3(0, 0, 1));
+    const accel = input.throttle * CAR.AIR_THROTTLE_ACCEL * dt;
+    this.body.velocity.x += forward.x * accel;
+    this.body.velocity.y += forward.y * accel;
+    this.body.velocity.z += forward.z * accel;
+  }
+
+  _clampAngularVelocity() {
+    // Skip during dodge — dodge spin intentionally exceeds the cap
+    if (this.isDodging) return;
+
+    const av = this.body.angularVelocity;
+    const mag = Math.sqrt(av.x * av.x + av.y * av.y + av.z * av.z);
+    if (mag > CAR.MAX_ANGULAR_VELOCITY) {
+      const scale = CAR.MAX_ANGULAR_VELOCITY / mag;
+      av.x *= scale;
+      av.y *= scale;
+      av.z *= scale;
     }
   }
 
@@ -844,10 +924,33 @@ export class Car {
     this.hasJumped = false;
     this.canDoubleJump = false;
     this.isDodging = false;
+    this._dodgeDecaying = false;
+    this._dodgeDecayStart = 0;
     this.isGrounded = false;
     this.onWall = false;
     this.onGoalSurface = false;
     this.surfaceNormal.set(0, 1, 0);
+  }
+
+  demolish() {
+    this.demolished = true;
+    this.respawnTimer = DEMOLITION.RESPAWN_TIME;
+    this.body.velocity.set(0, 0, 0);
+    this.body.angularVelocity.set(0, 0, 0);
+    this.body.position.y = -100;
+    this.body.collisionFilterMask = 0;
+    this.mesh.visible = false;
+  }
+
+  updateDemolition(dt, spawnPos, direction) {
+    if (!this.demolished) return;
+    this.respawnTimer -= dt;
+    if (this.respawnTimer <= 0) {
+      this.demolished = false;
+      this.body.collisionFilterMask = COLLISION_GROUPS.ARENA_BOXES | COLLISION_GROUPS.BALL | COLLISION_GROUPS.CAR;
+      this.mesh.visible = true;
+      this.reset(spawnPos, direction);
+    }
   }
 
   getPosition() { return this.body.position; }

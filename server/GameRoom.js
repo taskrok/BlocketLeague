@@ -6,8 +6,9 @@
 import * as CANNON from 'cannon-es';
 import {
   PHYSICS, BALL as BALL_CONST, SPAWNS, GAME,
-  NETWORK, COLLISION_GROUPS,
+  NETWORK, COLLISION_GROUPS, CAR as CAR_CONST, DEMOLITION,
 } from '../shared/constants.js';
+import { computeBallHitImpulse } from '../shared/BallHitImpulse.js';
 import { ServerArena } from './ServerArena.js';
 import { ServerBall } from './ServerBall.js';
 import { ServerCar } from './ServerCar.js';
@@ -94,7 +95,7 @@ export class GameRoom {
     this.world.solver.iterations = 10;
 
     // Contact materials (same as client Game._initPhysics)
-    const carMaterial = new CANNON.Material('car');
+    const carMaterial = this.carMaterial = new CANNON.Material('car');
     const ballMaterial = new CANNON.Material('ball');
     const wallMaterial = new CANNON.Material('wall');
 
@@ -107,15 +108,15 @@ export class GameRoom {
 
     this.world.addContactMaterial(new CANNON.ContactMaterial(
       carMaterial, ballMaterial, {
-        restitution: 0.8,
-        friction: 0.3,
+        restitution: 0.5,
+        friction: 0.02,
       }
     ));
 
     this.world.addContactMaterial(new CANNON.ContactMaterial(
       carMaterial, wallMaterial, {
         restitution: 0.1,
-        friction: 0.8,
+        friction: 0.0,
       }
     ));
 
@@ -130,8 +131,62 @@ export class GameRoom {
       new ServerCar(this.world, SPAWNS.PLAYER1, 1),   // blue
       new ServerCar(this.world, SPAWNS.PLAYER2, -1),   // orange
     ];
+    this.cars.forEach(car => { car.body.material = this.carMaterial; });
+
+    // Psyonix-style ball hit impulse on car-ball collision
+    this.ball.body.addEventListener('collide', (e) => {
+      const other = e.body;
+      if (!(other.collisionFilterGroup & COLLISION_GROUPS.CAR)) return;
+
+      const ballPos = this.ball.body.position;
+      const ballVel = this.ball.body.velocity;
+      const carPos = other.position;
+      const carVel = other.velocity;
+      const carForward = other.quaternion.vmult(new CANNON.Vec3(0, 0, 1));
+
+      const impulse = computeBallHitImpulse(ballPos, ballVel, carPos, carVel, carForward);
+
+      this.ball.body.velocity.x = impulse.x;
+      this.ball.body.velocity.y = impulse.y;
+      this.ball.body.velocity.z = impulse.z;
+    });
+
+    // Car-car collision: demolition check
+    this.cars[0].body.addEventListener('collide', (e) => {
+      if (!(e.body.collisionFilterGroup & COLLISION_GROUPS.CAR)) return;
+      this._handleCarDemolition(this.cars[0], this.cars[1]);
+    });
 
     this.boostPads = new ServerBoostPads();
+  }
+
+  _handleCarDemolition(carA, carB) {
+    if (carA.demolished || carB.demolished) return;
+
+    const speedA = carA.getSpeed();
+    const speedB = carB.getSpeed();
+
+    let attacker = null;
+    let victim = null;
+
+    if (speedA >= CAR_CONST.SUPERSONIC_THRESHOLD && speedA > speedB) {
+      attacker = carA;
+      victim = carB;
+    } else if (speedB >= CAR_CONST.SUPERSONIC_THRESHOLD && speedB > speedA) {
+      attacker = carB;
+      victim = carA;
+    }
+
+    if (!victim) return;
+
+    const pos = { x: victim.body.position.x, y: victim.body.position.y, z: victim.body.position.z };
+    const victimIdx = this.cars.indexOf(victim);
+    victim.demolish();
+
+    this.io.to(this.roomId).emit('demolition', {
+      victimIdx,
+      position: pos,
+    });
   }
 
   _notifyJoined() {
@@ -217,9 +272,14 @@ export class GameRoom {
     // Step physics
     this.world.step(dt);
 
-    // Update boost pads
+    // Clamp ball velocity/angular velocity
+    this.ball.update(dt);
+
+    // Update boost pads + demolition timers
     if (this.state === 'playing' || this.state === 'overtime') {
       this.boostPads.update(dt, this.cars);
+      this.cars[0].updateDemolition(dt, SPAWNS.PLAYER1, 1);
+      this.cars[1].updateDemolition(dt, SPAWNS.PLAYER2, -1);
       this._checkGoal();
       this._updateTimer(dt);
     }
@@ -289,6 +349,14 @@ export class GameRoom {
   }
 
   _resetAfterGoal() {
+    // Clear demolished state + restore collision masks before reset
+    for (const car of this.cars) {
+      if (car.demolished) {
+        car.demolished = false;
+        car.respawnTimer = 0;
+        car.body.collisionFilterMask = COLLISION_GROUPS.ARENA_BOXES | COLLISION_GROUPS.BALL | COLLISION_GROUPS.CAR;
+      }
+    }
     this.ball.reset();
     this.cars[0].reset(SPAWNS.PLAYER1, 1);
     this.cars[1].reset(SPAWNS.PLAYER2, -1);
@@ -314,6 +382,7 @@ export class GameRoom {
         qx: q.x, qy: q.y, qz: q.z, qw: q.w,
         avx: av.x, avy: av.y, avz: av.z,
         boost: car.boost,
+        demolished: car.demolished,
         lastProcessedInput: this.players[idx] ? this.players[idx].lastProcessedInput : 0,
       };
     });

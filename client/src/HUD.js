@@ -16,6 +16,7 @@ export class HUD {
     this.goalTextEl = document.getElementById('goal-text');
     this.controlsHint = document.getElementById('controls-hint');
     this.statusText = document.getElementById('status-text');
+    this.demoText = document.getElementById('demo-text');
 
     // Boost meter constants
     this.boostCircumference = 2 * Math.PI * 52; // r=52 from SVG
@@ -95,6 +96,15 @@ export class HUD {
     this.goalTextEl.style.color = color;
     this.goalTextEl.style.textShadow = `0 0 40px ${color}, 0 0 80px ${color}`;
     this.goalTextEl.style.opacity = '1';
+  }
+
+  showDemolished() {
+    if (!this.demoText) return;
+    this.demoText.textContent = 'DEMOLISHED!';
+    this.demoText.style.opacity = '1';
+    setTimeout(() => {
+      this.demoText.style.opacity = '0';
+    }, 1500);
   }
 
   showStatus(msg) {

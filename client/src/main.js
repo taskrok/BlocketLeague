@@ -2,29 +2,190 @@
 // Blocket League - Entry Point
 // ============================================
 
+import * as THREE from 'three';
 import { Game } from './Game.js';
 import { NetworkManager } from './NetworkManager.js';
+import { generateCarVariant } from './CarVariants.js';
+import { buildCarMesh } from './CarMeshBuilder.js';
+import { COLORS } from '../../shared/constants.js';
 
 window.addEventListener('DOMContentLoaded', () => {
   const canvas = document.getElementById('game-canvas');
   const lobby = document.getElementById('lobby');
+  const lobbyButtons = lobby.querySelector('.lobby-buttons');
+  const carSelector = document.getElementById('car-selector');
+  const previewCanvas = document.getElementById('car-preview');
   const btnSingle = document.getElementById('btn-singleplayer');
   const btnMulti = document.getElementById('btn-multiplayer');
+  const btnRandomize = document.getElementById('btn-randomize');
+  const btnLetsGo = document.getElementById('btn-letsgo');
+  const btnBack = document.getElementById('btn-back');
+
+  let selectedMode = null;
+  let chosenVariant = null;
+
+  // --- 3D Preview state ---
+  let previewRenderer = null;
+  let previewScene = null;
+  let previewCamera = null;
+  let previewCarMesh = null;
+  let previewAnimId = null;
 
   canvas.addEventListener('click', () => {
     canvas.focus();
   });
 
-  btnSingle.addEventListener('click', () => {
+  // --- Preview setup / teardown ---
+
+  function initPreview() {
+    previewRenderer = new THREE.WebGLRenderer({
+      canvas: previewCanvas,
+      antialias: true,
+    });
+    const w = previewCanvas.clientWidth;
+    const h = previewCanvas.clientHeight;
+    previewRenderer.setSize(w, h, false);
+    previewRenderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+    previewRenderer.setClearColor(0x0a0a2e);
+    previewRenderer.toneMapping = THREE.ACESFilmicToneMapping;
+    previewRenderer.toneMappingExposure = 1.4;
+
+    previewScene = new THREE.Scene();
+
+    previewCamera = new THREE.PerspectiveCamera(40, w / h, 0.1, 50);
+    previewCamera.position.set(5, 3.5, 5);
+    previewCamera.lookAt(0, 0.3, 0);
+
+    // Lighting
+    const ambient = new THREE.AmbientLight(0x222244, 0.8);
+    previewScene.add(ambient);
+
+    const cyanLight = new THREE.PointLight(0x00ffff, 2, 20);
+    cyanLight.position.set(4, 4, 3);
+    previewScene.add(cyanLight);
+
+    const warmLight = new THREE.PointLight(0xff8844, 1.5, 20);
+    warmLight.position.set(-4, 3, -3);
+    previewScene.add(warmLight);
+  }
+
+  function setPreviewCar(variant) {
+    // Remove old car mesh
+    if (previewCarMesh) {
+      previewScene.remove(previewCarMesh);
+      disposeObject(previewCarMesh);
+      previewCarMesh = null;
+    }
+
+    const result = buildCarMesh(variant);
+    previewCarMesh = result.mesh;
+    previewScene.add(previewCarMesh);
+  }
+
+  function startPreviewLoop() {
+    function animate() {
+      previewAnimId = requestAnimationFrame(animate);
+      if (previewCarMesh) {
+        previewCarMesh.rotation.y += 0.01;
+      }
+      previewRenderer.render(previewScene, previewCamera);
+    }
+    animate();
+  }
+
+  function stopPreview() {
+    if (previewAnimId !== null) {
+      cancelAnimationFrame(previewAnimId);
+      previewAnimId = null;
+    }
+  }
+
+  function disposePreview() {
+    stopPreview();
+    if (previewCarMesh) {
+      previewScene.remove(previewCarMesh);
+      disposeObject(previewCarMesh);
+      previewCarMesh = null;
+    }
+    if (previewRenderer) {
+      previewRenderer.dispose();
+      previewRenderer = null;
+    }
+    previewScene = null;
+    previewCamera = null;
+  }
+
+  function disposeObject(obj) {
+    obj.traverse((child) => {
+      if (child.geometry) child.geometry.dispose();
+      if (child.material) {
+        if (Array.isArray(child.material)) {
+          child.material.forEach(m => m.dispose());
+        } else {
+          child.material.dispose();
+        }
+      }
+    });
+  }
+
+  // --- UI transitions ---
+
+  function showCarSelector(mode) {
+    selectedMode = mode;
+    lobbyButtons.style.display = 'none';
+    carSelector.style.display = 'flex';
+
+    initPreview();
+    chosenVariant = generateCarVariant(COLORS.CYAN);
+    setPreviewCar(chosenVariant);
+    startPreviewLoop();
+  }
+
+  function hideCarSelector() {
+    stopPreview();
+    disposePreview();
+    carSelector.style.display = 'none';
+    lobbyButtons.style.display = '';
+    selectedMode = null;
+    chosenVariant = null;
+  }
+
+  function startGame() {
+    stopPreview();
+    disposePreview();
+    carSelector.style.display = 'none';
     lobby.style.display = 'none';
-    const game = new Game(canvas);
-    window.game = game;
+
+    if (selectedMode === 'multiplayer') {
+      const network = new NetworkManager();
+      const game = new Game(canvas, 'multiplayer', network, chosenVariant);
+      window.game = game;
+    } else {
+      const game = new Game(canvas, 'singleplayer', null, chosenVariant);
+      window.game = game;
+    }
+  }
+
+  // --- Button handlers ---
+
+  btnSingle.addEventListener('click', () => {
+    showCarSelector('singleplayer');
   });
 
   btnMulti.addEventListener('click', () => {
-    lobby.style.display = 'none';
-    const network = new NetworkManager();
-    const game = new Game(canvas, 'multiplayer', network);
-    window.game = game;
+    showCarSelector('multiplayer');
+  });
+
+  btnRandomize.addEventListener('click', () => {
+    chosenVariant = generateCarVariant(COLORS.CYAN);
+    setPreviewCar(chosenVariant);
+  });
+
+  btnLetsGo.addEventListener('click', () => {
+    startGame();
+  });
+
+  btnBack.addEventListener('click', () => {
+    hideCarSelector();
   });
 });
