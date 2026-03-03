@@ -24,12 +24,17 @@ const io = new Server(server, {
 const PORT = process.env.PORT || 3001;
 
 // Serve static files from dist (production build)
-app.use(express.static(join(__dirname, '..', 'dist')));
+// Check both possible build output locations
+import { existsSync } from 'fs';
+const distPath = existsSync(join(__dirname, '..', 'dist', 'index.html'))
+  ? join(__dirname, '..', 'dist')
+  : join(__dirname, '..', 'client', 'dist');
+
+app.use(express.static(distPath));
 
 // Fallback to index.html for SPA
 app.get('*', (req, res) => {
-  const indexPath = join(__dirname, '..', 'dist', 'index.html');
-  res.sendFile(indexPath, (err) => {
+  res.sendFile(join(distPath, 'index.html'), (err) => {
     if (err) {
       res.status(404).send('Not found');
     }
