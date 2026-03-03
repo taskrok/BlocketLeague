@@ -28,7 +28,12 @@ app.use(express.static(join(__dirname, '..', 'dist')));
 
 // Fallback to index.html for SPA
 app.get('*', (req, res) => {
-  res.sendFile(join(__dirname, '..', 'dist', 'index.html'));
+  const indexPath = join(__dirname, '..', 'dist', 'index.html');
+  res.sendFile(indexPath, (err) => {
+    if (err) {
+      res.status(404).send('Not found');
+    }
+  });
 });
 
 // ========== ROOM MANAGEMENT ==========
