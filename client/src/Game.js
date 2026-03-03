@@ -85,16 +85,33 @@ export class Game {
   }
 
   _initRenderer() {
+    const isIOS = /iPad|iPhone|iPod/.test(navigator.userAgent) ||
+      (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1);
+    this._isIOS = isIOS;
+
     this.renderer = new THREE.WebGLRenderer({
       canvas: this.canvas,
-      antialias: true,
-      powerPreference: 'high-performance',
+      antialias: !isIOS,
+      powerPreference: isIOS ? 'default' : 'high-performance',
     });
     this.renderer.setSize(window.innerWidth, window.innerHeight);
     this.renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
     this.renderer.shadowMap.enabled = false;
     this.renderer.toneMapping = THREE.ACESFilmicToneMapping;
     this.renderer.toneMappingExposure = 1.2;
+
+    // Handle WebGL context loss (common on iOS when backgrounding)
+    this.canvas.addEventListener('webglcontextlost', (e) => {
+      e.preventDefault();
+      this.hud.showStatus('WebGL context lost — tap to reload');
+      this._destroyed = true;
+    });
+    this.canvas.addEventListener('webglcontextrestored', () => {
+      window.location.reload();
+    });
+    this.canvas.addEventListener('click', () => {
+      if (this._destroyed) window.location.reload();
+    });
 
     this._onResize = () => {
       this.camera.aspect = window.innerWidth / window.innerHeight;
@@ -327,15 +344,18 @@ export class Game {
     const renderPass = new RenderPass(this.scene, this.camera);
     this.composer.addPass(renderPass);
 
-    // Use half-resolution for bloom to reduce GPU cost
-    const bloomPass = new UnrealBloomPass(
-      new THREE.Vector2(
-        Math.floor(window.innerWidth / 2),
-        Math.floor(window.innerHeight / 2)
-      ),
-      0.8, 0.4, 0.85
-    );
-    this.composer.addPass(bloomPass);
+    // Skip bloom on iOS — render targets exceed Safari's GPU memory limits
+    if (!this._isIOS) {
+      // Use half-resolution for bloom to reduce GPU cost
+      const bloomPass = new UnrealBloomPass(
+        new THREE.Vector2(
+          Math.floor(window.innerWidth / 2),
+          Math.floor(window.innerHeight / 2)
+        ),
+        0.8, 0.4, 0.85
+      );
+      this.composer.addPass(bloomPass);
+    }
   }
 
   _initBallCollisionHandler() {
