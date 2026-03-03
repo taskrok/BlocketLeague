@@ -22,6 +22,10 @@ export class CameraController {
     this.currentPos = new THREE.Vector3();
     this.currentLookAt = new THREE.Vector3();
     this.initialized = false;
+
+    // Camera swivel (right stick / J,L keys)
+    this.maxSwivel = Math.PI * 0.8; // ~144° max rotation
+    this._swivelAngle = 0;          // current smoothed swivel angle
   }
 
   setTarget(car) {
@@ -51,10 +55,19 @@ export class CameraController {
     if (settings.smoothness !== undefined) this.smoothSpeed = settings.smoothness;
   }
 
-  update(dt, ballCamEnabled) {
+  update(dt, ballCamEnabled, lookX = 0) {
     if (!this.target) return;
 
     this.ballCam = ballCamEnabled;
+
+    // Smooth the swivel angle for analog feel
+    const targetSwivel = lookX * this.maxSwivel;
+    const swivelSmooth = 1 - Math.exp(-12 * dt);
+    this._swivelAngle += (targetSwivel - this._swivelAngle) * swivelSmooth;
+    // Snap to zero when close to avoid drift
+    if (Math.abs(this._swivelAngle) < 0.005 && lookX === 0) this._swivelAngle = 0;
+
+    const isSwiveling = Math.abs(this._swivelAngle) > 0.01;
 
     const carPos = new THREE.Vector3().copy(this.target.body.position);
     const carQuat = new THREE.Quaternion().copy(this.target.body.quaternion);
@@ -64,6 +77,16 @@ export class CameraController {
     backward.applyQuaternion(carQuat);
     backward.y = 0;
     backward.normalize();
+
+    // Apply swivel: rotate the backward vector around Y axis
+    if (isSwiveling) {
+      const cos = Math.cos(this._swivelAngle);
+      const sin = Math.sin(this._swivelAngle);
+      const bx = backward.x * cos - backward.z * sin;
+      const bz = backward.x * sin + backward.z * cos;
+      backward.x = bx;
+      backward.z = bz;
+    }
 
     // Desired camera position: behind and above car
     const desiredPos = new THREE.Vector3(
@@ -75,7 +98,14 @@ export class CameraController {
     // Where camera should look
     let desiredLookAt;
 
-    if (this.ballCam && this.ballTarget) {
+    if (isSwiveling) {
+      // While swiveling, look past the car in the swivel direction
+      desiredLookAt = new THREE.Vector3(
+        carPos.x - backward.x * 5,
+        carPos.y + this.lookHeight,
+        carPos.z - backward.z * 5
+      );
+    } else if (this.ballCam && this.ballTarget) {
       const ballPos = new THREE.Vector3().copy(this.ballTarget.body.position);
 
       // In ball cam, position camera so car is between camera and ball
@@ -110,7 +140,9 @@ export class CameraController {
       this.initialized = true;
     }
 
-    const lerpFactor = 1 - Math.exp(-this.smoothSpeed * dt);
+    // Use faster lerp when swiveling for responsive feel
+    const speed = isSwiveling ? Math.max(this.smoothSpeed, 10) : this.smoothSpeed;
+    const lerpFactor = 1 - Math.exp(-speed * dt);
     this.currentPos.lerp(desiredPos, lerpFactor);
     this.currentLookAt.lerp(desiredLookAt, lerpFactor);
 

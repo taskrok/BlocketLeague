@@ -25,10 +25,12 @@ function randChoice(arr) {
 /**
  * Generate a random car variant configuration.
  * @param {number} teamColor - Hex color for team identity (used as neon base)
+ * @param {string[]} [availableModelIds=[]] - IDs of loaded GLB models to pick from
  * @returns {object} variant config
  */
-export function generateCarVariant(teamColor) {
+export function generateCarVariant(teamColor, availableModelIds = []) {
   return {
+    modelId: availableModelIds.length > 0 ? randChoice(availableModelIds) : null,
     bodyColor: randHex(0, 200, 0, 200, 0, 200),
     neonColor: teamColor || randHex(50, 255, 50, 255, 50, 255),
     wheelAccentColor: randHex(30, 180, 30, 180, 30, 180),

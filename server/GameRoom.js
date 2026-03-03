@@ -418,6 +418,8 @@ export class GameRoom {
       pitchUp: false,
       pitchDown: false,
       handbrake: false,
+      dodgeForward: 0,
+      dodgeSteer: 0,
     };
   }
 }

@@ -101,6 +101,8 @@ export class NetworkManager {
       pitchUp: inputState.pitchUp,
       pitchDown: inputState.pitchDown,
       handbrake: inputState.handbrake,
+      dodgeForward: inputState.dodgeForward,
+      dodgeSteer: inputState.dodgeSteer,
     };
 
     if (this.socket) {

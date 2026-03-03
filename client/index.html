@@ -41,9 +41,15 @@
       <div id="status-text"></div>
     </div>
     <div id="controls-hint">
-      <p>WASD - Drive | SPACE - Jump | SHIFT - Boost | C - Ball Cam</p>
+      <p>WASD - Drive | SPACE - Jump | SHIFT - Boost | C - Ball Cam | J/L - Look</p>
     </div>
     <div id="lobby">
+      <div id="loading-screen">
+        <span class="loading-text">Loading models...</span>
+        <div class="loading-bar">
+          <div class="loading-fill" id="loading-fill"></div>
+        </div>
+      </div>
       <div class="lobby-title-wrap">
         <span class="lobby-title">BLOCKET LEAGUE</span>
         <span class="lobby-title lobby-title-reflect">BLOCKET LEAGUE</span>
@@ -53,9 +59,14 @@
         <button id="btn-multiplayer" class="lobby-btn lobby-btn-online">Play Online</button>
       </div>
       <div id="car-selector">
+        <div class="car-model-nav">
+          <button id="btn-prev-model" class="lobby-btn lobby-btn-nav">&lt;</button>
+          <span id="car-model-name" class="car-model-label">Loading...</span>
+          <button id="btn-next-model" class="lobby-btn lobby-btn-nav">&gt;</button>
+        </div>
         <canvas id="car-preview"></canvas>
         <div class="car-selector-buttons">
-          <button id="btn-randomize" class="lobby-btn">Randomize</button>
+          <button id="btn-randomize" class="lobby-btn">Random Colors</button>
           <button id="btn-letsgo" class="lobby-btn">Let's Go</button>
         </div>
         <button id="btn-back" class="lobby-btn lobby-btn-back">Back</button>

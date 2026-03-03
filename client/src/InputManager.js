@@ -20,6 +20,7 @@ const GP_RT = 7;
 // Xbox axis indices
 const GP_AXIS_LEFT_X = 0;
 const GP_AXIS_LEFT_Y = 1;
+const GP_AXIS_RIGHT_X = 2;
 
 export class InputManager {
   constructor() {
@@ -35,11 +36,18 @@ export class InputManager {
       pitchUp: false,
       pitchDown: false,
       handbrake: false,
+      lookX: 0,         // -1 (look left) to 1 (look right) — right stick / J,L keys
+      dodgeForward: 0,  // -1 to 1, dodge direction (separate from throttle)
+      dodgeSteer: 0,    // -1 to 1, dodge direction (separate from steer)
     };
 
     // Keyboard edge detection
     this._jumpWasDown = false;
     this._ballCamToggle = false;
+
+    // Track most recently pressed direction key (for dodge direction when both held)
+    this._lastThrottleDir = 0;
+    this._lastSteerDir = 0;
 
     // Gamepad edge detection (separate from keyboard)
     this._gpJumpWasDown = false;
@@ -51,6 +59,11 @@ export class InputManager {
     window.addEventListener('keydown', (e) => {
       if (e.key === 'F12') return; // allow dev tools
       this.keys[e.code] = true;
+      // Track most recently pressed direction for dodge resolution
+      if (e.code === 'KeyW' || e.code === 'ArrowUp') this._lastThrottleDir = 1;
+      if (e.code === 'KeyS' || e.code === 'ArrowDown') this._lastThrottleDir = -1;
+      if (e.code === 'KeyA' || e.code === 'ArrowLeft') this._lastSteerDir = 1;
+      if (e.code === 'KeyD' || e.code === 'ArrowRight') this._lastSteerDir = -1;
       e.preventDefault();
     });
 
@@ -135,6 +148,13 @@ export class InputManager {
 
     const handbrake = gp.buttons[GP_X] ? gp.buttons[GP_X].pressed : false;
 
+    // Right stick X — camera swivel
+    const lookX = this._applyDeadzone(gp.axes[GP_AXIS_RIGHT_X] || 0);
+
+    // Dodge direction from left stick (separate from triggers for throttle)
+    const dodgeForward = -stickY; // stick-forward (negative Y) = positive dodge
+    const dodgeSteer = steer;     // same as steering direction
+
     return {
       throttle,
       steer,
@@ -147,6 +167,9 @@ export class InputManager {
       pitchUp,
       pitchDown,
       handbrake,
+      lookX,
+      dodgeForward,
+      dodgeSteer,
     };
   }
 
@@ -181,6 +204,17 @@ export class InputManager {
 
     const kbHandbrake = !!(k['ControlLeft'] || k['ControlRight']);
 
+    // Camera swivel: J = look left (-1), L = look right (+1)
+    const kbLookLeft = k['KeyJ'] ? -1 : 0;
+    const kbLookRight = k['KeyL'] ? 1 : 0;
+    const kbLookX = kbLookLeft + kbLookRight;
+
+    // Dodge direction: "most recently pressed key wins" when both opposites held
+    const kbBothThrottle = kbForward && kbBackward;
+    const kbDodgeForward = kbBothThrottle ? this._lastThrottleDir : kbThrottle;
+    const kbBothSteer = kbLeft && kbRight;
+    const kbDodgeSteer = kbBothSteer ? this._lastSteerDir : kbSteer;
+
     // --- Touch (mobile only, lazy-loaded) ---
     if (this._touch) this._touch.update();
     const tc = this._touchState;
@@ -200,6 +234,9 @@ export class InputManager {
       this.state.pitchUp = kbPitchUp;
       this.state.pitchDown = kbPitchDown;
       this.state.handbrake = kbHandbrake;
+      this.state.lookX = kbLookX;
+      this.state.dodgeForward = kbDodgeForward;
+      this.state.dodgeSteer = kbDodgeSteer;
       return;
     }
 
@@ -239,6 +276,22 @@ export class InputManager {
 
     // Handbrake: OR (!! coerce — tc guard can return null instead of false)
     this.state.handbrake = !!(kbHandbrake || (gp && gp.handbrake) || (tc && tc.handbrake));
+
+    // Camera swivel: max-magnitude (gamepad analog, keyboard digital)
+    let lookX = kbLookX;
+    if (gp && Math.abs(gp.lookX) > Math.abs(lookX)) lookX = gp.lookX;
+    this.state.lookX = lookX;
+
+    // Dodge direction: max-magnitude merge
+    let dodgeForward = kbDodgeForward;
+    if (gp && Math.abs(gp.dodgeForward) > Math.abs(dodgeForward)) dodgeForward = gp.dodgeForward;
+    if (tc && Math.abs(tc.dodgeForward || 0) > Math.abs(dodgeForward)) dodgeForward = tc.dodgeForward;
+    this.state.dodgeForward = dodgeForward;
+
+    let dodgeSteer = kbDodgeSteer;
+    if (gp && Math.abs(gp.dodgeSteer) > Math.abs(dodgeSteer)) dodgeSteer = gp.dodgeSteer;
+    if (tc && Math.abs(tc.dodgeSteer || 0) > Math.abs(dodgeSteer)) dodgeSteer = tc.dodgeSteer;
+    this.state.dodgeSteer = dodgeSteer;
   }
 
   _showGamepadNotification(message) {

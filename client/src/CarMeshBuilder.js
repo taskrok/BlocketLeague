@@ -1,21 +1,311 @@
 // ============================================
-// CarMeshBuilder - Builds a detailed Three.js Group from a variant config
-// ~35-45 mesh parts depending on aero/roof/door options
+// CarMeshBuilder - Builds a Three.js Group from a variant config
+// Supports both GLB models and procedural (~35-45 mesh parts) fallback
 // ============================================
 
 import * as THREE from 'three';
 import { CAR } from '../../shared/constants.js';
+import { modelLoader } from './ModelLoader.js';
 
 const W = CAR.WIDTH;    // 2.2
 const H = CAR.HEIGHT;   // 1.1
 const L = CAR.LENGTH;   // 3.6
 
 /**
- * Build a detailed car mesh from a variant config.
+ * Build a car mesh from a variant config.
+ * Uses GLB model if config.modelId is set and cached, otherwise procedural.
  * @param {object} config - from generateCarVariant()
  * @returns {{ mesh: THREE.Group, wheels: THREE.Object3D[], bottomLight: THREE.PointLight }}
  */
 export function buildCarMesh(config) {
+  if (config.modelId) {
+    const glbResult = buildFromGLB(config);
+    if (glbResult) return glbResult;
+  }
+  return buildProceduralCarMesh(config);
+}
+
+/**
+ * Build car mesh from a cached GLB model.
+ * @returns {{ mesh: THREE.Group, wheels: THREE.Object3D[], bottomLight: THREE.PointLight }|null}
+ */
+function buildFromGLB(config) {
+  const clone = modelLoader.getModel(config.modelId);
+  if (!clone) return null;
+
+  const mesh = new THREE.Group();
+
+  // --- Normalize size to fit CAR dimensions ---
+  const box = new THREE.Box3().setFromObject(clone);
+  const size = new THREE.Vector3();
+  box.getSize(size);
+  const center = new THREE.Vector3();
+  box.getCenter(center);
+
+  // Scale to fill the car footprint (width × length), ignoring height
+  // so all models end up the same general size regardless of shape
+  const scaleX = W / Math.max(size.x, 0.001);
+  const scaleZ = L / Math.max(size.z, 0.001);
+  const scale = Math.min(scaleX, scaleZ);
+  clone.scale.multiplyScalar(scale);
+
+  // Re-center after scaling
+  center.multiplyScalar(scale);
+  clone.position.set(-center.x, -center.y, -center.z);
+
+  // Align bottom to -H/2
+  const boxAfter = new THREE.Box3().setFromObject(clone);
+  const bottomOffset = boxAfter.min.y - (-H / 2);
+  clone.position.y -= bottomOffset;
+
+  mesh.add(clone);
+
+  // --- Extract wheels ---
+  const wheelCandidates = [];
+  clone.traverse((child) => {
+    if (child.isMesh && child.name && child.name.toLowerCase().includes('wheel')) {
+      wheelCandidates.push(child);
+    }
+  });
+
+  // Sort by position: front/back (z desc), then left/right (x asc)
+  // Target order: FL, FR, RL, RR
+  wheelCandidates.sort((a, b) => {
+    const posA = new THREE.Vector3();
+    const posB = new THREE.Vector3();
+    a.getWorldPosition(posA);
+    b.getWorldPosition(posB);
+    // Split by z (front vs rear)
+    const zDiff = posB.z - posA.z;
+    if (Math.abs(zDiff) > 0.1) return zDiff;
+    // Same z-zone → sort by x
+    return posA.x - posB.x;
+  });
+
+  const wheels = [];
+  // Take up to 4 wheels
+  for (let i = 0; i < Math.min(4, wheelCandidates.length); i++) {
+    wheels.push(wheelCandidates[i]);
+  }
+  // Pad with invisible dummy Object3Ds if needed
+  while (wheels.length < 4) {
+    const dummy = new THREE.Object3D();
+    mesh.add(dummy);
+    wheels.push(dummy);
+  }
+
+  // --- Recolor body panels via texture atlas swap ---
+  // Kenney models share a colormap texture atlas (grid of solid color blocks).
+  // Find the "body" mesh, sample its UVs to identify which color block is
+  // the body paint, then replace those pixels with config.bodyColor.
+  _recolorBodyTexture(clone, config.bodyColor);
+
+  // --- Swap to MeshBasicMaterial (arena lighting is too dark for PBR) ---
+  clone.traverse((child) => {
+    if (child.isMesh && child.material) {
+      const mats = Array.isArray(child.material) ? child.material : [child.material];
+      const newMats = mats.map((mat) => {
+        const basic = new THREE.MeshBasicMaterial({
+          color: new THREE.Color(0xb8b8b8),
+          map: mat.map || null,
+          vertexColors: !!mat.vertexColors,
+        });
+        mat.dispose();
+        return basic;
+      });
+      child.material = newMats.length === 1 ? newMats[0] : newMats;
+    }
+  });
+
+  // --- Compute actual model bounds for neon strip sizing ---
+  const actualBox = new THREE.Box3().setFromObject(clone);
+  const actualSize = new THREE.Vector3();
+  actualBox.getSize(actualSize);
+  const actualCenter = new THREE.Vector3();
+  actualBox.getCenter(actualCenter);
+  const mW = actualSize.x;  // actual model width
+  const mH = actualSize.y;  // actual model height
+  const mL = actualSize.z;  // actual model length
+  const mCx = actualCenter.x;
+  const mCz = actualCenter.z;
+  const mBottom = actualBox.min.y;
+
+  // --- Team color: underglow light pool (no visible geometry strips) ---
+  // Soft colored light on the ground beneath the car
+  const underGlowGeo = new THREE.PlaneGeometry(mW * 1.1, mL * 1.1);
+  const underGlowMat = new THREE.MeshBasicMaterial({
+    color: config.neonColor,
+    transparent: true,
+    opacity: 0.25,
+    side: THREE.DoubleSide,
+    depthWrite: false,
+  });
+  const underGlow = new THREE.Mesh(underGlowGeo, underGlowMat);
+  underGlow.rotation.x = -Math.PI / 2;
+  underGlow.position.set(mCx, mBottom - 0.04, mCz);
+  mesh.add(underGlow);
+
+  // Point light casts team color onto the ground
+  const bottomLight = new THREE.PointLight(config.neonColor, 2, 10);
+  bottomLight.position.set(mCx, mBottom - 0.2, mCz);
+  mesh.add(bottomLight);
+
+  return { mesh, wheels, bottomLight };
+}
+
+/**
+ * Recolor the body panels by modifying the shared colormap texture.
+ * 1. Find the "body" mesh (by name, or largest mesh)
+ * 2. Sample its UVs to find the dominant color block in the texture
+ * 3. Replace all pixels of that color with the new bodyColor
+ * 4. Assign the modified texture as a new CanvasTexture
+ */
+function _recolorBodyTexture(clone, bodyColorHex) {
+  // Find the body mesh — prefer one named "body", fall back to largest
+  let bodyMesh = null;
+  let largestMesh = null;
+  let largestCount = 0;
+
+  clone.traverse((child) => {
+    if (!child.isMesh) return;
+    if (child.name && child.name.toLowerCase().includes('body')) {
+      bodyMesh = child;
+    }
+    const count = child.geometry ? (child.geometry.index ? child.geometry.index.count : child.geometry.getAttribute('position')?.count || 0) : 0;
+    if (count > largestCount) {
+      largestCount = count;
+      largestMesh = child;
+    }
+  });
+  bodyMesh = bodyMesh || largestMesh;
+  if (!bodyMesh) return;
+
+  // Get the texture from the body mesh's material
+  const mat = Array.isArray(bodyMesh.material) ? bodyMesh.material[0] : bodyMesh.material;
+  const tex = mat && mat.map;
+  if (!tex || !tex.image) return;
+
+  const img = tex.image;
+  const w = img.width || img.naturalWidth || 512;
+  const h = img.height || img.naturalHeight || 512;
+
+  // Draw texture to offscreen canvas
+  const canvas = document.createElement('canvas');
+  canvas.width = w;
+  canvas.height = h;
+  const ctx = canvas.getContext('2d');
+  ctx.drawImage(img, 0, 0, w, h);
+  const imageData = ctx.getImageData(0, 0, w, h);
+  const pixels = imageData.data;
+
+  // Sample body mesh UVs to find which color block it uses
+  const uvAttr = bodyMesh.geometry.getAttribute('uv');
+  if (!uvAttr) return;
+
+  // Sample body mesh UVs with BOTH UV conventions (GLTF top-left vs
+  // OpenGL bottom-left) and merge results. Quantize to grid cells in
+  // the colormap palette. The body mesh only contains body panels, so
+  // ALL cells its UVs hit are body colors and should be replaced.
+  const GRID_COLS = 8;
+  const GRID_ROWS = 4;
+  const cellW = Math.floor(w / GRID_COLS);
+  const cellH = Math.floor(h / GRID_ROWS);
+
+  const cellCounts = new Map();
+  for (let i = 0; i < uvAttr.count; i++) {
+    const u = uvAttr.getX(i);
+    const v = uvAttr.getY(i);
+    const px = Math.min(w - 1, Math.max(0, Math.floor(u * w)));
+
+    // Try both conventions, add both
+    for (const pyVal of [v * h, (1 - v) * h]) {
+      const py = Math.min(h - 1, Math.max(0, Math.floor(pyVal)));
+      const col = Math.min(GRID_COLS - 1, Math.floor(px / cellW));
+      const row = Math.min(GRID_ROWS - 1, Math.floor(py / cellH));
+      const key = col + ',' + row;
+      cellCounts.set(key, (cellCounts.get(key) || 0) + 1);
+    }
+  }
+
+  // Sort cells by frequency, replace ALL that have significant coverage
+  const totalSamples = uvAttr.count * 2;
+  const sortedCells = [...cellCounts.entries()]
+    .sort((a, b) => b[1] - a[1])
+    .filter(([, count]) => count > totalSamples * 0.03); // >3% coverage
+
+  if (sortedCells.length === 0) return;
+
+  // Skip cells whose average color is very dark (tires/black trim)
+  // or very light (windows/white). Only recolor chromatic cells.
+  const chromCells = sortedCells.filter(([key]) => {
+    const [col, row] = key.split(',').map(Number);
+    const cx = col * cellW + Math.floor(cellW / 2);
+    const cy = row * cellH + Math.floor(cellH / 2);
+    const idx = (cy * w + cx) * 4;
+    const r = pixels[idx], g = pixels[idx + 1], b = pixels[idx + 2];
+    const brightness = (r + g + b) / 3;
+    return brightness > 40 && brightness < 230;
+  });
+
+  if (chromCells.length === 0) return;
+
+  const newColor = new THREE.Color(bodyColorHex);
+
+  // Replace all body cells — primary gets bodyColor, others get
+  // progressively darker shades for a natural two-tone look
+  const cellsToReplace = chromCells.map(([key], i) => {
+    const shade = newColor.clone();
+    if (i > 0) shade.multiplyScalar(Math.max(0.5, 1 - i * 0.15));
+    const [col, row] = key.split(',').map(Number);
+    return {
+      col, row,
+      r: Math.round(shade.r * 255),
+      g: Math.round(shade.g * 255),
+      b: Math.round(shade.b * 255),
+    };
+  });
+
+  for (const cell of cellsToReplace) {
+    const startX = cell.col * cellW;
+    const startY = cell.row * cellH;
+    for (let cy = startY; cy < startY + cellH && cy < h; cy++) {
+      for (let cx = startX; cx < startX + cellW && cx < w; cx++) {
+        const idx = (cy * w + cx) * 4;
+        pixels[idx] = cell.r;
+        pixels[idx + 1] = cell.g;
+        pixels[idx + 2] = cell.b;
+      }
+    }
+  }
+
+  ctx.putImageData(imageData, 0, 0);
+
+  // Create a new CanvasTexture and assign to ALL meshes sharing this texture
+  const newTex = new THREE.CanvasTexture(canvas);
+  newTex.flipY = tex.flipY;
+  newTex.wrapS = tex.wrapS;
+  newTex.wrapT = tex.wrapT;
+  newTex.colorSpace = tex.colorSpace;
+
+  clone.traverse((child) => {
+    if (!child.isMesh) return;
+    const mats = Array.isArray(child.material) ? child.material : [child.material];
+    mats.forEach((m) => {
+      if (m.map === tex) {
+        m.map = newTex;
+        m.needsUpdate = true;
+      }
+    });
+  });
+}
+
+/**
+ * Build a detailed procedural car mesh from a variant config.
+ * ~35-45 mesh parts depending on aero/roof/door options
+ * @param {object} config - from generateCarVariant()
+ * @returns {{ mesh: THREE.Group, wheels: THREE.Object3D[], bottomLight: THREE.PointLight }}
+ */
+function buildProceduralCarMesh(config) {
   const mesh = new THREE.Group();
   const wheels = [];
 

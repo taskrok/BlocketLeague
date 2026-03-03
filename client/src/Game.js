@@ -12,6 +12,7 @@ import { UnrealBloomPass } from 'three/examples/jsm/postprocessing/UnrealBloomPa
 import { Arena } from './Arena.js';
 import { Car } from './Car.js';
 import { generateCarVariant } from './CarVariants.js';
+import { modelLoader } from './ModelLoader.js';
 import { Ball } from './Ball.js';
 import { BoostPads } from './BoostPads.js';
 import { InputManager } from './InputManager.js';
@@ -158,8 +159,9 @@ export class Game {
     this.ball = new Ball(this.scene, this.world);
     this.ball.body.material = this.ballMaterial;
 
-    const playerVariant = this.playerVariant || generateCarVariant(COLORS.CYAN);
-    const opponentVariant = generateCarVariant(COLORS.ORANGE);
+    const modelIds = modelLoader.getModelIds();
+    const playerVariant = this.playerVariant || generateCarVariant(COLORS.CYAN, modelIds);
+    const opponentVariant = generateCarVariant(COLORS.ORANGE, modelIds);
 
     this.playerCar = new Car(
       this.scene, this.world,
@@ -214,7 +216,7 @@ export class Game {
 
     this.network.on('connected', () => {
       this.hud.showStatus('Searching for opponent...');
-      const variant = this.playerVariant || generateCarVariant(COLORS.CYAN);
+      const variant = this.playerVariant || generateCarVariant(COLORS.CYAN, modelLoader.getModelIds());
       this._localVariant = variant;
       this.network.joinGame(variant);
     });
@@ -505,7 +507,7 @@ export class Game {
 
     // Camera always updates
     if (this.cameraController) {
-      this.cameraController.update(dt, inputState.ballCam);
+      this.cameraController.update(dt, inputState.ballCam, inputState.lookX);
     }
 
     // HUD updates

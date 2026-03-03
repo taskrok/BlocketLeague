@@ -511,16 +511,19 @@ export class ServerCar {
     if (input.jumpPressed && !this.isGrounded && this.canDoubleJump &&
         (now - this.jumpTime) < CAR.JUMP_COOLDOWN) {
 
-      if (input.throttle !== 0 || input.steer !== 0) {
+      const df = input.dodgeForward !== undefined ? input.dodgeForward : input.throttle;
+      const ds = input.dodgeSteer !== undefined ? input.dodgeSteer : input.steer;
+
+      if (df !== 0 || ds !== 0) {
         const forward = this.body.quaternion.vmult(new CANNON.Vec3(0, 0, 1));
         const right = this.body.quaternion.vmult(new CANNON.Vec3(1, 0, 0));
         forward.y = 0; forward.normalize();
         right.y = 0; right.normalize();
 
         const dodgeDir = new CANNON.Vec3(
-          forward.x * input.throttle + right.x * input.steer,
+          forward.x * df + right.x * ds,
           0,
-          forward.z * input.throttle + right.z * input.steer
+          forward.z * df + right.z * ds
         );
         dodgeDir.normalize();
 
@@ -531,9 +534,9 @@ export class ServerCar {
         // Flip spin using DODGE_SPIN_SPEED (one rotation in DODGE_DURATION)
         // Normalize so diagonal flips have the same rotation speed as cardinal
         const localSpin = new CANNON.Vec3(
-          input.throttle,
+          df,
           0,
-          -input.steer
+          -ds
         );
         const spinLen = localSpin.length();
         if (spinLen > 0) localSpin.scale(CAR.DODGE_SPIN_SPEED / spinLen, localSpin);

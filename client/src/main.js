@@ -7,12 +7,14 @@ import { Game } from './Game.js';
 import { NetworkManager } from './NetworkManager.js';
 import { generateCarVariant } from './CarVariants.js';
 import { buildCarMesh } from './CarMeshBuilder.js';
+import { modelLoader } from './ModelLoader.js';
 import { COLORS } from '../../shared/constants.js';
 
-window.addEventListener('DOMContentLoaded', () => {
+window.addEventListener('DOMContentLoaded', async () => {
   const canvas = document.getElementById('game-canvas');
   const lobby = document.getElementById('lobby');
   const lobbyButtons = lobby.querySelector('.lobby-buttons');
+  const lobbyTitle = lobby.querySelector('.lobby-title-wrap');
   const carSelector = document.getElementById('car-selector');
   const previewCanvas = document.getElementById('car-preview');
   const btnSingle = document.getElementById('btn-singleplayer');
@@ -20,9 +22,16 @@ window.addEventListener('DOMContentLoaded', () => {
   const btnRandomize = document.getElementById('btn-randomize');
   const btnLetsGo = document.getElementById('btn-letsgo');
   const btnBack = document.getElementById('btn-back');
+  const btnPrevModel = document.getElementById('btn-prev-model');
+  const btnNextModel = document.getElementById('btn-next-model');
+  const carModelName = document.getElementById('car-model-name');
+  const loadingScreen = document.getElementById('loading-screen');
+  const loadingFill = document.getElementById('loading-fill');
 
   let selectedMode = null;
   let chosenVariant = null;
+  let currentModelIndex = 0;
+  let availableModelIds = [];
 
   // --- 3D Preview state ---
   let previewRenderer = null;
@@ -34,6 +43,23 @@ window.addEventListener('DOMContentLoaded', () => {
   canvas.addEventListener('click', () => {
     canvas.focus();
   });
+
+  // --- Preload models ---
+  // Hide lobby content while loading
+  lobbyButtons.style.display = 'none';
+  lobbyTitle.style.display = 'none';
+
+  await modelLoader.preloadAll((loaded, total) => {
+    const pct = Math.round((loaded / total) * 100);
+    loadingFill.style.width = pct + '%';
+  });
+
+  availableModelIds = modelLoader.getModelIds();
+
+  // Hide loading, show lobby
+  loadingScreen.classList.add('hidden');
+  lobbyButtons.style.display = '';
+  lobbyTitle.style.display = '';
 
   // --- Preview setup / teardown ---
 
@@ -80,6 +106,14 @@ window.addEventListener('DOMContentLoaded', () => {
     const result = buildCarMesh(variant);
     previewCarMesh = result.mesh;
     previewScene.add(previewCarMesh);
+  }
+
+  function updateModelLabel() {
+    if (availableModelIds.length > 0 && chosenVariant && chosenVariant.modelId) {
+      carModelName.textContent = modelLoader.getModelName(chosenVariant.modelId);
+    } else {
+      carModelName.textContent = 'Procedural';
+    }
   }
 
   function startPreviewLoop() {
@@ -136,8 +170,17 @@ window.addEventListener('DOMContentLoaded', () => {
     carSelector.style.display = 'flex';
 
     initPreview();
-    chosenVariant = generateCarVariant(COLORS.CYAN);
+
+    // Default to first model if available
+    if (availableModelIds.length > 0) {
+      currentModelIndex = 0;
+    }
+    chosenVariant = generateCarVariant(COLORS.CYAN, availableModelIds);
+    if (availableModelIds.length > 0) {
+      chosenVariant.modelId = availableModelIds[currentModelIndex];
+    }
     setPreviewCar(chosenVariant);
+    updateModelLabel();
     startPreviewLoop();
   }
 
@@ -176,8 +219,30 @@ window.addEventListener('DOMContentLoaded', () => {
     showCarSelector('multiplayer');
   });
 
+  // Prev/Next model buttons
+  btnPrevModel.addEventListener('click', () => {
+    if (availableModelIds.length === 0) return;
+    currentModelIndex = (currentModelIndex - 1 + availableModelIds.length) % availableModelIds.length;
+    chosenVariant.modelId = availableModelIds[currentModelIndex];
+    setPreviewCar(chosenVariant);
+    updateModelLabel();
+  });
+
+  btnNextModel.addEventListener('click', () => {
+    if (availableModelIds.length === 0) return;
+    currentModelIndex = (currentModelIndex + 1) % availableModelIds.length;
+    chosenVariant.modelId = availableModelIds[currentModelIndex];
+    setPreviewCar(chosenVariant);
+    updateModelLabel();
+  });
+
+  // Random Colors — re-rolls colors but keeps current model
   btnRandomize.addEventListener('click', () => {
-    chosenVariant = generateCarVariant(COLORS.CYAN);
+    const currentModelId = chosenVariant ? chosenVariant.modelId : null;
+    chosenVariant = generateCarVariant(COLORS.CYAN, availableModelIds);
+    if (currentModelId) {
+      chosenVariant.modelId = currentModelId;
+    }
     setPreviewCar(chosenVariant);
   });
 
