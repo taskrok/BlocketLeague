@@ -12,7 +12,12 @@ import { buildCarMesh } from './CarMeshBuilder.js';
 // Temp vectors reused each frame to avoid GC
 const _v1 = new CANNON.Vec3();
 const _v2 = new CANNON.Vec3();
+const _v3 = new CANNON.Vec3();
+const _v4 = new CANNON.Vec3();
+const _v5 = new CANNON.Vec3();
+const _euler = new CANNON.Vec3();
 const _q1 = new CANNON.Quaternion();
+const _hitNormal = new CANNON.Vec3();
 
 export class Car {
   constructor(scene, world, position, color = COLORS.CYAN, direction = 1, arenaTrimeshBody = null, variantConfig = null) {
@@ -495,7 +500,8 @@ export class Car {
   _handleSelfRight(input, dt) {
     if (this.onWall) return; // don't self-right when on a wall
 
-    const up = this.body.quaternion.vmult(new CANNON.Vec3(0, 1, 0));
+    _v1.set(0, 1, 0);
+    const up = this.body.quaternion.vmult(_v1);
     const onFloor = this.body.position.y < CAR.HEIGHT * 3;
 
     if (!onFloor) {
@@ -533,11 +539,9 @@ export class Car {
       this.body.velocity.y = 8;
     }
     // Rotate towards upright, preserving yaw
-    const euler = new CANNON.Vec3();
-    this.body.quaternion.toEuler(euler);
-    const target = new CANNON.Quaternion();
-    target.setFromEuler(0, euler.y, 0);
-    this.body.quaternion.slerp(target, slerpFactor, this.body.quaternion);
+    this.body.quaternion.toEuler(_euler);
+    _q1.setFromEuler(0, _euler.y, 0);
+    this.body.quaternion.slerp(_q1, slerpFactor, this.body.quaternion);
     this.body.angularVelocity.scale(0.3, this.body.angularVelocity);
   }
 
@@ -548,26 +552,29 @@ export class Car {
     const quat = this.body.quaternion;
     const normal = this.surfaceNormal;
 
-    // Get forward direction in world space
-    const rawForward = quat.vmult(new CANNON.Vec3(0, 0, 1));
+    // Get forward direction in world space (reuse _v1 as rawForward)
+    _v1.set(0, 0, 1);
+    quat.vmult(_v1, _v1);
 
     // Project forward onto the surface plane: forward - (forward·normal)*normal
-    const dot = rawForward.dot(normal);
-    const forward = new CANNON.Vec3(
-      rawForward.x - dot * normal.x,
-      rawForward.y - dot * normal.y,
-      rawForward.z - dot * normal.z
+    // Reuse _v2 as forward
+    const dot = _v1.dot(normal);
+    _v2.set(
+      _v1.x - dot * normal.x,
+      _v1.y - dot * normal.y,
+      _v1.z - dot * normal.z
     );
-    const fLen = forward.length();
+    const fLen = _v2.length();
     if (fLen < 0.001) return;
-    forward.scale(1 / fLen, forward);
+    _v2.scale(1 / fLen, _v2);
+    const forward = _v2;
 
-    // Right direction: cross(forward, normal)
-    const right = new CANNON.Vec3();
-    forward.cross(normal, right);
-    const rLen = right.length();
+    // Right direction: cross(forward, normal) — reuse _v3
+    forward.cross(normal, _v3);
+    const rLen = _v3.length();
     if (rLen < 0.001) return;
-    right.scale(1 / rLen, right);
+    _v3.scale(1 / rLen, _v3);
+    const right = _v3;
 
     // Current forward speed
     const forwardSpeed = vel.dot(forward);
@@ -644,26 +651,26 @@ export class Car {
 
   _alignToSurface(dt) {
     const normal = this.surfaceNormal;
-    const carUp = this.body.quaternion.vmult(new CANNON.Vec3(0, 1, 0));
+    // Reuse _v4 as carUp
+    _v4.set(0, 1, 0);
+    this.body.quaternion.vmult(_v4, _v4);
 
     // If already aligned, skip
-    if (carUp.dot(normal) > 0.999) return;
+    if (_v4.dot(normal) > 0.999) return;
 
-    // Find rotation from carUp to normal
-    const cross = new CANNON.Vec3();
-    carUp.cross(normal, cross);
-    const crossLen = cross.length();
+    // Find rotation from carUp to normal — reuse _v5 as cross
+    _v4.cross(normal, _v5);
+    const crossLen = _v5.length();
     if (crossLen < 0.0001) return;
-    cross.scale(1 / crossLen, cross);
+    _v5.scale(1 / crossLen, _v5);
 
-    const dotVal = Math.min(1, Math.max(-1, carUp.dot(normal)));
+    const dotVal = Math.min(1, Math.max(-1, _v4.dot(normal)));
     const angle = Math.acos(dotVal);
 
     // Slerp toward aligned orientation
     const slerpFactor = Math.min(1, 8 * dt); // fast alignment
-    const correction = new CANNON.Quaternion();
-    correction.setFromAxisAngle(cross, angle * slerpFactor);
-    correction.mult(this.body.quaternion, this.body.quaternion);
+    _q1.setFromAxisAngle(_v5, angle * slerpFactor);
+    _q1.mult(this.body.quaternion, this.body.quaternion);
     this.body.quaternion.normalize();
   }
 
@@ -737,34 +744,29 @@ export class Car {
       const ds = input.dodgeSteer !== undefined ? input.dodgeSteer : input.steer;
 
       if (df !== 0 || ds !== 0) {
-        // Dodge in the input direction
-        const forward = this.body.quaternion.vmult(new CANNON.Vec3(0, 0, 1));
-        const right = this.body.quaternion.vmult(new CANNON.Vec3(1, 0, 0));
-        forward.y = 0; forward.normalize();
-        right.y = 0; right.normalize();
+        // Dodge in the input direction — reuse _v1 as forward, _v2 as right
+        _v1.set(0, 0, 1);
+        this.body.quaternion.vmult(_v1, _v1);
+        _v2.set(1, 0, 0);
+        this.body.quaternion.vmult(_v2, _v2);
+        _v1.y = 0; _v1.normalize();
+        _v2.y = 0; _v2.normalize();
 
-        const dodgeDir = new CANNON.Vec3(
-          forward.x * df + right.x * ds,
-          0,
-          forward.z * df + right.z * ds
-        );
-        dodgeDir.normalize();
+        // _v3 as dodgeDir
+        _v3.set(_v1.x * df + _v2.x * ds, 0, _v1.z * df + _v2.z * ds);
+        _v3.normalize();
 
         // Speed burst in dodge direction
-        this.body.velocity.x += dodgeDir.x * CAR.DODGE_FORCE;
-        this.body.velocity.z += dodgeDir.z * CAR.DODGE_FORCE;
+        this.body.velocity.x += _v3.x * CAR.DODGE_FORCE;
+        this.body.velocity.z += _v3.z * CAR.DODGE_FORCE;
         this.body.velocity.y = Math.max(this.body.velocity.y, CAR.DODGE_VERTICAL);
 
         // Flip spin using DODGE_SPIN_SPEED (one rotation in DODGE_DURATION)
         // Normalize so diagonal flips have the same rotation speed as cardinal
-        const localSpin = new CANNON.Vec3(
-          df,
-          0,
-          -ds
-        );
-        const spinLen = localSpin.length();
-        if (spinLen > 0) localSpin.scale(CAR.DODGE_SPIN_SPEED / spinLen, localSpin);
-        this._dodgeAngVel = this.body.quaternion.vmult(localSpin);
+        _v4.set(df, 0, -ds);
+        const spinLen = _v4.length();
+        if (spinLen > 0) _v4.scale(CAR.DODGE_SPIN_SPEED / spinLen, _v4);
+        this._dodgeAngVel = this.body.quaternion.vmult(_v4);
         this.body.angularVelocity.copy(this._dodgeAngVel);
 
         this.isDodging = true;
@@ -787,9 +789,8 @@ export class Car {
       this.isDodging = false;
       // Zero angular velocity and snap to wheels-down (preserve yaw only)
       this.body.angularVelocity.set(0, 0, 0);
-      const euler = new CANNON.Vec3();
-      this.body.quaternion.toEuler(euler);
-      this.body.quaternion.setFromEuler(0, euler.y, 0);
+      this.body.quaternion.toEuler(_euler);
+      this.body.quaternion.setFromEuler(0, _euler.y, 0);
       this._dodgeDecaying = true;
       this._dodgeDecayStart = now;
     }
@@ -809,11 +810,12 @@ export class Car {
       this.boost -= CAR.BOOST_USAGE_RATE * dt;
       if (this.boost < 0) this.boost = 0;
 
-      const forward = this.body.quaternion.vmult(new CANNON.Vec3(0, 0, 1));
+      _v1.set(0, 0, 1);
+      this.body.quaternion.vmult(_v1, _v1);
       const vel = this.body.velocity;
-      vel.x += forward.x * CAR.BOOST_ACCELERATION * dt;
-      vel.y += forward.y * CAR.BOOST_ACCELERATION * dt;
-      vel.z += forward.z * CAR.BOOST_ACCELERATION * dt;
+      vel.x += _v1.x * CAR.BOOST_ACCELERATION * dt;
+      vel.y += _v1.y * CAR.BOOST_ACCELERATION * dt;
+      vel.z += _v1.z * CAR.BOOST_ACCELERATION * dt;
 
       // Clamp total speed to boost max
       const speed = vel.length();
@@ -829,11 +831,12 @@ export class Car {
   _handleAirThrottle(input, dt) {
     if (this.isGrounded || !input.throttle) return;
 
-    const forward = this.body.quaternion.vmult(new CANNON.Vec3(0, 0, 1));
+    _v1.set(0, 0, 1);
+    this.body.quaternion.vmult(_v1, _v1);
     const accel = input.throttle * CAR.AIR_THROTTLE_ACCEL * dt;
-    this.body.velocity.x += forward.x * accel;
-    this.body.velocity.y += forward.y * accel;
-    this.body.velocity.z += forward.z * accel;
+    this.body.velocity.x += _v1.x * accel;
+    this.body.velocity.y += _v1.y * accel;
+    this.body.velocity.z += _v1.z * accel;
   }
 
   _clampAngularVelocity() {
@@ -855,17 +858,13 @@ export class Car {
 
     const angVel = this.body.angularVelocity;
 
-    if (input.pitchUp) {
-      const axis = this.body.quaternion.vmult(new CANNON.Vec3(1, 0, 0));
-      angVel.x += axis.x * -CAR.AIR_PITCH_SPEED * dt;
-      angVel.y += axis.y * -CAR.AIR_PITCH_SPEED * dt;
-      angVel.z += axis.z * -CAR.AIR_PITCH_SPEED * dt;
-    }
-    if (input.pitchDown) {
-      const axis = this.body.quaternion.vmult(new CANNON.Vec3(1, 0, 0));
-      angVel.x += axis.x * CAR.AIR_PITCH_SPEED * dt;
-      angVel.y += axis.y * CAR.AIR_PITCH_SPEED * dt;
-      angVel.z += axis.z * CAR.AIR_PITCH_SPEED * dt;
+    if (input.pitchUp || input.pitchDown) {
+      _v1.set(1, 0, 0);
+      this.body.quaternion.vmult(_v1, _v1);
+      const sign = input.pitchUp ? -1 : 1;
+      angVel.x += _v1.x * sign * CAR.AIR_PITCH_SPEED * dt;
+      angVel.y += _v1.y * sign * CAR.AIR_PITCH_SPEED * dt;
+      angVel.z += _v1.z * sign * CAR.AIR_PITCH_SPEED * dt;
     }
 
     if (input.steer !== 0) {
@@ -873,10 +872,11 @@ export class Car {
     }
 
     if (input.airRoll !== 0) {
-      const axis = this.body.quaternion.vmult(new CANNON.Vec3(0, 0, 1));
-      angVel.x += axis.x * input.airRoll * CAR.AIR_ROLL_SPEED * dt;
-      angVel.y += axis.y * input.airRoll * CAR.AIR_ROLL_SPEED * dt;
-      angVel.z += axis.z * input.airRoll * CAR.AIR_ROLL_SPEED * dt;
+      _v1.set(0, 0, 1);
+      this.body.quaternion.vmult(_v1, _v1);
+      angVel.x += _v1.x * input.airRoll * CAR.AIR_ROLL_SPEED * dt;
+      angVel.y += _v1.y * input.airRoll * CAR.AIR_ROLL_SPEED * dt;
+      angVel.z += _v1.z * input.airRoll * CAR.AIR_ROLL_SPEED * dt;
     }
   }
 

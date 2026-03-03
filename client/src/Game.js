@@ -26,6 +26,9 @@ import {
 } from '../../shared/constants.js';
 import { computeBallHitImpulse } from '../../shared/BallHitImpulse.js';
 
+// Reusable temp vector for AI euler extraction
+const _aiEuler = new CANNON.Vec3();
+
 export class Game {
   constructor(canvas, mode = 'singleplayer', networkManager = null, playerVariant = null) {
     this.canvas = canvas;
@@ -89,8 +92,7 @@ export class Game {
     });
     this.renderer.setSize(window.innerWidth, window.innerHeight);
     this.renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
-    this.renderer.shadowMap.enabled = true;
-    this.renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+    this.renderer.shadowMap.enabled = false;
     this.renderer.toneMapping = THREE.ACESFilmicToneMapping;
     this.renderer.toneMappingExposure = 1.2;
 
@@ -325,8 +327,12 @@ export class Game {
     const renderPass = new RenderPass(this.scene, this.camera);
     this.composer.addPass(renderPass);
 
+    // Use half-resolution for bloom to reduce GPU cost
     const bloomPass = new UnrealBloomPass(
-      new THREE.Vector2(window.innerWidth, window.innerHeight),
+      new THREE.Vector2(
+        Math.floor(window.innerWidth / 2),
+        Math.floor(window.innerHeight / 2)
+      ),
       0.8, 0.4, 0.85
     );
     this.composer.addPass(bloomPass);
@@ -843,9 +849,8 @@ export class Game {
     const steerDx = targetX - carPos.x;
     const steerDz = targetZ - carPos.z;
     const targetAngle = Math.atan2(steerDx, steerDz);
-    const euler = new CANNON.Vec3();
-    car.body.quaternion.toEuler(euler);
-    let angleDiff = targetAngle - euler.y;
+    car.body.quaternion.toEuler(_aiEuler);
+    let angleDiff = targetAngle - _aiEuler.y;
     while (angleDiff > Math.PI) angleDiff -= 2 * Math.PI;
     while (angleDiff < -Math.PI) angleDiff += 2 * Math.PI;
     const absAngle = Math.abs(angleDiff);

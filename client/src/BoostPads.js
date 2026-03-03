@@ -70,11 +70,6 @@ export class BoostPads {
       const orb = new THREE.Mesh(orbGeo, orbMat);
       orb.position.y = height;
       group.add(orb);
-
-      // Light
-      const light = new THREE.PointLight(color, 0.6, 8);
-      light.position.y = height;
-      group.add(light);
     } else {
       // Small pad: small glowing pill
       const pillGeo = new THREE.CylinderGeometry(0.3, 0.3, 0.6, 6);

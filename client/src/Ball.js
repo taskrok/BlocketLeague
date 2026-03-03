@@ -19,6 +19,7 @@ export class Ball {
     // generate angular velocity from friction on trimesh contacts.
     this._spinQuat = new THREE.Quaternion();
     this._rollAxis = new THREE.Vector3();
+    this._deltaQuat = new THREE.Quaternion();
   }
 
   _createPhysics() {
@@ -133,10 +134,8 @@ export class Ball {
       this._rollAxis.set(vel.z, 0, -vel.x).normalize();
       if (this._rollAxis.lengthSq() > 0.001) {
         const angularSpeed = curSpeed / BALL.RADIUS;
-        const delta = new THREE.Quaternion().setFromAxisAngle(
-          this._rollAxis, angularSpeed * dt
-        );
-        this._spinQuat.premultiply(delta);
+        this._deltaQuat.setFromAxisAngle(this._rollAxis, angularSpeed * dt);
+        this._spinQuat.premultiply(this._deltaQuat);
         this._spinQuat.normalize();
       }
     }

@@ -4,6 +4,16 @@
 
 import * as THREE from 'three';
 
+// Reusable temp objects to avoid per-frame allocations
+const _carPos = new THREE.Vector3();
+const _carQuat = new THREE.Quaternion();
+const _backward = new THREE.Vector3();
+const _desiredPos = new THREE.Vector3();
+const _desiredLookAt = new THREE.Vector3();
+const _ballPos = new THREE.Vector3();
+const _carToBall = new THREE.Vector3();
+const _ballCamPos = new THREE.Vector3();
+
 export class CameraController {
   constructor(camera) {
     this.camera = camera;
@@ -69,82 +79,79 @@ export class CameraController {
 
     const isSwiveling = Math.abs(this._swivelAngle) > 0.01;
 
-    const carPos = new THREE.Vector3().copy(this.target.body.position);
-    const carQuat = new THREE.Quaternion().copy(this.target.body.quaternion);
+    _carPos.copy(this.target.body.position);
+    _carQuat.copy(this.target.body.quaternion);
 
     // Get car's backward direction (camera goes behind car)
-    const backward = new THREE.Vector3(0, 0, -1);
-    backward.applyQuaternion(carQuat);
-    backward.y = 0;
-    backward.normalize();
+    _backward.set(0, 0, -1);
+    _backward.applyQuaternion(_carQuat);
+    _backward.y = 0;
+    _backward.normalize();
 
     // Apply swivel: rotate the backward vector around Y axis
     if (isSwiveling) {
       const cos = Math.cos(this._swivelAngle);
       const sin = Math.sin(this._swivelAngle);
-      const bx = backward.x * cos - backward.z * sin;
-      const bz = backward.x * sin + backward.z * cos;
-      backward.x = bx;
-      backward.z = bz;
+      const bx = _backward.x * cos - _backward.z * sin;
+      const bz = _backward.x * sin + _backward.z * cos;
+      _backward.x = bx;
+      _backward.z = bz;
     }
 
     // Desired camera position: behind and above car
-    const desiredPos = new THREE.Vector3(
-      carPos.x + backward.x * this.distance,
-      carPos.y + this.height,
-      carPos.z + backward.z * this.distance
+    _desiredPos.set(
+      _carPos.x + _backward.x * this.distance,
+      _carPos.y + this.height,
+      _carPos.z + _backward.z * this.distance
     );
-
-    // Where camera should look
-    let desiredLookAt;
 
     if (isSwiveling) {
       // While swiveling, look past the car in the swivel direction
-      desiredLookAt = new THREE.Vector3(
-        carPos.x - backward.x * 5,
-        carPos.y + this.lookHeight,
-        carPos.z - backward.z * 5
+      _desiredLookAt.set(
+        _carPos.x - _backward.x * 5,
+        _carPos.y + this.lookHeight,
+        _carPos.z - _backward.z * 5
       );
     } else if (this.ballCam && this.ballTarget) {
-      const ballPos = new THREE.Vector3().copy(this.ballTarget.body.position);
+      _ballPos.copy(this.ballTarget.body.position);
 
       // In ball cam, position camera so car is between camera and ball
-      const carToBall = new THREE.Vector3().subVectors(ballPos, carPos);
-      carToBall.y = 0;
-      carToBall.normalize();
+      _carToBall.subVectors(_ballPos, _carPos);
+      _carToBall.y = 0;
+      _carToBall.normalize();
 
-      const ballCamPos = new THREE.Vector3(
-        carPos.x - carToBall.x * this.distance,
-        carPos.y + this.height,
-        carPos.z - carToBall.z * this.distance
+      _ballCamPos.set(
+        _carPos.x - _carToBall.x * this.distance,
+        _carPos.y + this.height,
+        _carPos.z - _carToBall.z * this.distance
       );
 
-      desiredPos.lerp(ballCamPos, 0.7);
-      desiredLookAt = new THREE.Vector3(
-        ballPos.x * 0.4 + carPos.x * 0.6,
-        ballPos.y * 0.3 + this.lookHeight * 0.7,
-        ballPos.z * 0.4 + carPos.z * 0.6
+      _desiredPos.lerp(_ballCamPos, 0.7);
+      _desiredLookAt.set(
+        _ballPos.x * 0.4 + _carPos.x * 0.6,
+        _ballPos.y * 0.3 + this.lookHeight * 0.7,
+        _ballPos.z * 0.4 + _carPos.z * 0.6
       );
     } else {
-      desiredLookAt = new THREE.Vector3(
-        carPos.x - backward.x * 5,
-        carPos.y + this.lookHeight,
-        carPos.z - backward.z * 5
+      _desiredLookAt.set(
+        _carPos.x - _backward.x * 5,
+        _carPos.y + this.lookHeight,
+        _carPos.z - _backward.z * 5
       );
     }
 
     // Smooth interpolation
     if (!this.initialized) {
-      this.currentPos.copy(desiredPos);
-      this.currentLookAt.copy(desiredLookAt);
+      this.currentPos.copy(_desiredPos);
+      this.currentLookAt.copy(_desiredLookAt);
       this.initialized = true;
     }
 
     // Use faster lerp when swiveling for responsive feel
     const speed = isSwiveling ? Math.max(this.smoothSpeed, 10) : this.smoothSpeed;
     const lerpFactor = 1 - Math.exp(-speed * dt);
-    this.currentPos.lerp(desiredPos, lerpFactor);
-    this.currentLookAt.lerp(desiredLookAt, lerpFactor);
+    this.currentPos.lerp(_desiredPos, lerpFactor);
+    this.currentLookAt.lerp(_desiredLookAt, lerpFactor);
 
     // Keep camera above ground
     this.currentPos.y = Math.max(1, this.currentPos.y);
