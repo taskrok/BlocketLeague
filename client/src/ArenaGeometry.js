@@ -17,75 +17,92 @@ const HL = ARENA.LENGTH / 2;        // half length (Z)
 const H  = ARENA.HEIGHT;            // total height (Y)
 const GW = ARENA.GOAL_WIDTH / 2;    // half goal width
 const GH = ARENA.GOAL_HEIGHT;       // goal height
+const GD = ARENA.GOAL_DEPTH;        // goal depth
+const GFR = ARENA.GOAL_FILLET_RADIUS; // goal interior fillet radius
 
 // Inner flat extents (after subtracting fillet radii)
 const flatHW = HW - R;   // flat floor/ceiling half-width in X
 const flatHL = HL - R;   // flat floor/ceiling half-length in Z
 const flatH  = H - 2 * R; // flat wall height (between top of floor fillet and bottom of ceiling fillet)
 
+// Wall/fillet extents limited by corner radius (walls stop where corners begin)
+const cornerFlatHW = HW - CR;  // X extent for end walls & end fillets
+const cornerFlatHL = HL - CR;  // Z extent for side walls & side fillets
+
 export function createArenaGeometry() {
-  const parts = [];
+  // ---- Phase 1: Arena shell (existing) ----
+  // ensureInwardNormals points toward (0, H/2, 0) which is correct for the shell
+  // but would break goal ceiling normals, so goals are built separately.
+  const shellParts = [];
 
   // 1) Floor (flat center)
-  parts.push(makeFloorWithGoalCutouts());
+  shellParts.push(makeFloorWithGoalCutouts());
 
   // 2) Ceiling (flat center)
-  parts.push(makeCeiling());
+  shellParts.push(makeCeiling());
 
   // 3) Side walls (left & right flat sections)
-  parts.push(makeSideWall(-1)); // left  (X = -HW)
-  parts.push(makeSideWall(1));  // right (X = +HW)
+  shellParts.push(makeSideWall(-1));
+  shellParts.push(makeSideWall(1));
 
   // 4) End walls (with goal cutouts)
-  parts.push(makeEndWall(-1)); // Z = -HL
-  parts.push(makeEndWall(1));  // Z = +HL
+  shellParts.push(makeEndWall(-1));
+  shellParts.push(makeEndWall(1));
 
-  // 5) Floor-to-side-wall fillets (left & right, long edges along Z)
-  parts.push(makeFloorSideFillet(-1));
-  parts.push(makeFloorSideFillet(1));
+  // 5) Floor-to-side-wall fillets
+  shellParts.push(makeFloorSideFillet(-1));
+  shellParts.push(makeFloorSideFillet(1));
 
-  // 6) Floor-to-end-wall fillets (front & back, long edges along X — with goal cutouts)
-  parts.push(makeFloorEndFillet(-1));
-  parts.push(makeFloorEndFillet(1));
+  // 6) Floor-to-end-wall fillets (with goal cutouts)
+  shellParts.push(makeFloorEndFillet(-1));
+  shellParts.push(makeFloorEndFillet(1));
 
   // 7) Ceiling-to-side-wall fillets
-  parts.push(makeCeilingSideFillet(-1));
-  parts.push(makeCeilingSideFillet(1));
+  shellParts.push(makeCeilingSideFillet(-1));
+  shellParts.push(makeCeilingSideFillet(1));
 
   // 8) Ceiling-to-end-wall fillets
-  parts.push(makeCeilingEndFillet(-1));
-  parts.push(makeCeilingEndFillet(1));
+  shellParts.push(makeCeilingEndFillet(-1));
+  shellParts.push(makeCeilingEndFillet(1));
 
-  // 9) Vertical corner fillets (4 corners where side walls meet end walls)
-  parts.push(makeVerticalCorner(-1, -1));
-  parts.push(makeVerticalCorner(1, -1));
-  parts.push(makeVerticalCorner(-1, 1));
-  parts.push(makeVerticalCorner(1, 1));
+  // 9) Vertical corner fillets
+  shellParts.push(makeVerticalCorner(-1, -1));
+  shellParts.push(makeVerticalCorner(1, -1));
+  shellParts.push(makeVerticalCorner(-1, 1));
+  shellParts.push(makeVerticalCorner(1, 1));
 
-  // 10) Triple-junction corner patches (8 total: 4 corners × floor + ceiling)
+  // 10) Triple-junction corner patches
   for (const sx of [-1, 1]) {
     for (const sz of [-1, 1]) {
-      parts.push(makeTripleCorner(sx, sz, 'floor'));
-      parts.push(makeTripleCorner(sx, sz, 'ceiling'));
+      shellParts.push(makeTripleCorner(sx, sz, 'floor'));
+      shellParts.push(makeTripleCorner(sx, sz, 'ceiling'));
     }
   }
 
   // 11) Goal edge fillets (rounded posts + crossbar + corner patches)
   for (const side of [-1, 1]) {
-    parts.push(makeGoalPostFillet(side, -1));  // left post
-    parts.push(makeGoalPostFillet(side, 1));   // right post
-    parts.push(makeGoalCrossbarFillet(side));   // crossbar
-    parts.push(makeGoalCornerPatch(side, -1)); // left post-crossbar junction
-    parts.push(makeGoalCornerPatch(side, 1));  // right post-crossbar junction
+    shellParts.push(makeGoalPostFillet(side, -1));
+    shellParts.push(makeGoalPostFillet(side, 1));
+    shellParts.push(makeGoalCrossbarFillet(side));
+    shellParts.push(makeGoalCornerPatch(side, -1));
+    shellParts.push(makeGoalCornerPatch(side, 1));
   }
 
-  // Merge all parts into one geometry
-  const merged = mergeBufferGeometries(parts);
+  const shell = mergeBufferGeometries(shellParts);
+  ensureInwardNormals(shell);
 
-  // Fix face winding so all normals point INWARD (toward arena center)
-  // cannon-es sphere-trimesh is one-sided — wrong normals = ball falls through
-  ensureInwardNormals(merged);
+  // ---- Phase 2: Goal interiors ----
+  // Built separately with normals pointing toward each goal's interior center,
+  // so ceiling-down normals aren't flipped by ensureInwardNormals.
+  const goalParts = [];
+  for (const side of [-1, 1]) {
+    const parts = makeGoalInterior(side);
+    const goalGeo = mergeBufferGeometries(parts);
+    ensureNormalsTowardPoint(goalGeo, 0, GH / 2, side * (HL + GD / 2));
+    goalParts.push(goalGeo);
+  }
 
+  const merged = mergeBufferGeometries([shell, ...goalParts]);
   merged.computeVertexNormals();
   return merged;
 }
@@ -127,6 +144,288 @@ function ensureInwardNormals(geometry) {
   }
 }
 
+function ensureNormalsTowardPoint(geometry, px, py, pz) {
+  const pos = geometry.getAttribute('position').array;
+  const idx = geometry.index.array;
+
+  for (let i = 0; i < idx.length; i += 3) {
+    const ia = idx[i], ib = idx[i + 1], ic = idx[i + 2];
+
+    const ax = pos[ia * 3], ay = pos[ia * 3 + 1], az = pos[ia * 3 + 2];
+    const bx = pos[ib * 3], by = pos[ib * 3 + 1], bz = pos[ib * 3 + 2];
+    const cx = pos[ic * 3], cy = pos[ic * 3 + 1], cz = pos[ic * 3 + 2];
+
+    const fx = (ax + bx + cx) / 3;
+    const fy = (ay + by + cy) / 3;
+    const fz = (az + bz + cz) / 3;
+
+    const e1x = bx - ax, e1y = by - ay, e1z = bz - az;
+    const e2x = cx - ax, e2y = cy - ay, e2z = cz - az;
+    const nx = e1y * e2z - e1z * e2y;
+    const ny = e1z * e2x - e1x * e2z;
+    const nz = e1x * e2y - e1y * e2x;
+
+    const dx = px - fx;
+    const dy = py - fy;
+    const dz = pz - fz;
+
+    if (nx * dx + ny * dy + nz * dz < 0) {
+      idx[i + 1] = ic;
+      idx[i + 2] = ib;
+    }
+  }
+}
+
+// ========== GOAL INTERIOR GEOMETRY ==========
+
+function makeGoalInterior(side) {
+  const parts = [];
+
+  // Flat panels
+  parts.push(makeGoalFloorPanel(side));
+  parts.push(makeGoalCeilingPanel(side));
+  parts.push(makeGoalSideWallPanel(side, -1));
+  parts.push(makeGoalSideWallPanel(side, 1));
+  parts.push(makeGoalBackWallPanel(side));
+
+  // Edge fillets (quarter cylinders)
+  parts.push(makeGoalFloorBackFillet(side));
+  parts.push(makeGoalCeilingBackFillet(side));
+  parts.push(makeGoalFloorSideFillet(side, -1));
+  parts.push(makeGoalFloorSideFillet(side, 1));
+  parts.push(makeGoalCeilingSideFillet(side, -1));
+  parts.push(makeGoalCeilingSideFillet(side, 1));
+  parts.push(makeGoalSideBackFillet(side, -1));
+  parts.push(makeGoalSideBackFillet(side, 1));
+
+  // Corner patches (1/8 spheres at back corners)
+  parts.push(makeGoalBackCorner(side, -1, 'floor'));
+  parts.push(makeGoalBackCorner(side, -1, 'ceiling'));
+  parts.push(makeGoalBackCorner(side, 1, 'floor'));
+  parts.push(makeGoalBackCorner(side, 1, 'ceiling'));
+
+  return parts;
+}
+
+// -- Goal flat panels --
+
+function makeGoalFloorPanel(side) {
+  // y=0, x from -(GW-GFR) to +(GW-GFR), z from goal mouth to back fillet start
+  const xMin = -(GW - GFR);
+  const xMax = (GW - GFR);
+  const zNear = side * HL;
+  const zFar = side * (HL + GD - GFR);
+  return makeFlatQuad(
+    new THREE.Vector3(xMin, 0, zNear), new THREE.Vector3(xMax, 0, zNear),
+    new THREE.Vector3(xMax, 0, zFar), new THREE.Vector3(xMin, 0, zFar)
+  );
+}
+
+function makeGoalCeilingPanel(side) {
+  // y=GH, same XZ extents as floor
+  const xMin = -(GW - GFR);
+  const xMax = (GW - GFR);
+  const zNear = side * HL;
+  const zFar = side * (HL + GD - GFR);
+  return makeFlatQuad(
+    new THREE.Vector3(xMin, GH, zNear), new THREE.Vector3(xMax, GH, zNear),
+    new THREE.Vector3(xMax, GH, zFar), new THREE.Vector3(xMin, GH, zFar)
+  );
+}
+
+function makeGoalSideWallPanel(side, postSide) {
+  // x=postSide*GW, y from GFR to GH-GFR, z from mouth to back fillet start
+  const x = postSide * GW;
+  const zNear = side * HL;
+  const zFar = side * (HL + GD - GFR);
+  return makeFlatQuad(
+    new THREE.Vector3(x, GFR, zNear), new THREE.Vector3(x, GFR, zFar),
+    new THREE.Vector3(x, GH - GFR, zFar), new THREE.Vector3(x, GH - GFR, zNear)
+  );
+}
+
+function makeGoalBackWallPanel(side) {
+  // z=side*(HL+GD), x from -(GW-GFR) to +(GW-GFR), y from GFR to GH-GFR
+  const z = side * (HL + GD);
+  const xMin = -(GW - GFR);
+  const xMax = (GW - GFR);
+  return makeFlatQuad(
+    new THREE.Vector3(xMin, GFR, z), new THREE.Vector3(xMax, GFR, z),
+    new THREE.Vector3(xMax, GH - GFR, z), new THREE.Vector3(xMin, GH - GFR, z)
+  );
+}
+
+// -- Goal edge fillets (quarter cylinders) --
+
+function makeGoalFloorBackFillet(side) {
+  // Quarter cylinder along X: connects floor (y=0) to back wall (z=side*(HL+GD))
+  // Arc center at (x, GFR, side*(HL+GD-GFR))
+  const cy = GFR;
+  const cz = side * (HL + GD - GFR);
+  const xMin = -(GW - GFR);
+  const xMax = (GW - GFR);
+
+  const positions = [], uvs = [], indices = [];
+  for (let i = 0; i <= S; i++) {
+    const angle = (Math.PI / 2) * (i / S);
+    const ly = cy - GFR * Math.cos(angle);
+    const lz = cz + side * GFR * Math.sin(angle);
+    for (let j = 0; j <= 1; j++) {
+      const x = j === 0 ? xMin : xMax;
+      positions.push(x, ly, lz);
+      uvs.push(x, lz);
+    }
+  }
+  for (let i = 0; i < S; i++) {
+    const a = i * 2, b = a + 1, c = a + 2, d = a + 3;
+    indices.push(a, b, c, b, d, c);
+  }
+  return buildGeometry(positions, uvs, indices);
+}
+
+function makeGoalCeilingBackFillet(side) {
+  // Quarter cylinder along X: connects ceiling (y=GH) to back wall
+  // Arc center at (x, GH-GFR, side*(HL+GD-GFR))
+  const cy = GH - GFR;
+  const cz = side * (HL + GD - GFR);
+  const xMin = -(GW - GFR);
+  const xMax = (GW - GFR);
+
+  const positions = [], uvs = [], indices = [];
+  for (let i = 0; i <= S; i++) {
+    const angle = (Math.PI / 2) * (i / S);
+    const ly = cy + GFR * Math.cos(angle);
+    const lz = cz + side * GFR * Math.sin(angle);
+    for (let j = 0; j <= 1; j++) {
+      const x = j === 0 ? xMin : xMax;
+      positions.push(x, ly, lz);
+      uvs.push(x, lz);
+    }
+  }
+  for (let i = 0; i < S; i++) {
+    const a = i * 2, b = a + 1, c = a + 2, d = a + 3;
+    indices.push(a, b, c, b, d, c);
+  }
+  return buildGeometry(positions, uvs, indices);
+}
+
+function makeGoalFloorSideFillet(side, postSide) {
+  // Quarter cylinder along Z: connects floor (y=0) to side wall (x=postSide*GW)
+  // Arc center at (postSide*(GW-GFR), GFR, z)
+  const cx = postSide * (GW - GFR);
+  const zNear = side * HL;
+  const zFar = side * (HL + GD - GFR);
+
+  const positions = [], uvs = [], indices = [];
+  for (let i = 0; i <= S; i++) {
+    const angle = (Math.PI / 2) * (i / S);
+    const lx = cx + postSide * GFR * Math.sin(angle);
+    const ly = GFR - GFR * Math.cos(angle);
+    for (let j = 0; j <= 1; j++) {
+      const z = j === 0 ? zNear : zFar;
+      positions.push(lx, ly, z);
+      uvs.push(lx, z);
+    }
+  }
+  for (let i = 0; i < S; i++) {
+    const a = i * 2, b = a + 1, c = a + 2, d = a + 3;
+    indices.push(a, b, c, b, d, c);
+  }
+  return buildGeometry(positions, uvs, indices);
+}
+
+function makeGoalCeilingSideFillet(side, postSide) {
+  // Quarter cylinder along Z: connects ceiling (y=GH) to side wall (x=postSide*GW)
+  // Arc center at (postSide*(GW-GFR), GH-GFR, z)
+  const cx = postSide * (GW - GFR);
+  const cy = GH - GFR;
+  const zNear = side * HL;
+  const zFar = side * (HL + GD - GFR);
+
+  const positions = [], uvs = [], indices = [];
+  for (let i = 0; i <= S; i++) {
+    const angle = (Math.PI / 2) * (i / S);
+    const lx = cx + postSide * GFR * Math.sin(angle);
+    const ly = cy + GFR * Math.cos(angle);
+    for (let j = 0; j <= 1; j++) {
+      const z = j === 0 ? zNear : zFar;
+      positions.push(lx, ly, z);
+      uvs.push(lx, z);
+    }
+  }
+  for (let i = 0; i < S; i++) {
+    const a = i * 2, b = a + 1, c = a + 2, d = a + 3;
+    indices.push(a, b, c, b, d, c);
+  }
+  return buildGeometry(positions, uvs, indices);
+}
+
+function makeGoalSideBackFillet(side, postSide) {
+  // Quarter cylinder along Y: connects side wall to back wall
+  // Arc center at (postSide*(GW-GFR), y, side*(HL+GD-GFR))
+  const cx = postSide * (GW - GFR);
+  const cz = side * (HL + GD - GFR);
+  const yBot = GFR;
+  const yTop = GH - GFR;
+
+  const positions = [], uvs = [], indices = [];
+  for (let i = 0; i <= S; i++) {
+    const angle = (Math.PI / 2) * (i / S);
+    const lx = cx + postSide * GFR * Math.cos(angle);
+    const lz = cz + side * GFR * Math.sin(angle);
+    for (let j = 0; j <= 1; j++) {
+      const y = j === 0 ? yBot : yTop;
+      positions.push(lx, y, lz);
+      uvs.push(lx, lz);
+    }
+  }
+  for (let i = 0; i < S; i++) {
+    const a = i * 2, b = a + 1, c = a + 2, d = a + 3;
+    indices.push(a, b, c, b, d, c);
+  }
+  return buildGeometry(positions, uvs, indices);
+}
+
+// -- Goal corner patches (1/8 spheres at back corners) --
+
+function makeGoalBackCorner(side, postSide, position) {
+  // 1/8 sphere at junction of floor/ceiling + side + back fillets
+  const cx = postSide * (GW - GFR);
+  const cy = position === 'floor' ? GFR : GH - GFR;
+  const cz = side * (HL + GD - GFR);
+  const ySign = position === 'floor' ? -1 : 1;
+
+  const N = Math.max(S, 6);
+  const positions = [], uvs = [], indices = [];
+
+  for (let i = 0; i <= N; i++) {
+    for (let j = 0; j <= N; j++) {
+      const phi = (Math.PI / 2) * (i / N);
+      const theta = (Math.PI / 2) * (j / N);
+
+      const lx = cx + postSide * GFR * Math.sin(phi) * Math.sin(theta);
+      const ly = cy + ySign * GFR * Math.cos(phi);
+      const lz = cz + side * GFR * Math.sin(phi) * Math.cos(theta);
+
+      positions.push(lx, ly, lz);
+      uvs.push(lx, lz);
+    }
+  }
+
+  const stride = N + 1;
+  for (let i = 0; i < N; i++) {
+    for (let j = 0; j < N; j++) {
+      const a = i * stride + j;
+      const b = a + 1;
+      const c = a + stride;
+      const d = c + 1;
+      indices.push(a, b, c, b, d, c);
+    }
+  }
+
+  return buildGeometry(positions, uvs, indices);
+}
+
 // ========== FLAT PANELS ==========
 
 function makeFloorWithGoalCutouts() {
@@ -152,21 +451,20 @@ function makeCeiling() {
 function makeSideWall(side) {
   // side = -1 for left (X = -HW), +1 for right (X = +HW)
   const x = side * HW;
-  // Wall runs from Z = -flatHL to +flatHL, Y = R to R+flatH
-  // For left wall, normal points +X (inward); for right, -X
+  // Wall runs from Z = -cornerFlatHL to +cornerFlatHL (stops where corner arc begins)
   if (side === -1) {
     return makeFlatQuad(
-      new THREE.Vector3(x, R, flatHL),
-      new THREE.Vector3(x, R, -flatHL),
-      new THREE.Vector3(x, R + flatH, -flatHL),
-      new THREE.Vector3(x, R + flatH, flatHL)
+      new THREE.Vector3(x, R, cornerFlatHL),
+      new THREE.Vector3(x, R, -cornerFlatHL),
+      new THREE.Vector3(x, R + flatH, -cornerFlatHL),
+      new THREE.Vector3(x, R + flatH, cornerFlatHL)
     );
   } else {
     return makeFlatQuad(
-      new THREE.Vector3(x, R, -flatHL),
-      new THREE.Vector3(x, R, flatHL),
-      new THREE.Vector3(x, R + flatH, flatHL),
-      new THREE.Vector3(x, R + flatH, -flatHL)
+      new THREE.Vector3(x, R, -cornerFlatHL),
+      new THREE.Vector3(x, R, cornerFlatHL),
+      new THREE.Vector3(x, R + flatH, cornerFlatHL),
+      new THREE.Vector3(x, R + flatH, -cornerFlatHL)
     );
   }
 }
@@ -179,37 +477,37 @@ function makeEndWall(side) {
 
   const geoParts = [];
 
-  // Left section: from X = -flatHW to X = -GW
+  // Left section: from X = -cornerFlatHW to X = -GW
   if (side === -1) {
     geoParts.push(makeFlatQuad(
-      new THREE.Vector3(-flatHW, yBot, z),
+      new THREE.Vector3(-cornerFlatHW, yBot, z),
       new THREE.Vector3(-GW, yBot, z),
       new THREE.Vector3(-GW, yTop, z),
-      new THREE.Vector3(-flatHW, yTop, z)
+      new THREE.Vector3(-cornerFlatHW, yTop, z)
     ));
   } else {
     geoParts.push(makeFlatQuad(
       new THREE.Vector3(-GW, yBot, z),
-      new THREE.Vector3(-flatHW, yBot, z),
-      new THREE.Vector3(-flatHW, yTop, z),
+      new THREE.Vector3(-cornerFlatHW, yBot, z),
+      new THREE.Vector3(-cornerFlatHW, yTop, z),
       new THREE.Vector3(-GW, yTop, z)
     ));
   }
 
-  // Right section: from X = +GW to X = +flatHW
+  // Right section: from X = +GW to X = +cornerFlatHW
   if (side === -1) {
     geoParts.push(makeFlatQuad(
       new THREE.Vector3(GW, yBot, z),
-      new THREE.Vector3(flatHW, yBot, z),
-      new THREE.Vector3(flatHW, yTop, z),
+      new THREE.Vector3(cornerFlatHW, yBot, z),
+      new THREE.Vector3(cornerFlatHW, yTop, z),
       new THREE.Vector3(GW, yTop, z)
     ));
   } else {
     geoParts.push(makeFlatQuad(
-      new THREE.Vector3(flatHW, yBot, z),
+      new THREE.Vector3(cornerFlatHW, yBot, z),
       new THREE.Vector3(GW, yBot, z),
       new THREE.Vector3(GW, yTop, z),
-      new THREE.Vector3(flatHW, yTop, z)
+      new THREE.Vector3(cornerFlatHW, yTop, z)
     ));
   }
 
@@ -243,16 +541,11 @@ function makeEndWall(side) {
 
 function makeFloorSideFillet(side) {
   // Quarter cylinder along Z-axis at floor-to-side-wall junction
-  // Center of arc at (side*(HW-R), R, z)
-  // For side=-1: arc from angle PI (pointing -X = floor) to PI/2 (pointing +Y = wall)
-  // Actually: floor is at Y=0, wall is at X=side*HW
-  // Arc center at (side*(HW-R), R)
-  // At angle 0: center + (R, 0) = wall position X = side*HW (when side=1)
-  // At angle PI/2: center + (0, -R) = floor position Y = 0
+  // Stops at ±cornerFlatHL where vertical corners begin
   const cx = side * (HW - R);
   const cy = R;
-  const zMin = -flatHL;
-  const zMax = flatHL;
+  const zMin = -cornerFlatHL;
+  const zMax = cornerFlatHL;
 
   const positions = [];
   const uvs = [];
@@ -294,10 +587,10 @@ function makeFloorEndFillet(side) {
   const cy = R;
   const parts = [];
 
-  // Left segment: X from -flatHW to -GW
-  parts.push(_buildFloorEndFilletSegment(side, cz, cy, -flatHW, -GW));
-  // Right segment: X from +GW to +flatHW
-  parts.push(_buildFloorEndFilletSegment(side, cz, cy, GW, flatHW));
+  // Left segment: X from -cornerFlatHW to -GW
+  parts.push(_buildFloorEndFilletSegment(side, cz, cy, -cornerFlatHW, -GW));
+  // Right segment: X from +GW to +cornerFlatHW
+  parts.push(_buildFloorEndFilletSegment(side, cz, cy, GW, cornerFlatHW));
   // Goal region (X = -GW to +GW): goal opens Y=0..GH which covers the floor fillet (0..R).
   // Since GH >= R, the entire fillet would be inside the goal opening — skip it.
 
@@ -340,8 +633,8 @@ function _buildFloorEndFilletSegment(side, cz, cy, xMin, xMax) {
 function makeCeilingSideFillet(side) {
   const cx = side * (HW - R);
   const cy = H - R;
-  const zMin = -flatHL;
-  const zMax = flatHL;
+  const zMin = -cornerFlatHL;
+  const zMax = cornerFlatHL;
 
   const positions = [];
   const uvs = [];
@@ -390,7 +683,7 @@ function makeCeilingEndFillet(side) {
     const ly = cy + R * Math.cos(angle);
 
     for (let j = 0; j <= 1; j++) {
-      const x = j === 0 ? -flatHW : flatHW;
+      const x = j === 0 ? -cornerFlatHW : cornerFlatHW;
       positions.push(x, ly, lz);
       uvs.push(x, lz);
     }
@@ -459,30 +752,28 @@ function makeVerticalCorner(sx, sz) {
 // ========== TRIPLE-JUNCTION CORNER PATCHES ==========
 
 function makeTripleCorner(sx, sz, position) {
-  // Spherical-ish patch at the junction of floor/ceiling fillet + side fillet + vertical corner
-  // We use a parametric surface: bilinear blend of three fillet arcs
-  const r = R; // use the smaller fillet radius for the blend
-  const cx = sx * (HW - r);
-  const cz = sz * (HL - r);
-  const cy = position === 'floor' ? r : H - r;
+  // Toroidal patch at the junction of floor/ceiling fillet + vertical corner
+  // The fillet cross-section (radius R) sweeps along the vertical corner arc (radius CR)
+  const ccx = sx * (HW - CR);  // vertical corner center X
+  const ccz = sz * (HL - CR);  // vertical corner center Z
+  const cy = position === 'floor' ? R : H - R;
   const ySign = position === 'floor' ? -1 : 1;
 
-  const N = Math.max(S, 6); // resolution for the patch
+  const N = Math.max(S, 6);
   const positions = [];
   const uvs = [];
   const indices = [];
 
   for (let i = 0; i <= N; i++) {
     for (let j = 0; j <= N; j++) {
-      const u = i / N;
-      const v = j / N;
-      // Spherical coordinates: u controls angle from Y-axis, v controls angle around Y
-      const phi = (Math.PI / 2) * u;   // 0 = along Y, PI/2 = horizontal
-      const theta = (Math.PI / 2) * v; // sweep in XZ plane
+      const theta = (Math.PI / 2) * (i / N); // corner arc sweep in XZ (0=side wall, π/2=end wall)
+      const phi = (Math.PI / 2) * (j / N);   // fillet profile (0=floor/ceiling, π/2=wall)
 
-      const lx = cx + sx * r * Math.sin(phi) * Math.cos(theta);
-      const ly = cy + ySign * r * Math.cos(phi);
-      const lz = cz + sz * r * Math.sin(phi) * Math.sin(theta);
+      // Distance from corner center in XZ: ranges from CR-R (at floor) to CR (at wall)
+      const d = CR - R + R * Math.sin(phi);
+      const lx = ccx + sx * d * Math.cos(theta);
+      const ly = cy + ySign * R * Math.cos(phi);
+      const lz = ccz + sz * d * Math.sin(theta);
 
       positions.push(lx, ly, lz);
       uvs.push(lx, lz);

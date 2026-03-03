@@ -4,16 +4,17 @@
 
 // Arena dimensions (in game units)
 export const ARENA = {
-  LENGTH: 130,      // Z-axis (goal to goal)
-  WIDTH: 90,        // X-axis
-  HEIGHT: 25,       // Y-axis
+  LENGTH: 169,      // Z-axis (goal to goal) — was 130 (×1.3)
+  WIDTH: 117,       // X-axis — was 90 (×1.3)
+  HEIGHT: 25,       // Y-axis (unchanged)
   WALL_THICKNESS: 2,
-  GOAL_WIDTH: 18,
-  GOAL_HEIGHT: 10,
-  GOAL_DEPTH: 10,
+  GOAL_WIDTH: 24,   // was 18 (×1.3, rounded)
+  GOAL_HEIGHT: 13,  // was 10 (×1.3)
+  GOAL_DEPTH: 13,   // was 10 (×1.3)
   CURVE_RADIUS: 8,       // floor/wall/ceiling transition fillet radius
-  CORNER_RADIUS: 20,     // XZ plane vertical corner radius (side-to-end wall)
+  CORNER_RADIUS: 26,     // XZ plane vertical corner radius — was 20 (×1.3)
   GOAL_EDGE_RADIUS: 3,   // fillet radius on goal opening frame (posts + crossbar)
+  GOAL_FILLET_RADIUS: 5, // interior goal fillets (must be < GH/2)
   CURVE_SEGMENTS: 10,    // segments per quarter-circle arc
   GRID_CELL_SIZE: 5,     // grid spacing in world units
 };
@@ -32,7 +33,7 @@ export const CAR = {
   JUMP_FORCE: 13,
   DOUBLE_JUMP_FORCE: 11,
   DODGE_FORCE: 18,
-  DODGE_VERTICAL: 5,
+  DODGE_VERTICAL: 7,
   BOOST_ACCELERATION: 38,
   MAX_BOOST: 100,
   BOOST_USAGE_RATE: 33,       // per second
@@ -42,6 +43,8 @@ export const CAR = {
   GROUND_OFFSET: 0.55,        // half height - how high car sits
   JUMP_COOLDOWN: 1500,        // ms for double jump window
   SIDEWAYS_GRIP: 0.05,        // 0 = full grip, 1 = ice
+  HANDBRAKE_TURN_MULTIPLIER: 2.5,  // steering multiplier while powersliding
+  HANDBRAKE_GRIP: 0.35,            // sideways grip during handbrake (lower = more slide)
   LINEAR_DAMPING: 0.3,
   ANGULAR_DAMPING: 0.95,
   GROUND_RAY_LENGTH: 1.2,     // raycast distance for ground check
@@ -51,10 +54,10 @@ export const CAR = {
 // Ball properties
 export const BALL = {
   RADIUS: 1.8,
-  MASS: 3,
-  RESTITUTION: 0.6,
-  FRICTION: 0.4,
-  LINEAR_DAMPING: 0.25,
+  MASS: 2,
+  RESTITUTION: 0.75,
+  FRICTION: 0.3,
+  LINEAR_DAMPING: 0.1,
   ANGULAR_DAMPING: 0.1,
 };
 
@@ -155,6 +158,6 @@ export const COLORS = {
 
 // Player spawn positions
 export const SPAWNS = {
-  PLAYER1: { x: 0, y: 2, z: -40 },
-  PLAYER2: { x: 0, y: 2, z: 40 },
+  PLAYER1: { x: 0, y: 2, z: -52 },  // was -40 (×1.3)
+  PLAYER2: { x: 0, y: 2, z: 52 },   // was 40  (×1.3)
 };

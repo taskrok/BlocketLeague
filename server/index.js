@@ -1,5 +1,5 @@
 // ============================================
-// Blocket League - Game Server (placeholder for Stage 1)
+// Blocket League - Game Server
 // ============================================
 
 import express from 'express';
@@ -7,6 +7,7 @@ import { createServer } from 'http';
 import { Server } from 'socket.io';
 import { fileURLToPath } from 'url';
 import { dirname, join } from 'path';
+import { GameRoom } from './GameRoom.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
@@ -30,12 +31,62 @@ app.get('*', (req, res) => {
   res.sendFile(join(__dirname, '..', 'dist', 'index.html'));
 });
 
-// Socket.io connection handling (to be expanded for multiplayer)
+// ========== ROOM MANAGEMENT ==========
+
+const rooms = new Map();
+let roomCounter = 0;
+
+function getOrCreateRoom() {
+  // Find a room that isn't full
+  for (const [id, room] of rooms) {
+    if (!room.isFull()) {
+      return room;
+    }
+  }
+  // Create new room
+  const roomId = `room_${++roomCounter}`;
+  const room = new GameRoom(io, roomId);
+  rooms.set(roomId, room);
+  console.log(`Created room: ${roomId}`);
+  return room;
+}
+
+// Map socketId → room for quick lookup
+const playerRooms = new Map();
+
+// ========== SOCKET HANDLERS ==========
+
 io.on('connection', (socket) => {
   console.log(`Player connected: ${socket.id}`);
 
+  socket.on('joinGame', (data) => {
+    const variantConfig = data && data.variantConfig ? data.variantConfig : {};
+    const room = getOrCreateRoom();
+    room.addPlayer(socket, variantConfig);
+    playerRooms.set(socket.id, room);
+    console.log(`Player ${socket.id} joined ${room.roomId}`);
+  });
+
+  socket.on('input', (input) => {
+    const room = playerRooms.get(socket.id);
+    if (room) {
+      room.receiveInput(socket.id, input);
+    }
+  });
+
   socket.on('disconnect', () => {
     console.log(`Player disconnected: ${socket.id}`);
+    const room = playerRooms.get(socket.id);
+    if (room) {
+      room.removePlayer(socket.id);
+      playerRooms.delete(socket.id);
+
+      // Clean up empty rooms
+      if (room.isEmpty()) {
+        rooms.delete(room.roomId);
+        console.log(`Removed empty room: ${room.roomId}`);
+      }
+    }
   });
 });
 

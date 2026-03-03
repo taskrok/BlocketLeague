@@ -1,27 +1,16 @@
 // ============================================
-// Car - Physics + Rendering for a Rocket League-style car
-// Supports wall driving via surface-normal alignment
+// ServerCar — Headless car physics (no rendering)
+// All physics methods from Car.js, stripped of Three.js
 // ============================================
 
-import * as THREE from 'three';
 import * as CANNON from 'cannon-es';
-import { CAR, ARENA, COLORS, COLLISION_GROUPS, PHYSICS } from '../../shared/constants.js';
-import { checkCurveSurface } from '../../shared/CurveSurface.js';
-import { buildCarMesh } from './CarMeshBuilder.js';
+import { CAR, ARENA, COLLISION_GROUPS, PHYSICS } from '../shared/constants.js';
+import { checkCurveSurface } from '../shared/CurveSurface.js';
 
-// Temp vectors reused each frame to avoid GC
-const _v1 = new CANNON.Vec3();
-const _v2 = new CANNON.Vec3();
-const _q1 = new CANNON.Quaternion();
-
-export class Car {
-  constructor(scene, world, position, color = COLORS.CYAN, direction = 1, arenaTrimeshBody = null, variantConfig = null) {
-    this.scene = scene;
+export class ServerCar {
+  constructor(world, position, direction = 1) {
     this.world = world;
-    this.color = color;
     this.direction = direction;
-    this.arenaTrimeshBody = arenaTrimeshBody;
-    this.variantConfig = variantConfig;
 
     // State
     this.boost = 33;
@@ -31,21 +20,16 @@ export class Car {
     this.jumpTime = 0;
     this.isDodging = false;
     this.dodgeTime = 0;
-    this.jumpLockout = 0;         // timestamp: suppress ground check briefly after jump
-    this._dodgeAngVel = null;     // world-space angular velocity maintained during dodge
-    this._stuckTimer = 0;         // time spent tilted near floor (for auto self-right)
+    this.jumpLockout = 0;
+    this._dodgeAngVel = null;
+    this._stuckTimer = 0;
 
-    // Surface tracking for wall driving
+    // Surface tracking
     this.surfaceNormal = new CANNON.Vec3(0, 1, 0);
     this.onWall = false;
     this.onGoalSurface = false;
 
     this._createPhysics(position);
-    this._createMesh();
-    this._createBoostTrail();
-
-    // Raycast result object (reused)
-    this._rayResult = new CANNON.RaycastResult();
   }
 
   _createPhysics(position) {
@@ -71,152 +55,6 @@ export class Car {
     this.world.addBody(this.body);
   }
 
-  _createMesh() {
-    if (this.variantConfig) {
-      const result = buildCarMesh(this.variantConfig);
-      this.mesh = result.mesh;
-      this.wheels = result.wheels;
-      this.bottomLight = result.bottomLight;
-    } else {
-      this._createSimpleMesh();
-    }
-
-    this.mesh.position.copy(this.body.position);
-    this.mesh.quaternion.copy(this.body.quaternion);
-    this.scene.add(this.mesh);
-  }
-
-  _createSimpleMesh() {
-    this.mesh = new THREE.Group();
-
-    const bodyMat = new THREE.MeshStandardMaterial({
-      color: 0x222244,
-      metalness: 0.7,
-      roughness: 0.3,
-      emissive: this.color,
-      emissiveIntensity: 0.15,
-    });
-
-    const neonMat = new THREE.MeshStandardMaterial({
-      color: this.color,
-      emissive: this.color,
-      emissiveIntensity: 3,
-    });
-
-    // Main body
-    const bodyGeo = new THREE.BoxGeometry(CAR.WIDTH, CAR.HEIGHT * 0.5, CAR.LENGTH);
-    const body = new THREE.Mesh(bodyGeo, bodyMat);
-    body.castShadow = true;
-    this.mesh.add(body);
-
-    // Top / cabin
-    const topGeo = new THREE.BoxGeometry(CAR.WIDTH * 0.72, CAR.HEIGHT * 0.45, CAR.LENGTH * 0.5);
-    const top = new THREE.Mesh(topGeo, bodyMat);
-    top.position.set(0, CAR.HEIGHT * 0.47, -CAR.LENGTH * 0.08);
-    this.mesh.add(top);
-
-    // Windshield
-    const shieldGeo = new THREE.BoxGeometry(CAR.WIDTH * 0.68, CAR.HEIGHT * 0.4, 0.1);
-    const shieldMat = new THREE.MeshStandardMaterial({
-      color: this.color,
-      emissive: this.color,
-      emissiveIntensity: 1.0,
-      transparent: true,
-      opacity: 0.6,
-    });
-    const shield = new THREE.Mesh(shieldGeo, shieldMat);
-    shield.position.set(0, CAR.HEIGHT * 0.45, CAR.LENGTH * 0.16);
-    shield.rotation.x = -0.3;
-    this.mesh.add(shield);
-
-    // Side neon strips
-    const stripGeo = new THREE.BoxGeometry(0.15, 0.2, CAR.LENGTH * 1.05);
-    [-1, 1].forEach((side) => {
-      const strip = new THREE.Mesh(stripGeo, neonMat);
-      strip.position.set(side * (CAR.WIDTH / 2 + 0.02), -0.05, 0);
-      this.mesh.add(strip);
-    });
-
-    // Front strip
-    const frontGeo = new THREE.BoxGeometry(CAR.WIDTH * 1.05, 0.2, 0.15);
-    const front = new THREE.Mesh(frontGeo, neonMat);
-    front.position.set(0, -0.05, CAR.LENGTH / 2 + 0.02);
-    this.mesh.add(front);
-
-    // Rear strip
-    const rear = new THREE.Mesh(frontGeo.clone(), neonMat);
-    rear.position.set(0, -0.05, -CAR.LENGTH / 2 - 0.02);
-    this.mesh.add(rear);
-
-    // Undercar neon glow
-    const underGeo = new THREE.PlaneGeometry(CAR.WIDTH * 0.8, CAR.LENGTH * 0.8);
-    const underMat = new THREE.MeshBasicMaterial({
-      color: this.color,
-      transparent: true,
-      opacity: 0.3,
-      side: THREE.DoubleSide,
-    });
-    const under = new THREE.Mesh(underGeo, underMat);
-    under.rotation.x = -Math.PI / 2;
-    under.position.y = -CAR.HEIGHT / 2 - 0.05;
-    this.mesh.add(under);
-
-    // Bottom glow light
-    this.bottomLight = new THREE.PointLight(this.color, 1.5, 8);
-    this.bottomLight.position.set(0, -0.5, 0);
-    this.mesh.add(this.bottomLight);
-
-    // Wheels
-    this.wheels = [];
-    const wheelGeo = new THREE.CylinderGeometry(0.38, 0.38, 0.25, 8);
-    const wheelMat = new THREE.MeshStandardMaterial({
-      color: 0x333344,
-      metalness: 0.6,
-      roughness: 0.4,
-    });
-
-    const wheelPositions = [
-      [-CAR.WIDTH / 2 + 0.1, -CAR.HEIGHT / 2 + 0.15, CAR.LENGTH * 0.3],
-      [CAR.WIDTH / 2 - 0.1, -CAR.HEIGHT / 2 + 0.15, CAR.LENGTH * 0.3],
-      [-CAR.WIDTH / 2 + 0.1, -CAR.HEIGHT / 2 + 0.15, -CAR.LENGTH * 0.3],
-      [CAR.WIDTH / 2 - 0.1, -CAR.HEIGHT / 2 + 0.15, -CAR.LENGTH * 0.3],
-    ];
-
-    wheelPositions.forEach((pos) => {
-      const wheel = new THREE.Mesh(wheelGeo, wheelMat);
-      wheel.rotation.z = Math.PI / 2;
-      wheel.position.set(...pos);
-      this.mesh.add(wheel);
-      this.wheels.push(wheel);
-    });
-  }
-
-  _createBoostTrail() {
-    this.boostFlame = new THREE.Group();
-
-    const flameMat = new THREE.MeshBasicMaterial({
-      color: COLORS.ORANGE,
-      transparent: true,
-      opacity: 0.8,
-    });
-
-    for (let i = 0; i < 3; i++) {
-      const size = 0.3 - i * 0.08;
-      const geo = new THREE.SphereGeometry(size, 6, 6);
-      const flame = new THREE.Mesh(geo, flameMat.clone());
-      flame.position.z = -CAR.LENGTH / 2 - 0.5 - i * 0.4;
-      this.boostFlame.add(flame);
-    }
-
-    const flameLight = new THREE.PointLight(COLORS.ORANGE, 1, 8);
-    flameLight.position.z = -CAR.LENGTH / 2 - 1;
-    this.boostFlame.add(flameLight);
-    this.flameLight = flameLight;
-
-    this.boostFlame.visible = false;
-    this.mesh.add(this.boostFlame);
-  }
-
   update(input, dt) {
     this._checkGround();
     this._handleSelfRight(input, dt);
@@ -225,14 +63,10 @@ export class Car {
     this._handleBoost(input, dt);
     this._handleAirControl(input, dt);
     this._applyStickyForce(dt);
-    this._syncMesh();
-    this._updateEffects(input, dt);
   }
 
   _checkGround() {
-    // After jumping, suppress ground detection for 100ms so the car
-    // can clear the floor threshold before _checkGround re-grounds it.
-    if (this.hasJumped && (performance.now() - this.jumpLockout) < 100) {
+    if (this.hasJumped && (Date.now() - this.jumpLockout) < 100) {
       this.isGrounded = false;
       return;
     }
@@ -240,11 +74,9 @@ export class Car {
     const wasGrounded = this.isGrounded;
     const pos = this.body.position;
 
-    // Try analytical curve detection (arena walls) and goal surfaces
-    const curveHit = this._checkCurveSurface(pos);
+    const curveHit = checkCurveSurface(pos);
     const goalHit = this._checkGoalSurface(pos);
 
-    // Pick the closer hit
     let hit = null;
     if (curveHit && goalHit) {
       hit = (curveHit.dist < goalHit.dist) ? curveHit : goalHit;
@@ -258,7 +90,6 @@ export class Car {
       this.surfaceNormal.copy(hit.normal);
       this.onWall = Math.abs(this.surfaceNormal.y) < 0.7;
 
-      // Magnetically snap car to the surface
       const offset = CAR.HEIGHT / 2 + 0.05;
       const targetX = hit.sx + hit.normal.x * offset;
       const targetY = hit.sy + hit.normal.y * offset;
@@ -269,7 +100,6 @@ export class Car {
       this.body.position.y += (targetY - pos.y) * snap;
       this.body.position.z += (targetZ - pos.z) * snap;
 
-      // Kill velocity component going into the surface
       const vDotN = this.body.velocity.dot(this.surfaceNormal);
       if (vDotN < 0) {
         this.body.velocity.x -= this.surfaceNormal.x * vDotN;
@@ -277,7 +107,6 @@ export class Car {
         this.body.velocity.z -= this.surfaceNormal.z * vDotN;
       }
     } else {
-      // Fallback: simple floor check
       const bottomY = pos.y - CAR.HEIGHT / 2;
       if (bottomY <= 0.5) {
         this.isGrounded = true;
@@ -298,10 +127,6 @@ export class Car {
     }
   }
 
-  _checkCurveSurface(pos) {
-    return checkCurveSurface(pos);
-  }
-
   _checkGoalSurface(pos) {
     const GW = ARENA.GOAL_WIDTH / 2;
     const GH = ARENA.GOAL_HEIGHT;
@@ -313,20 +138,17 @@ export class Car {
     let best = null;
     let bestDist = Infinity;
 
-    // Early exit: skip if car isn't near either goal
     if (Math.abs(pos.x) > GW + detectRange || pos.y > GH + detectRange) return null;
 
     for (const side of [-1, 1]) {
-      // Car must be beyond the goal mouth (in goal direction)
       if (side * pos.z < side * (HL - detectRange)) continue;
-      // Car must be before the back wall + detect range
       if (side * pos.z > side * (HL + GD + detectRange)) continue;
 
       const zMouth = side * HL;
       const zBack = side * (HL + GD);
       const zFilletStart = side * (HL + GD - GFR);
 
-      // -- Goal ceiling flat: y=GH --
+      // Goal ceiling flat
       if (Math.abs(pos.x) < GW - GFR && side * pos.z > side * zMouth && side * pos.z < side * zFilletStart) {
         const dist = Math.abs(pos.y - GH);
         if (dist < detectRange && dist < bestDist) {
@@ -335,7 +157,7 @@ export class Car {
         }
       }
 
-      // -- Goal back wall flat: z=zBack --
+      // Goal back wall flat
       if (Math.abs(pos.x) < GW - GFR && pos.y > GFR && pos.y < GH - GFR) {
         const dist = Math.abs(pos.z - zBack);
         if (dist < detectRange && dist < bestDist) {
@@ -344,7 +166,7 @@ export class Car {
         }
       }
 
-      // -- Goal side walls flat (2): x=±GW --
+      // Goal side walls flat
       for (const ps of [-1, 1]) {
         const wallX = ps * GW;
         if (pos.y > GFR && pos.y < GH - GFR && side * pos.z > side * zMouth && side * pos.z < side * zFilletStart) {
@@ -356,7 +178,7 @@ export class Car {
         }
       }
 
-      // -- Floor-to-back fillet: arc in YZ plane --
+      // Floor-to-back fillet
       if (Math.abs(pos.x) < GW - GFR) {
         const cy = GFR;
         const cz = side * (HL + GD - GFR);
@@ -366,20 +188,17 @@ export class Car {
         if (d > 0.001) {
           const uy = dcy / d;
           const uz = dcz / d;
-          // Valid quarter: uy <= 0 (below center) and side*uz >= 0 (toward back)
           if (uy <= 0 && side * uz >= 0) {
             const dist = Math.abs(d - GFR);
             if (dist < detectRange && dist < bestDist) {
               bestDist = dist;
-              const sy = cy + GFR * uy;
-              const sz = cz + GFR * uz;
-              best = { sx: pos.x, sy, sz, normal: new CANNON.Vec3(0, -uy, -uz), dist };
+              best = { sx: pos.x, sy: cy + GFR * uy, sz: cz + GFR * uz, normal: new CANNON.Vec3(0, -uy, -uz), dist };
             }
           }
         }
       }
 
-      // -- Ceiling-to-back fillet: arc in YZ plane --
+      // Ceiling-to-back fillet
       if (Math.abs(pos.x) < GW - GFR) {
         const cy = GH - GFR;
         const cz = side * (HL + GD - GFR);
@@ -389,20 +208,17 @@ export class Car {
         if (d > 0.001) {
           const uy = dcy / d;
           const uz = dcz / d;
-          // Valid quarter: uy >= 0 (above center) and side*uz >= 0 (toward back)
           if (uy >= 0 && side * uz >= 0) {
             const dist = Math.abs(d - GFR);
             if (dist < detectRange && dist < bestDist) {
               bestDist = dist;
-              const sy = cy + GFR * uy;
-              const sz = cz + GFR * uz;
-              best = { sx: pos.x, sy, sz, normal: new CANNON.Vec3(0, -uy, -uz), dist };
+              best = { sx: pos.x, sy: cy + GFR * uy, sz: cz + GFR * uz, normal: new CANNON.Vec3(0, -uy, -uz), dist };
             }
           }
         }
       }
 
-      // -- Floor-to-side fillets (2): arc in XY plane --
+      // Floor-to-side fillets
       for (const ps of [-1, 1]) {
         if (side * pos.z > side * zMouth && side * pos.z < side * zFilletStart) {
           const cx = ps * (GW - GFR);
@@ -413,21 +229,18 @@ export class Car {
           if (d > 0.001) {
             const ux = dcx / d;
             const uy = dcy / d;
-            // Valid quarter: ps*ux >= 0 (toward side wall) and uy <= 0 (below center)
             if (ps * ux >= 0 && uy <= 0) {
               const dist = Math.abs(d - GFR);
               if (dist < detectRange && dist < bestDist) {
                 bestDist = dist;
-                const sx = cx + GFR * ux;
-                const sy = cy + GFR * uy;
-                best = { sx, sy, sz: pos.z, normal: new CANNON.Vec3(-ux, -uy, 0), dist };
+                best = { sx: cx + GFR * ux, sy: cy + GFR * uy, sz: pos.z, normal: new CANNON.Vec3(-ux, -uy, 0), dist };
               }
             }
           }
         }
       }
 
-      // -- Ceiling-to-side fillets (2): arc in XY plane --
+      // Ceiling-to-side fillets
       for (const ps of [-1, 1]) {
         if (side * pos.z > side * zMouth && side * pos.z < side * zFilletStart) {
           const cx = ps * (GW - GFR);
@@ -438,21 +251,18 @@ export class Car {
           if (d > 0.001) {
             const ux = dcx / d;
             const uy = dcy / d;
-            // Valid quarter: ps*ux >= 0 (toward side wall) and uy >= 0 (above center)
             if (ps * ux >= 0 && uy >= 0) {
               const dist = Math.abs(d - GFR);
               if (dist < detectRange && dist < bestDist) {
                 bestDist = dist;
-                const sx = cx + GFR * ux;
-                const sy = cy + GFR * uy;
-                best = { sx, sy, sz: pos.z, normal: new CANNON.Vec3(-ux, -uy, 0), dist };
+                best = { sx: cx + GFR * ux, sy: cy + GFR * uy, sz: pos.z, normal: new CANNON.Vec3(-ux, -uy, 0), dist };
               }
             }
           }
         }
       }
 
-      // -- Side-to-back fillets (2): arc in XZ plane --
+      // Side-to-back fillets
       for (const ps of [-1, 1]) {
         if (pos.y > GFR && pos.y < GH - GFR) {
           const cx = ps * (GW - GFR);
@@ -463,14 +273,11 @@ export class Car {
           if (d > 0.001) {
             const ux = dcx / d;
             const uz = dcz / d;
-            // Valid quarter: ps*ux >= 0 (toward side) and side*uz >= 0 (toward back)
             if (ps * ux >= 0 && side * uz >= 0) {
               const dist = Math.abs(d - GFR);
               if (dist < detectRange && dist < bestDist) {
                 bestDist = dist;
-                const sx = cx + GFR * ux;
-                const sz = cz + GFR * uz;
-                best = { sx, sy: pos.y, sz, normal: new CANNON.Vec3(-ux, 0, -uz), dist };
+                best = { sx: cx + GFR * ux, sy: pos.y, sz: cz + GFR * uz, normal: new CANNON.Vec3(-ux, 0, -uz), dist };
               }
             }
           }
@@ -483,7 +290,7 @@ export class Car {
   }
 
   _handleSelfRight(input, dt) {
-    if (this.onWall) return; // don't self-right when on a wall
+    if (this.onWall) return;
 
     const up = this.body.quaternion.vmult(new CANNON.Vec3(0, 1, 0));
     const onFloor = this.body.position.y < CAR.HEIGHT * 3;
@@ -493,36 +300,31 @@ export class Car {
       return;
     }
 
-    const isTilted = up.y < 0.7;   // nose, tail, or side down
-    const isFlipped = up.y < 0.3;  // fully upside-down
+    const isTilted = up.y < 0.7;
+    const isFlipped = up.y < 0.3;
 
     if (!isTilted) {
       this._stuckTimer = 0;
       return;
     }
 
-    // Track how long car has been tilted near the floor
     this._stuckTimer = (this._stuckTimer || 0) + dt;
 
-    // Immediate self-right when fully flipped + any input
     const hasInput = input.throttle !== 0 || input.jumpPressed || input.steer !== 0;
     if (isFlipped && hasInput) {
       this._doSelfRight(0.2);
       return;
     }
 
-    // Auto self-right after being stuck tilted for 0.4s (no input required)
     if (this._stuckTimer > 0.4) {
       this._doSelfRight(0.25);
     }
   }
 
   _doSelfRight(slerpFactor) {
-    // Pop the car up if it isn't already rising
     if (this.body.velocity.y < 3) {
       this.body.velocity.y = 8;
     }
-    // Rotate towards upright, preserving yaw
     const euler = new CANNON.Vec3();
     this.body.quaternion.toEuler(euler);
     const target = new CANNON.Quaternion();
@@ -538,10 +340,8 @@ export class Car {
     const quat = this.body.quaternion;
     const normal = this.surfaceNormal;
 
-    // Get forward direction in world space
     const rawForward = quat.vmult(new CANNON.Vec3(0, 0, 1));
 
-    // Project forward onto the surface plane: forward - (forward·normal)*normal
     const dot = rawForward.dot(normal);
     const forward = new CANNON.Vec3(
       rawForward.x - dot * normal.x,
@@ -552,17 +352,14 @@ export class Car {
     if (fLen < 0.001) return;
     forward.scale(1 / fLen, forward);
 
-    // Right direction: cross(forward, normal)
     const right = new CANNON.Vec3();
     forward.cross(normal, right);
     const rLen = right.length();
     if (rLen < 0.001) return;
     right.scale(1 / rLen, right);
 
-    // Current forward speed
     const forwardSpeed = vel.dot(forward);
 
-    // Throttle
     if (input.throttle !== 0) {
       const maxSpeed = (input.boost && this.boost > 0) ? CAR.BOOST_MAX_SPEED : CAR.MAX_SPEED;
       const accel = input.throttle > 0 ? CAR.ACCELERATION : CAR.BRAKE_FORCE;
@@ -574,7 +371,6 @@ export class Car {
       vel.y += forward.y * dv;
       vel.z += forward.z * dv;
     } else {
-      // Deceleration — project velocity onto surface and decay
       const drag = Math.pow(0.02, dt);
       const surfVelFwd = vel.dot(forward);
       const surfVelRight = vel.dot(right);
@@ -586,13 +382,11 @@ export class Car {
       );
     }
 
-    // Steering — rotate around surface normal
     const handbraking = !!input.handbrake;
     if (input.steer !== 0 && (Math.abs(forwardSpeed) > 0.5 || handbraking)) {
       const turnDir = forwardSpeed >= 0 ? 1 : -1;
       const turnMultiplier = handbraking ? CAR.HANDBRAKE_TURN_MULTIPLIER : 1;
       const turnAmount = input.steer * CAR.TURN_SPEED * turnDir * turnMultiplier;
-      // Set angular velocity along surface normal
       this.body.angularVelocity.set(
         normal.x * turnAmount,
         normal.y * turnAmount,
@@ -602,14 +396,12 @@ export class Car {
       this.body.angularVelocity.scale(0.85, this.body.angularVelocity);
     }
 
-    // Kill sideways velocity (grip) — reduced during handbrake to allow drifting
     const gripFactor = handbraking ? CAR.HANDBRAKE_GRIP : 0.92;
     const sideSpeed = vel.dot(right);
     vel.x -= right.x * sideSpeed * gripFactor;
     vel.y -= right.y * sideSpeed * gripFactor;
     vel.z -= right.z * sideSpeed * gripFactor;
 
-    // Align car to surface normal
     this._alignToSurface(dt);
   }
 
@@ -617,10 +409,8 @@ export class Car {
     const normal = this.surfaceNormal;
     const carUp = this.body.quaternion.vmult(new CANNON.Vec3(0, 1, 0));
 
-    // If already aligned, skip
     if (carUp.dot(normal) > 0.999) return;
 
-    // Find rotation from carUp to normal
     const cross = new CANNON.Vec3();
     carUp.cross(normal, cross);
     const crossLen = cross.length();
@@ -630,8 +420,7 @@ export class Car {
     const dotVal = Math.min(1, Math.max(-1, carUp.dot(normal)));
     const angle = Math.acos(dotVal);
 
-    // Slerp toward aligned orientation
-    const slerpFactor = Math.min(1, 8 * dt); // fast alignment
+    const slerpFactor = Math.min(1, 8 * dt);
     const correction = new CANNON.Quaternion();
     correction.setFromAxisAngle(cross, angle * slerpFactor);
     correction.mult(this.body.quaternion, this.body.quaternion);
@@ -641,19 +430,15 @@ export class Car {
   _applyStickyForce(dt) {
     if (!this.isGrounded) return;
 
-    // How wall-like is the surface? 0 = flat floor/ceiling, 1 = vertical wall
     const wallFactor = 1 - Math.abs(this.surfaceNormal.y);
-    if (wallFactor < 0.05 && !this.onGoalSurface) return; // effectively flat floor, nothing to do
+    if (wallFactor < 0.05 && !this.onGoalSurface) return;
 
-    // Don't stick to arena ceiling (normal pointing down means ceiling)
-    // But DO stick to goal ceiling when on a goal surface
     if (this.surfaceNormal.y < -0.5 && !this.onGoalSurface) {
       this.isGrounded = false;
       this.onWall = false;
       return;
     }
 
-    // Need minimum speed to stay on steep walls (like Rocket League)
     if (wallFactor > 0.3) {
       const speed = this.body.velocity.length();
       if (speed < 2) {
@@ -663,18 +448,14 @@ export class Car {
       }
     }
 
-    // Graduated gravity cancellation — stronger as surface gets more vertical
-    // PHYSICS.GRAVITY is negative, so this adds upward force
     this.body.force.y -= PHYSICS.GRAVITY * CAR.MASS * Math.max(wallFactor, this.onGoalSurface ? 1 : 0);
 
     if (this.onGoalSurface) {
-      // Push into surface in all axes (Y included for ceiling driving)
       const stickForce = CAR.WALL_STICK_FORCE * CAR.MASS;
       this.body.force.x -= this.surfaceNormal.x * stickForce;
       this.body.force.y -= this.surfaceNormal.y * stickForce;
       this.body.force.z -= this.surfaceNormal.z * stickForce;
     } else {
-      // Push car into wall surface (XZ only — omit Y so we don't fight gravity cancel)
       const stickForce = CAR.WALL_STICK_FORCE * CAR.MASS * wallFactor;
       this.body.force.x -= this.surfaceNormal.x * stickForce;
       this.body.force.z -= this.surfaceNormal.z * stickForce;
@@ -682,9 +463,8 @@ export class Car {
   }
 
   _handleJump(input, dt) {
-    const now = performance.now();
+    const now = Date.now();
 
-    // First jump — launch along surface normal
     if (input.jumpPressed && this.isGrounded && !this.hasJumped) {
       const n = this.surfaceNormal;
       this.body.velocity.x += n.x * CAR.JUMP_FORCE;
@@ -700,12 +480,10 @@ export class Car {
       return;
     }
 
-    // Double jump / dodge
     if (input.jumpPressed && !this.isGrounded && this.canDoubleJump &&
         (now - this.jumpTime) < CAR.JUMP_COOLDOWN) {
 
       if (input.throttle !== 0 || input.steer !== 0) {
-        // Dodge in the input direction
         const forward = this.body.quaternion.vmult(new CANNON.Vec3(0, 0, 1));
         const right = this.body.quaternion.vmult(new CANNON.Vec3(1, 0, 0));
         forward.y = 0; forward.normalize();
@@ -718,14 +496,10 @@ export class Car {
         );
         dodgeDir.normalize();
 
-        // Speed burst in dodge direction
         this.body.velocity.x += dodgeDir.x * CAR.DODGE_FORCE;
         this.body.velocity.z += dodgeDir.z * CAR.DODGE_FORCE;
         this.body.velocity.y = CAR.DODGE_VERTICAL;
 
-        // Flip spin in car's local frame, transformed to world space
-        // pitch around local X (right axis), roll around local Z (forward axis)
-        // 20 rad/s completes a full rotation (~360°) within the 350ms dodge window
         const localSpin = new CANNON.Vec3(
           input.throttle * 20,
           0,
@@ -737,18 +511,15 @@ export class Car {
         this.isDodging = true;
         this.dodgeTime = now;
       } else {
-        // No directional input → small upward pop
         this.body.velocity.y = CAR.DOUBLE_JUMP_FORCE;
       }
       this.canDoubleJump = false;
     }
 
-    // Maintain flip spin during dodge (counteracts angular damping)
     if (this.isDodging) {
       this.body.angularVelocity.copy(this._dodgeAngVel);
     }
 
-    // End dodge spin after 350ms (~one full rotation at 20 rad/s)
     if (this.isDodging && (now - this.dodgeTime) > 350) {
       this.isDodging = false;
     }
@@ -794,34 +565,6 @@ export class Car {
       angVel.x += axis.x * input.airRoll * CAR.AIR_ROLL_SPEED * dt;
       angVel.y += axis.y * input.airRoll * CAR.AIR_ROLL_SPEED * dt;
       angVel.z += axis.z * input.airRoll * CAR.AIR_ROLL_SPEED * dt;
-    }
-  }
-
-  _syncMesh() {
-    this.mesh.position.copy(this.body.position);
-    this.mesh.quaternion.copy(this.body.quaternion);
-
-    const speed = this.body.velocity.length();
-    this.wheels.forEach((wheel) => {
-      wheel.rotation.x += speed * 0.05;
-    });
-  }
-
-  _updateEffects(input, dt) {
-    const boosting = input.boost && this.boost > 0;
-    this.boostFlame.visible = boosting;
-
-    if (boosting) {
-      this.boostFlame.children.forEach((child) => {
-        if (child.isMesh) {
-          child.scale.setScalar(0.8 + Math.random() * 0.5);
-          child.material.opacity = 0.5 + Math.random() * 0.5;
-        }
-      });
-      this.flameLight.intensity = 1 + Math.random() * 1.5;
-      this.bottomLight.intensity = 2.0;
-    } else {
-      this.bottomLight.intensity = 1.0;
     }
   }
 

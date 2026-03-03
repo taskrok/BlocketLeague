@@ -13,11 +13,15 @@ export function createArenaMaterial() {
     roughness: 0.8,
     metalness: 0.2,
     side: THREE.DoubleSide,
+    transparent: true,
+    opacity: 1.0,
+    depthWrite: true,
   });
 
   material.onBeforeCompile = (shader) => {
     shader.uniforms.gridCellSize = { value: ARENA.GRID_CELL_SIZE };
-    shader.uniforms.gridColor = { value: new THREE.Color(COLORS.GRID) };
+    shader.uniforms.gridColorBlue = { value: new THREE.Color(0x0088ff) };
+    shader.uniforms.gridColorRed = { value: new THREE.Color(0xff2200) };
     shader.uniforms.gridEmissiveStrength = { value: 2.5 };
 
     // Vertex shader: pass world position and world normal
@@ -35,15 +39,17 @@ export function createArenaMaterial() {
       vWorldNrm = normalize(mat3(modelMatrix) * normal);`
     );
 
-    // Fragment shader: triplanar grid
+    // Fragment shader: triplanar grid with per-half coloring
     shader.fragmentShader = shader.fragmentShader.replace(
       '#include <common>',
       `#include <common>
       varying vec3 vWorldPos;
       varying vec3 vWorldNrm;
       uniform float gridCellSize;
-      uniform vec3 gridColor;
+      uniform vec3 gridColorBlue;
+      uniform vec3 gridColorRed;
       uniform float gridEmissiveStrength;
+      float arenaGridFactor;
 
       float gridLine(vec2 coord) {
         vec2 grid = abs(fract(coord - 0.5) - 0.5);
@@ -65,13 +71,27 @@ export function createArenaMaterial() {
         float gXY = gridLine(vWorldPos.xy / gridCellSize); // end walls (front/back)
         float gYZ = gridLine(vWorldPos.yz / gridCellSize); // side walls (left/right)
 
-        float gridFactor = gXZ * blend.y + gXY * blend.z + gYZ * blend.x;
-        totalEmissiveRadiance += gridColor * gridFactor * gridEmissiveStrength;
+        arenaGridFactor = gXZ * blend.y + gXY * blend.z + gYZ * blend.x;
+
+        // Blue grid for negative-Z half, red for positive-Z half
+        float zBlend = smoothstep(-3.0, 3.0, vWorldPos.z);
+        vec3 gridCol = mix(gridColorBlue, gridColorRed, zBlend);
+
+        totalEmissiveRadiance += gridCol * arenaGridFactor * gridEmissiveStrength;
+      }`
+    );
+
+    // Back faces (camera outside arena) become transparent
+    shader.fragmentShader = shader.fragmentShader.replace(
+      '#include <output_fragment>',
+      `#include <output_fragment>
+      if (!gl_FrontFacing) {
+        gl_FragColor.a = 0.06 + arenaGridFactor * 0.35;
       }`
     );
   };
 
-  material.customProgramCacheKey = () => 'arena-neon-grid-v2';
+  material.customProgramCacheKey = () => 'arena-neon-grid-v3';
 
   return material;
 }

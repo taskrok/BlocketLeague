@@ -17,6 +17,7 @@ const GW = ARENA.GOAL_WIDTH / 2;
 const GH = ARENA.GOAL_HEIGHT;
 const GD = ARENA.GOAL_DEPTH;
 const R  = ARENA.CURVE_RADIUS;
+const CR = ARENA.CORNER_RADIUS;  // XZ corner radius
 
 export class Arena {
   constructor(scene, world) {
@@ -25,11 +26,83 @@ export class Arena {
     this.meshes = [];
 
     this._buildArenaShell();
+    this._buildGrassFloor();
     this._buildTrimeshCollider();
     this._buildCarColliders();
     this._buildGoals();
     this._buildLighting();
     this._buildFieldMarkings();
+  }
+
+  // ========== GRASS FLOOR ==========
+
+  _buildGrassFloor() {
+    // Procedural striped grass shader — mowed-field look
+    const grassMat = new THREE.ShaderMaterial({
+      uniforms: {
+        baseColor1: { value: new THREE.Color(0x2d7a2d) },  // lighter green stripe
+        baseColor2: { value: new THREE.Color(0x1f5c1f) },  // darker green stripe
+        stripeWidth: { value: 8.0 },                        // width of each mow stripe
+        arenaHalfW: { value: HW },
+        arenaHalfL: { value: HL },
+        curveR: { value: R },
+        cornerR: { value: CR },
+      },
+      vertexShader: `
+        varying vec2 vWorldXZ;
+        void main() {
+          vec4 worldPos = modelMatrix * vec4(position, 1.0);
+          vWorldXZ = worldPos.xz;
+          gl_Position = projectionMatrix * viewMatrix * worldPos;
+        }
+      `,
+      fragmentShader: `
+        uniform vec3 baseColor1;
+        uniform vec3 baseColor2;
+        uniform float stripeWidth;
+        uniform float arenaHalfW;
+        uniform float arenaHalfL;
+        uniform float curveR;
+        uniform float cornerR;
+
+        varying vec2 vWorldXZ;
+
+        void main() {
+          // Mow stripes along Z axis
+          float stripe = sin(vWorldXZ.y / stripeWidth * 3.14159) * 0.5 + 0.5;
+          vec3 col = mix(baseColor2, baseColor1, stripe);
+
+          // Subtle per-blade noise via high-freq sin
+          float noise = fract(sin(dot(vWorldXZ, vec2(12.9898, 78.233))) * 43758.5453);
+          col += (noise - 0.5) * 0.03;
+
+          // Fade out near walls so the neon floor underneath peeks through
+          float dx = max(0.0, abs(vWorldXZ.x) - (arenaHalfW - curveR));
+          float dz = max(0.0, abs(vWorldXZ.y) - (arenaHalfL - curveR));
+          float edgeDist = max(dx, dz);
+          float fade = 1.0 - smoothstep(0.0, curveR * 0.8, edgeDist);
+
+          // Also fade at XZ corners (rounded)
+          if (dx > 0.0 && dz > 0.0) {
+            float cornerDist = length(vec2(dx, dz));
+            fade = 1.0 - smoothstep(0.0, curveR * 0.8, cornerDist);
+          }
+
+          gl_FragColor = vec4(col, fade);
+        }
+      `,
+      transparent: true,
+      depthWrite: false,
+      side: THREE.FrontSide,
+    });
+
+    const grassGeo = new THREE.PlaneGeometry(ARENA.WIDTH, ARENA.LENGTH);
+    grassGeo.rotateX(-Math.PI / 2);
+    const grassMesh = new THREE.Mesh(grassGeo, grassMat);
+    grassMesh.position.y = 0.03; // just above the shell floor
+    grassMesh.renderOrder = 1;
+    this.scene.add(grassMesh);
+    this.meshes.push(grassMesh);
   }
 
   // ========== VISUAL MESH (single curved geometry) ==========
@@ -140,6 +213,10 @@ export class Arena {
     const mask = COLLISION_GROUPS.CAR;
     const t = ARENA.WALL_THICKNESS;
 
+    // Flat extents — where the straight walls end before the corner arc begins
+    const cornerFlatHW = HW - CR;  // 45 - 20 = 25
+    const cornerFlatHL = HL - CR;  // 65 - 20 = 45
+
     // Floor plane
     const floorBody = new CANNON.Body({
       type: CANNON.Body.STATIC,
@@ -158,40 +235,50 @@ export class Arena {
     ceilBody.addShape(new CANNON.Box(new CANNON.Vec3(HW + t, t / 2, HL + t)));
     this.world.addBody(ceilBody);
 
-    // Side walls — full height, offset just outside the curve endpoint
-    // The car code handles the curved transition magnetically;
-    // these walls are containment only.
+    // Wall boxes are pushed 1.5 units outward from the visual wall surface.
+    // This prevents the car's tilted physics box from clipping the inner face
+    // during the floor-to-wall fillet transition. The magnetic snap handles
+    // precise wall contact; these boxes are last-resort containment.
+    const wallOutset = 1.5;
+
+    // Side walls — shortened to stop at corner arc start
     [-1, 1].forEach(side => {
       const body = new CANNON.Body({
         type: CANNON.Body.STATIC,
-        position: new CANNON.Vec3(side * (HW + t / 2), H / 2, 0),
+        position: new CANNON.Vec3(side * (HW + t / 2 + wallOutset), H / 2, 0),
         collisionFilterGroup: group, collisionFilterMask: mask,
       });
-      body.addShape(new CANNON.Box(new CANNON.Vec3(t / 2, H / 2, HL + t)));
+      body.addShape(new CANNON.Box(new CANNON.Vec3(t / 2, H / 2, cornerFlatHL)));
       this.world.addBody(body);
     });
 
-    // End walls (with goal openings)
+    // End walls (with goal openings) — shortened to stop at corner arc start
     [-1, 1].forEach(side => {
-      const z = side * (HL + t / 2);
-      const leftW = HW - GW;
+      const z = side * (HL + t / 2 + wallOutset);
+      // Width from goal edge to corner start
+      const sectionW = cornerFlatHW - GW;
 
-      const leftBody = new CANNON.Body({
-        type: CANNON.Body.STATIC,
-        shape: new CANNON.Box(new CANNON.Vec3(leftW / 2, H / 2, t / 2)),
-        position: new CANNON.Vec3(-(GW + leftW / 2), H / 2, z),
-        collisionFilterGroup: group, collisionFilterMask: mask,
-      });
-      this.world.addBody(leftBody);
+      if (sectionW > 0) {
+        // Left section: from -cornerFlatHW to -GW
+        const leftBody = new CANNON.Body({
+          type: CANNON.Body.STATIC,
+          shape: new CANNON.Box(new CANNON.Vec3(sectionW / 2, H / 2, t / 2)),
+          position: new CANNON.Vec3(-(GW + sectionW / 2), H / 2, z),
+          collisionFilterGroup: group, collisionFilterMask: mask,
+        });
+        this.world.addBody(leftBody);
 
-      const rightBody = new CANNON.Body({
-        type: CANNON.Body.STATIC,
-        shape: new CANNON.Box(new CANNON.Vec3(leftW / 2, H / 2, t / 2)),
-        position: new CANNON.Vec3(GW + leftW / 2, H / 2, z),
-        collisionFilterGroup: group, collisionFilterMask: mask,
-      });
-      this.world.addBody(rightBody);
+        // Right section: from +GW to +cornerFlatHW
+        const rightBody = new CANNON.Body({
+          type: CANNON.Body.STATIC,
+          shape: new CANNON.Box(new CANNON.Vec3(sectionW / 2, H / 2, t / 2)),
+          position: new CANNON.Vec3(GW + sectionW / 2, H / 2, z),
+          collisionFilterGroup: group, collisionFilterMask: mask,
+        });
+        this.world.addBody(rightBody);
+      }
 
+      // Top section above goal
       const topH = (H - GH) / 2;
       const topBody = new CANNON.Body({
         type: CANNON.Body.STATIC,
@@ -201,15 +288,49 @@ export class Arena {
       });
       this.world.addBody(topBody);
     });
+
+    // Corner arc colliders — approximate each corner with angled box segments
+    const CORNER_SEGMENTS = 6;
+    const segAngle = (Math.PI / 2) / CORNER_SEGMENTS;
+    const chordHalf = (CR + t) * Math.tan(segAngle / 2);
+
+    // 4 corners: (sx, sz) = sign of X center, sign of Z center
+    [[-1, -1], [-1, 1], [1, -1], [1, 1]].forEach(([sx, sz]) => {
+      const ccx = sx * cornerFlatHW;
+      const ccz = sz * cornerFlatHL;
+
+      for (let i = 0; i < CORNER_SEGMENTS; i++) {
+        const theta = (i + 0.5) * segAngle;
+
+        // Push corner segments outward by wallOutset too
+        const r = CR + t / 2 + wallOutset;
+        const px = ccx + sx * r * Math.sin(theta);
+        const pz = ccz + sz * r * Math.cos(theta);
+
+        const yRot = Math.atan2(sx * Math.sin(theta), sz * Math.cos(theta));
+
+        const body = new CANNON.Body({
+          type: CANNON.Body.STATIC,
+          position: new CANNON.Vec3(px, H / 2, pz),
+          collisionFilterGroup: group, collisionFilterMask: mask,
+        });
+        body.addShape(new CANNON.Box(new CANNON.Vec3(chordHalf, H / 2, t / 2)));
+        body.quaternion.setFromEuler(0, yRot, 0);
+        this.world.addBody(body);
+      }
+    });
   }
 
-  // ========== GOALS (same as before) ==========
+  // ========== GOALS ==========
+  // Ball collisions handled by trimesh (which now includes goal interior geometry).
+  // Only car-containment box colliders here (same pattern as arena car colliders).
+  // Visual overlays are decoration only — no physics.
 
   _buildGoals() {
-    const gw = GW;
-    const gh = GH;
-    const gd = GD;
-    const t = 0.5;
+    const t = ARENA.WALL_THICKNESS;
+    const wallOutset = 1.5;
+    const group = COLLISION_GROUPS.ARENA_BOXES;
+    const mask = COLLISION_GROUPS.CAR;
 
     const goalMaterials = [
       new THREE.MeshStandardMaterial({
@@ -228,70 +349,61 @@ export class Arena {
       }),
     ];
 
-    // Goal bodies collide with both ball and car
-    const goalGroup = COLLISION_GROUPS.ARENA_TRIMESH | COLLISION_GROUPS.ARENA_BOXES;
-    const goalMask = COLLISION_GROUPS.BALL | COLLISION_GROUPS.CAR;
-
     [-1, 1].forEach((side, idx) => {
       const zBase = side * HL;
-      const zBack = zBase + side * gd;
+      const zBack = zBase + side * GD;
 
-      // Back wall of goal
+      // --- Car-containment box colliders ---
+
+      // Back wall
       const backBody = new CANNON.Body({
         type: CANNON.Body.STATIC,
-        shape: new CANNON.Box(new CANNON.Vec3(gw, gh / 2, t / 2)),
-        position: new CANNON.Vec3(0, gh / 2, zBack),
-        collisionFilterGroup: goalGroup,
-        collisionFilterMask: goalMask,
+        shape: new CANNON.Box(new CANNON.Vec3(GW, GH / 2, t / 2)),
+        position: new CANNON.Vec3(0, GH / 2, side * (HL + GD + t / 2 + wallOutset)),
+        collisionFilterGroup: group,
+        collisionFilterMask: mask,
       });
       this.world.addBody(backBody);
 
-      const backGeo = new THREE.BoxGeometry(gw * 2, gh, t);
-      const backMesh = new THREE.Mesh(backGeo, goalMaterials[idx]);
-      backMesh.position.set(0, gh / 2, zBack);
-      this.scene.add(backMesh);
-
-      // Side walls of goal
+      // Side walls
       [-1, 1].forEach((sx) => {
         const sideBody = new CANNON.Body({
           type: CANNON.Body.STATIC,
-          shape: new CANNON.Box(new CANNON.Vec3(t / 2, gh / 2, gd / 2)),
-          position: new CANNON.Vec3(sx * gw, gh / 2, zBase + side * gd / 2),
-          collisionFilterGroup: goalGroup,
-          collisionFilterMask: goalMask,
+          shape: new CANNON.Box(new CANNON.Vec3(t / 2, GH / 2, GD / 2)),
+          position: new CANNON.Vec3(sx * (GW + t / 2 + wallOutset), GH / 2, zBase + side * GD / 2),
+          collisionFilterGroup: group,
+          collisionFilterMask: mask,
         });
         this.world.addBody(sideBody);
-
-        const sideGeo = new THREE.BoxGeometry(t, gh, gd);
-        const sideMesh = new THREE.Mesh(sideGeo, goalMaterials[idx]);
-        sideMesh.position.set(sx * gw, gh / 2, zBase + side * gd / 2);
-        this.scene.add(sideMesh);
       });
 
-      // Ceiling of goal
+      // Ceiling
       const ceilBody = new CANNON.Body({
         type: CANNON.Body.STATIC,
-        shape: new CANNON.Box(new CANNON.Vec3(gw, t / 2, gd / 2)),
-        position: new CANNON.Vec3(0, gh, zBase + side * gd / 2),
-        collisionFilterGroup: goalGroup,
-        collisionFilterMask: goalMask,
+        shape: new CANNON.Box(new CANNON.Vec3(GW, t / 2, GD / 2)),
+        position: new CANNON.Vec3(0, GH + t / 2 + wallOutset, zBase + side * GD / 2),
+        collisionFilterGroup: group,
+        collisionFilterMask: mask,
       });
       this.world.addBody(ceilBody);
 
-      const ceilGeo = new THREE.BoxGeometry(gw * 2, t, gd);
-      const ceilMesh = new THREE.Mesh(ceilGeo, goalMaterials[idx]);
-      ceilMesh.position.set(0, gh, zBase + side * gd / 2);
-      this.scene.add(ceilMesh);
+      // --- Visual overlays (decoration only, no physics) ---
+
+      // Transparent back wall indicator
+      const backGeo = new THREE.BoxGeometry(GW * 2, GH, 0.5);
+      const backMesh = new THREE.Mesh(backGeo, goalMaterials[idx]);
+      backMesh.position.set(0, GH / 2, zBack);
+      this.scene.add(backMesh);
 
       // Goal line glow on floor
-      const lineGeo = new THREE.BoxGeometry(gw * 2, 0.05, 0.3);
+      const lineGeo = new THREE.BoxGeometry(GW * 2, 0.05, 0.3);
       const lineMat = new THREE.MeshStandardMaterial({
         color: idx === 0 ? COLORS.GOAL_BLUE : COLORS.GOAL_ORANGE,
         emissive: idx === 0 ? COLORS.GOAL_BLUE : COLORS.GOAL_ORANGE,
         emissiveIntensity: 2,
       });
       const line = new THREE.Mesh(lineGeo, lineMat);
-      line.position.set(0, 0.03, zBase);
+      line.position.set(0, 0.06, zBase);
       this.scene.add(line);
     });
   }
@@ -310,7 +422,7 @@ export class Arena {
     ];
 
     positions.forEach((pos) => {
-      const light = new THREE.PointLight(0x4466aa, 0.6, 80);
+      const light = new THREE.PointLight(0x4466aa, 0.6, 110);
       light.position.set(...pos);
       this.scene.add(light);
     });
@@ -327,34 +439,53 @@ export class Arena {
   // ========== FIELD MARKINGS ==========
 
   _buildFieldMarkings() {
-    const lineMat = new THREE.MeshStandardMaterial({
-      color: COLORS.CYAN,
-      emissive: COLORS.CYAN,
-      emissiveIntensity: 0.8,
-      transparent: true,
-      opacity: 0.6,
-    });
+    const blueColor = 0x0088ff;
+    const redColor = 0xff2200;
 
-    // Center line
+    // Center line — neutral white divider
+    const centerMat = new THREE.MeshStandardMaterial({
+      color: 0xffffff,
+      emissive: 0xffffff,
+      emissiveIntensity: 0.6,
+      transparent: true,
+      opacity: 0.5,
+    });
     const centerGeo = new THREE.BoxGeometry(ARENA.WIDTH, 0.02, 0.2);
-    const centerLine = new THREE.Mesh(centerGeo, lineMat);
-    centerLine.position.y = 0.02;
+    const centerLine = new THREE.Mesh(centerGeo, centerMat);
+    centerLine.position.y = 0.06;
     this.scene.add(centerLine);
 
-    // Center circle
-    const circleGeo = new THREE.RingGeometry(9.8, 10.2, 64);
-    const circleMat = new THREE.MeshStandardMaterial({
-      color: COLORS.CYAN,
-      emissive: COLORS.CYAN,
+    // Center circle — blue half (negative Z, player 1 side)
+    // After rotation.x = -PI/2: theta=PI..2PI maps to -Z half
+    const blueRingGeo = new THREE.RingGeometry(13, 13.4, 32, 1, Math.PI, Math.PI);
+    const blueRingMat = new THREE.MeshStandardMaterial({
+      color: blueColor,
+      emissive: blueColor,
       emissiveIntensity: 0.8,
       transparent: true,
       opacity: 0.5,
       side: THREE.DoubleSide,
     });
-    const circle = new THREE.Mesh(circleGeo, circleMat);
-    circle.rotation.x = -Math.PI / 2;
-    circle.position.y = 0.02;
-    this.scene.add(circle);
+    const blueRing = new THREE.Mesh(blueRingGeo, blueRingMat);
+    blueRing.rotation.x = -Math.PI / 2;
+    blueRing.position.y = 0.06;
+    this.scene.add(blueRing);
+
+    // Center circle — red half (positive Z, player 2 side)
+    // After rotation.x = -PI/2: theta=0..PI maps to +Z half
+    const redRingGeo = new THREE.RingGeometry(13, 13.4, 32, 1, 0, Math.PI);
+    const redRingMat = new THREE.MeshStandardMaterial({
+      color: redColor,
+      emissive: redColor,
+      emissiveIntensity: 0.8,
+      transparent: true,
+      opacity: 0.5,
+      side: THREE.DoubleSide,
+    });
+    const redRing = new THREE.Mesh(redRingGeo, redRingMat);
+    redRing.rotation.x = -Math.PI / 2;
+    redRing.position.y = 0.06;
+    this.scene.add(redRing);
   }
 
   // ========== GOAL DETECTION ==========

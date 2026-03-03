@@ -9,6 +9,7 @@ const TRIGGER_THRESHOLD = 0.1;
 // Xbox button indices
 const GP_A = 0;
 const GP_B = 1;
+const GP_X = 2;
 const GP_Y = 3;
 const GP_LB = 4;
 const GP_RB = 5;
@@ -32,6 +33,7 @@ export class InputManager {
       airRoll: 0,     // -1 (left), 0, 1 (right)
       pitchUp: false,
       pitchDown: false,
+      handbrake: false,
     };
 
     // Keyboard edge detection
@@ -117,6 +119,8 @@ export class InputManager {
     const airRollLeft = gp.buttons[GP_LB] ? gp.buttons[GP_LB].pressed : false;
     const airRollRight = gp.buttons[GP_RB] ? gp.buttons[GP_RB].pressed : false;
 
+    const handbrake = gp.buttons[GP_X] ? gp.buttons[GP_X].pressed : false;
+
     return {
       throttle,
       steer,
@@ -128,6 +132,7 @@ export class InputManager {
       airRollRight,
       pitchUp,
       pitchDown,
+      handbrake,
     };
   }
 
@@ -160,6 +165,8 @@ export class InputManager {
     const kbPitchUp = !!(k['KeyW'] || k['ArrowUp']);
     const kbPitchDown = !!(k['KeyS'] || k['ArrowDown']);
 
+    const kbHandbrake = !!(k['ControlLeft'] || k['ControlRight']);
+
     // --- Gamepad ---
     const gp = this._pollGamepad();
 
@@ -174,6 +181,7 @@ export class InputManager {
       this.state.airRoll = kbAirRoll;
       this.state.pitchUp = kbPitchUp;
       this.state.pitchDown = kbPitchDown;
+      this.state.handbrake = kbHandbrake;
       return;
     }
 
@@ -204,6 +212,9 @@ export class InputManager {
     // Pitch: OR
     this.state.pitchUp = kbPitchUp || gp.pitchUp;
     this.state.pitchDown = kbPitchDown || gp.pitchDown;
+
+    // Handbrake: OR
+    this.state.handbrake = kbHandbrake || gp.handbrake;
   }
 
   _showGamepadNotification(message) {

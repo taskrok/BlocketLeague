@@ -6,8 +6,9 @@ import * as THREE from 'three';
 import { ARENA, BOOST_PAD, BOOST_PAD_LAYOUT, COLORS } from '../../shared/constants.js';
 
 export class BoostPads {
-  constructor(scene) {
+  constructor(scene, isRemote = false) {
     this.scene = scene;
+    this.isRemote = isRemote;
     this.pads = [];
 
     this._createPads();
@@ -53,7 +54,7 @@ export class BoostPads {
     });
     const base = new THREE.Mesh(baseGeo, baseMat);
     base.rotation.x = -Math.PI / 2;
-    base.position.y = 0.03;
+    base.position.y = 0.08;
     group.add(base);
 
     if (isLarge) {
@@ -108,11 +109,13 @@ export class BoostPads {
 
     this.pads.forEach((pad) => {
       if (!pad.active) {
-        // Respawn timer
-        pad.respawnTimer -= dt;
-        if (pad.respawnTimer <= 0) {
-          pad.active = true;
-          pad.mesh.visible = true;
+        if (!this.isRemote) {
+          // Respawn timer (only in single-player; server handles in multiplayer)
+          pad.respawnTimer -= dt;
+          if (pad.respawnTimer <= 0) {
+            pad.active = true;
+            pad.mesh.visible = true;
+          }
         }
         return;
       }
@@ -125,24 +128,25 @@ export class BoostPads {
           Math.sin(time * 3) * 0.2;
       }
 
-      // Check car collisions
-      cars.forEach((car) => {
-        if (!pad.active) return;
-        const carPos = car.getPosition();
-        const dx = carPos.x - pad.position.x;
-        const dz = carPos.z - pad.position.z;
-        const dist = Math.sqrt(dx * dx + dz * dz);
+      if (!this.isRemote) {
+        // Check car collisions (only in single-player; server handles in multiplayer)
+        cars.forEach((car) => {
+          if (!pad.active) return;
+          const carPos = car.getPosition();
+          const dx = carPos.x - pad.position.x;
+          const dz = carPos.z - pad.position.z;
+          const dist = Math.sqrt(dx * dx + dz * dz);
 
-        if (dist < pad.radius + 1.5) {
-          // Only pick up if not full (or if large and not at max)
-          if (car.boost < 100 || pad.isLarge) {
-            car.addBoost(pad.amount);
-            pad.active = false;
-            pad.mesh.visible = false;
-            pad.respawnTimer = pad.respawnTime;
+          if (dist < pad.radius + 1.5) {
+            if (car.boost < 100 || pad.isLarge) {
+              car.addBoost(pad.amount);
+              pad.active = false;
+              pad.mesh.visible = false;
+              pad.respawnTimer = pad.respawnTime;
+            }
           }
-        }
-      });
+        });
+      }
     });
   }
 }

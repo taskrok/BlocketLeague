@@ -1,5 +1,6 @@
 // ============================================
 // Game - Main game loop and state management
+// Supports both single-player (vs AI) and online multiplayer
 // ============================================
 
 import * as THREE from 'three';
@@ -10,6 +11,7 @@ import { UnrealBloomPass } from 'three/examples/jsm/postprocessing/UnrealBloomPa
 
 import { Arena } from './Arena.js';
 import { Car } from './Car.js';
+import { generateCarVariant } from './CarVariants.js';
 import { Ball } from './Ball.js';
 import { BoostPads } from './BoostPads.js';
 import { InputManager } from './InputManager.js';
@@ -18,38 +20,53 @@ import { HUD } from './HUD.js';
 import {
   PHYSICS, ARENA as ARENA_CONST, BALL as BALL_CONST,
   COLORS, SPAWNS, GAME, CAR as CAR_CONST, COLLISION_GROUPS,
+  NETWORK,
 } from '../../shared/constants.js';
 
 export class Game {
-  constructor(canvas) {
+  constructor(canvas, mode = 'singleplayer', networkManager = null) {
     this.canvas = canvas;
+    this.mode = mode;
+    this.network = networkManager;
 
     // Game state
-    this.state = 'countdown'; // countdown, playing, goal, overtime, ended
+    this.state = 'countdown';
     this.scores = { blue: 0, orange: 0 };
     this.matchTime = GAME.MATCH_DURATION;
     this.countdownTime = GAME.COUNTDOWN_DURATION;
     this.goalResetTime = 0;
     this.isOvertime = false;
 
+    // Multiplayer state
+    this.playerNumber = -1;
+    this.playerCar = null;
+    this.opponentCar = null;
+
     this._initRenderer();
     this._initPhysics();
-    this._initScene();
 
     this.input = new InputManager();
     this.hud = new HUD();
-    this.cameraController = new CameraController(this.camera);
-    this.cameraController.setTarget(this.playerCar);
-    this.cameraController.setBallTarget(this.ball);
 
-    this._initPostProcessing();
-    this._startCountdown();
+    if (this.mode === 'singleplayer') {
+      this._initScene();
+      this.cameraController = new CameraController(this.camera);
+      this.cameraController.setTarget(this.playerCar);
+      this.cameraController.setBallTarget(this.ball);
+      this._initPostProcessing();
+      this._startCountdown();
+    } else {
+      // Multiplayer: init scene partially, wait for 'joined' to create cars
+      this._initSceneMultiplayer();
+      this.cameraController = new CameraController(this.camera);
+      this.cameraController.setBallTarget(this.ball);
+      this._initPostProcessing();
+      this._initMultiplayer();
+    }
 
-    // Clock for delta time
     this.clock = new THREE.Clock();
     this.accumulator = 0;
 
-    // Start game loop
     this._loop();
   }
 
@@ -81,12 +98,10 @@ export class Game {
     this.world.broadphase = new CANNON.SAPBroadphase(this.world);
     this.world.solver.iterations = 10;
 
-    // Contact materials
-    const carMaterial = new CANNON.Material('car');
-    const ballMaterial = new CANNON.Material('ball');
-    const wallMaterial = new CANNON.Material('wall');
+    const carMaterial = this.carMaterial = new CANNON.Material('car');
+    const ballMaterial = this.ballMaterial = new CANNON.Material('ball');
+    const wallMaterial = this.wallMaterial = new CANNON.Material('wall');
 
-    // Ball bounces off walls
     this.world.addContactMaterial(new CANNON.ContactMaterial(
       ballMaterial, wallMaterial, {
         restitution: BALL_CONST.RESTITUTION,
@@ -94,7 +109,6 @@ export class Game {
       }
     ));
 
-    // Car hitting ball
     this.world.addContactMaterial(new CANNON.ContactMaterial(
       carMaterial, ballMaterial, {
         restitution: 0.8,
@@ -102,7 +116,6 @@ export class Game {
       }
     ));
 
-    // Car on ground
     this.world.addContactMaterial(new CANNON.ContactMaterial(
       carMaterial, wallMaterial, {
         restitution: 0.1,
@@ -111,47 +124,166 @@ export class Game {
     ));
 
     this.world.defaultContactMaterial.restitution = 0.3;
-    this.world.defaultContactMaterial.friction = 0.0;  // Zero friction — we handle car deceleration in code
+    this.world.defaultContactMaterial.friction = 0.0;
   }
+
+  // ========== SINGLE-PLAYER SCENE INIT ==========
 
   _initScene() {
     this.scene = new THREE.Scene();
     this.scene.background = new THREE.Color(0x050510);
-    this.scene.fog = new THREE.Fog(0x050510, 80, 160);
+    this.scene.fog = new THREE.Fog(0x050510, 100, 210);
 
-    // Camera
     this.camera = new THREE.PerspectiveCamera(
-      70, window.innerWidth / window.innerHeight, 0.1, 200
+      70, window.innerWidth / window.innerHeight, 0.1, 250
     );
     this.camera.position.set(0, 15, -30);
 
-    // Arena
     this.arena = new Arena(this.scene, this.world);
 
-    // Ball
-    this.ball = new Ball(this.scene, this.world);
+    this.world.bodies.forEach(b => {
+      if (b.type === CANNON.Body.STATIC && !b.material) {
+        b.material = this.wallMaterial;
+      }
+    });
 
-    // Player car (blue team, spawns at negative Z, faces +Z)
+    this.ball = new Ball(this.scene, this.world);
+    this.ball.body.material = this.ballMaterial;
+
+    const playerVariant = generateCarVariant(COLORS.CYAN);
+    const opponentVariant = generateCarVariant(COLORS.ORANGE);
+
     this.playerCar = new Car(
       this.scene, this.world,
-      SPAWNS.PLAYER1,
-      COLORS.CYAN,
-      1,
-      this.arena.trimeshBody
+      SPAWNS.PLAYER1, COLORS.CYAN, 1,
+      this.arena.trimeshBody, playerVariant
     );
 
-    // AI / opponent car placeholder (orange, other end)
     this.opponentCar = new Car(
       this.scene, this.world,
-      SPAWNS.PLAYER2,
-      COLORS.ORANGE,
-      -1,
-      this.arena.trimeshBody
+      SPAWNS.PLAYER2, COLORS.ORANGE, -1,
+      this.arena.trimeshBody, opponentVariant
     );
 
-    // Boost pads
     this.boostPads = new BoostPads(this.scene);
+  }
 
+  // ========== MULTIPLAYER SCENE INIT ==========
+
+  _initSceneMultiplayer() {
+    this.scene = new THREE.Scene();
+    this.scene.background = new THREE.Color(0x050510);
+    this.scene.fog = new THREE.Fog(0x050510, 100, 210);
+
+    this.camera = new THREE.PerspectiveCamera(
+      70, window.innerWidth / window.innerHeight, 0.1, 250
+    );
+    this.camera.position.set(0, 15, -30);
+
+    this.arena = new Arena(this.scene, this.world);
+
+    this.world.bodies.forEach(b => {
+      if (b.type === CANNON.Body.STATIC && !b.material) {
+        b.material = this.wallMaterial;
+      }
+    });
+
+    // Ball with isRemote — body not added to world (server drives it)
+    this.ball = new Ball(this.scene, this.world, true);
+    this.ball.body.material = this.ballMaterial;
+
+    // Boost pads with isRemote — server handles pickup/respawn
+    this.boostPads = new BoostPads(this.scene, true);
+  }
+
+  _initMultiplayer() {
+    this.hud.showStatus('Connecting...');
+
+    this.network.on('connected', () => {
+      this.hud.showStatus('Searching for opponent...');
+      const variant = generateCarVariant(COLORS.CYAN);
+      this._localVariant = variant;
+      this.network.joinGame(variant);
+    });
+
+    this.network.on('waiting', () => {
+      this.hud.showStatus('Waiting for opponent...');
+    });
+
+    this.network.on('joined', (data) => {
+      this.hud.showStatus('');
+      this.playerNumber = data.playerNumber;
+      this._createMultiplayerCars(data);
+    });
+
+    this.network.on('countdown', (data) => {
+      this.state = 'countdown';
+      this.hud.showCountdown(data.count);
+      if (data.count === 0) {
+        this.state = 'playing';
+      }
+    });
+
+    this.network.on('gameState', (snapshot) => {
+      this._reconcile(snapshot);
+    });
+
+    this.network.on('goalScored', (data) => {
+      this.scores.blue = data.blueScore;
+      this.scores.orange = data.orangeScore;
+      this.hud.updateScore(data.blueScore, data.orangeScore);
+      this.hud.showGoalScored(data.team);
+      this.state = 'goal';
+    });
+
+    this.network.on('overtime', () => {
+      this.isOvertime = true;
+      this.state = 'overtime';
+      this.hud.showOvertime();
+    });
+
+    this.network.on('gameOver', (data) => {
+      this.state = 'ended';
+      this.hud.showMatchEnd(data.blueScore, data.orangeScore);
+    });
+
+    this.network.on('opponentLeft', () => {
+      this.hud.showStatus('Opponent disconnected');
+    });
+
+    this.network.on('disconnected', () => {
+      this.hud.showStatus('Disconnected from server');
+    });
+
+    this.network.connect();
+  }
+
+  _createMultiplayerCars(data) {
+    const isBlue = data.playerNumber === 0;
+    const playerSpawn = isBlue ? SPAWNS.PLAYER1 : SPAWNS.PLAYER2;
+    const opponentSpawn = isBlue ? SPAWNS.PLAYER2 : SPAWNS.PLAYER1;
+    const playerColor = isBlue ? COLORS.CYAN : COLORS.ORANGE;
+    const opponentColor = isBlue ? COLORS.ORANGE : COLORS.CYAN;
+    const playerDir = isBlue ? 1 : -1;
+    const opponentDir = isBlue ? -1 : 1;
+
+    this.playerCar = new Car(
+      this.scene, this.world,
+      playerSpawn, playerColor, playerDir,
+      this.arena.trimeshBody, this._localVariant
+    );
+
+    this.opponentCar = new Car(
+      this.scene, this.world,
+      opponentSpawn, opponentColor, opponentDir,
+      this.arena.trimeshBody, data.opponentVariant
+    );
+
+    // Make opponent car kinematic — moved by server state, not local physics
+    this.opponentCar.body.type = CANNON.Body.KINEMATIC;
+    this.opponentCar.body.updateMassProperties();
+
+    this.cameraController.setTarget(this.playerCar);
   }
 
   _initPostProcessing() {
@@ -162,12 +294,12 @@ export class Game {
 
     const bloomPass = new UnrealBloomPass(
       new THREE.Vector2(window.innerWidth, window.innerHeight),
-      0.8,    // strength
-      0.4,    // radius
-      0.85    // threshold
+      0.8, 0.4, 0.85
     );
     this.composer.addPass(bloomPass);
   }
+
+  // ========== SINGLE-PLAYER COUNTDOWN ==========
 
   _startCountdown() {
     this.state = 'countdown';
@@ -181,44 +313,62 @@ export class Game {
       if (count > 0) {
         this.hud.showCountdown(count);
       } else {
-        this.hud.showCountdown(0); // "GO!"
+        this.hud.showCountdown(0);
         clearInterval(this._countdownInterval);
         this.state = 'playing';
       }
     }, 1000);
   }
 
+  // ========== MAIN LOOP ==========
+
   _loop() {
     requestAnimationFrame(() => this._loop());
 
-    const dt = Math.min(this.clock.getDelta(), 0.05); // cap at 50ms
+    const dt = Math.min(this.clock.getDelta(), 0.05);
 
-    // Update input
     this.input.update();
     const inputState = this.input.getState();
 
-    // Physics always runs (so cars settle on ground during countdown)
+    if (this.mode === 'singleplayer') {
+      this._loopSingleplayer(dt, inputState);
+    } else {
+      this._loopMultiplayer(dt, inputState);
+    }
+
+    // Camera always updates
+    if (this.cameraController) {
+      this.cameraController.update(dt, inputState.ballCam);
+    }
+
+    // HUD updates
+    if (this.playerCar) {
+      this.hud.updateBoost(this.playerCar.boost);
+      this.hud.updateSpeed(this.playerCar.getSpeed(), CAR_CONST.BOOST_MAX_SPEED);
+    }
+
+    this.composer.render();
+  }
+
+  // ========== SINGLE-PLAYER LOOP ==========
+
+  _loopSingleplayer(dt, inputState) {
+    // Physics always runs
     this.accumulator += dt;
     while (this.accumulator >= PHYSICS.TIMESTEP) {
       this.world.step(PHYSICS.TIMESTEP);
       this.accumulator -= PHYSICS.TIMESTEP;
     }
 
-    // Always sync meshes to physics
     this.playerCar._syncMesh();
     this.opponentCar._syncMesh();
     this.ball.update(dt);
 
     if (this.state === 'playing' || this.state === 'overtime') {
-      // Update game objects with input
       this.playerCar.update(inputState, dt);
       this._updateAI(dt);
       this.boostPads.update(dt, [this.playerCar, this.opponentCar]);
-
-      // Match timer
       this._updateTimer(dt);
-
-      // Goal detection
       this._checkGoal();
     } else if (this.state === 'goal') {
       this.goalResetTime -= dt;
@@ -226,17 +376,127 @@ export class Game {
         this._resetAfterGoal();
       }
     }
-
-    // Camera always updates
-    this.cameraController.update(dt, inputState.ballCam);
-
-    // HUD updates
-    this.hud.updateBoost(this.playerCar.boost);
-    this.hud.updateSpeed(this.playerCar.getSpeed(), CAR_CONST.BOOST_MAX_SPEED);
-
-    // Render
-    this.composer.render();
   }
+
+  // ========== MULTIPLAYER LOOP ==========
+
+  _loopMultiplayer(dt, inputState) {
+    if (!this.playerCar) {
+      // Cars not yet created (waiting for joined event)
+      this.ball.update(dt);
+      return;
+    }
+
+    if (this.state === 'playing' || this.state === 'overtime') {
+      // Send input to server
+      const input = this.network.sendInput(inputState);
+      this.network.addPendingInput(input);
+
+      // Client-side prediction: apply input locally
+      this.playerCar.update(inputState, dt);
+
+      // Step local physics for player car prediction
+      this.accumulator += dt;
+      while (this.accumulator >= PHYSICS.TIMESTEP) {
+        this.world.step(PHYSICS.TIMESTEP);
+        this.accumulator -= PHYSICS.TIMESTEP;
+      }
+    }
+
+    // Interpolate remote entities (opponent + ball)
+    const renderTime = performance.now() - NETWORK.INTERPOLATION_DELAY;
+    const interpState = this.network.getInterpolatedState(renderTime);
+
+    if (interpState) {
+      this._applyRemoteState(interpState);
+
+      // Sync HUD from server state
+      this.hud.updateTimer(interpState.timer);
+      if (interpState.score) {
+        this.scores = interpState.score;
+        this.hud.updateScore(interpState.score.blue, interpState.score.orange);
+      }
+
+      // Sync boost pads
+      this._syncBoostPads(interpState.boostPads);
+    }
+
+    // Sync meshes
+    this.playerCar._syncMesh();
+    this.opponentCar._syncMesh();
+    this.ball.update(dt);
+
+    // Animate boost pads (visual only)
+    this.boostPads.update(dt, []);
+  }
+
+  // ========== RECONCILIATION ==========
+
+  _reconcile(snapshot) {
+    if (!this.playerCar || this.playerNumber < 0) return;
+
+    const myState = snapshot.players[this.playerNumber];
+    if (!myState) return;
+
+    // Discard inputs already processed by server
+    this.network.clearPendingInputsBefore(myState.lastProcessedInput);
+
+    // Snap local car to server state
+    const body = this.playerCar.body;
+    body.position.set(myState.px, myState.py, myState.pz);
+    body.velocity.set(myState.vx, myState.vy, myState.vz);
+    body.quaternion.set(myState.qx, myState.qy, myState.qz, myState.qw);
+    body.angularVelocity.set(myState.avx, myState.avy, myState.avz);
+    this.playerCar.boost = myState.boost;
+
+    // Replay pending inputs on top of server state
+    const pending = this.network.getPendingInputs();
+    for (const input of pending) {
+      this.playerCar.update(input, PHYSICS.TIMESTEP);
+    }
+  }
+
+  // ========== REMOTE STATE APPLICATION ==========
+
+  _applyRemoteState(interpState) {
+    if (!this.opponentCar) return;
+
+    const opponentIdx = this.playerNumber === 0 ? 1 : 0;
+    const opponentData = interpState.players[opponentIdx];
+
+    if (opponentData) {
+      // Set opponent car body position/quaternion/velocity
+      this.opponentCar.body.position.set(opponentData.px, opponentData.py, opponentData.pz);
+      this.opponentCar.body.velocity.set(opponentData.vx, opponentData.vy, opponentData.vz);
+      this.opponentCar.body.quaternion.set(opponentData.qx, opponentData.qy, opponentData.qz, opponentData.qw);
+      this.opponentCar.body.angularVelocity.set(opponentData.avx, opponentData.avy, opponentData.avz);
+      this.opponentCar.boost = opponentData.boost;
+    }
+
+    // Set ball position/quaternion from interpolated data
+    const ballData = interpState.ball;
+    if (ballData) {
+      this.ball.body.position.set(ballData.px, ballData.py, ballData.pz);
+      this.ball.body.velocity.set(ballData.vx, ballData.vy, ballData.vz);
+      this.ball.body.quaternion.set(ballData.qx, ballData.qy, ballData.qz, ballData.qw);
+    }
+  }
+
+  _syncBoostPads(bitmask) {
+    if (bitmask === undefined) return;
+
+    for (let i = 0; i < this.boostPads.pads.length; i++) {
+      const pad = this.boostPads.pads[i];
+      const shouldBeActive = !!(bitmask & (1 << i));
+
+      if (pad.active !== shouldBeActive) {
+        pad.active = shouldBeActive;
+        pad.mesh.visible = shouldBeActive;
+      }
+    }
+  }
+
+  // ========== SINGLE-PLAYER TIMER & GOALS ==========
 
   _updateTimer(dt) {
     if (this.isOvertime) return;
@@ -245,12 +505,10 @@ export class Game {
     if (this.matchTime <= 0) {
       this.matchTime = 0;
       if (this.scores.blue === this.scores.orange) {
-        // Overtime
         this.isOvertime = true;
         this.state = 'overtime';
         this.hud.showOvertime();
       } else {
-        // Game over
         this.state = 'ended';
         this.hud.showMatchEnd(this.scores.blue, this.scores.orange);
       }
@@ -264,11 +522,9 @@ export class Game {
     if (goalSide === 0) return;
 
     if (goalSide === 1) {
-      // Scored in blue's goal → orange scores
       this.scores.orange++;
       this.hud.showGoalScored('orange');
     } else {
-      // Scored in orange's goal → blue scores
       this.scores.blue++;
       this.hud.showGoalScored('blue');
     }
@@ -277,7 +533,6 @@ export class Game {
     this.state = 'goal';
     this.goalResetTime = GAME.GOAL_RESET_TIME;
 
-    // Check overtime win
     if (this.isOvertime) {
       setTimeout(() => {
         this.state = 'ended';
@@ -293,8 +548,9 @@ export class Game {
     this._startCountdown();
   }
 
+  // ========== AI (single-player only) ==========
+
   _updateAI(dt) {
-    // Simple AI: drive towards ball
     const car = this.opponentCar;
     const ballPos = this.ball.getPosition();
     const carPos = car.getPosition();
@@ -303,21 +559,17 @@ export class Game {
     const dz = ballPos.z - carPos.z;
     const dist = Math.sqrt(dx * dx + dz * dz);
 
-    // Get car's forward direction
     const forward = new CANNON.Vec3(0, 0, 1);
     car.body.quaternion.vmult(forward, forward);
 
-    // Angle to ball
     const targetAngle = Math.atan2(dx, dz);
     const euler = new CANNON.Vec3();
     car.body.quaternion.toEuler(euler);
     let angleDiff = targetAngle - euler.y;
 
-    // Normalize angle
     while (angleDiff > Math.PI) angleDiff -= 2 * Math.PI;
     while (angleDiff < -Math.PI) angleDiff += 2 * Math.PI;
 
-    // Create AI input
     const aiInput = {
       throttle: 1,
       steer: angleDiff > 0.1 ? 1 : angleDiff < -0.1 ? -1 : 0,
@@ -328,9 +580,9 @@ export class Game {
       airRoll: 0,
       pitchUp: false,
       pitchDown: false,
+      handbrake: false,
     };
 
-    // Jump when close to ball and ball is higher
     if (dist < 8 && ballPos.y > 3 && car.isGrounded) {
       aiInput.jumpPressed = true;
     }

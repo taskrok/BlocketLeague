@@ -7,9 +7,10 @@ import * as CANNON from 'cannon-es';
 import { BALL, COLORS, COLLISION_GROUPS } from '../../shared/constants.js';
 
 export class Ball {
-  constructor(scene, world) {
+  constructor(scene, world, isRemote = false) {
     this.scene = scene;
     this.world = world;
+    this.isRemote = isRemote;
 
     this._createPhysics();
     this._createMesh();
@@ -31,7 +32,9 @@ export class Ball {
 
     this.body.material = new CANNON.Material('ball');
 
-    this.world.addBody(this.body);
+    if (!this.isRemote) {
+      this.world.addBody(this.body);
+    }
   }
 
   _createMesh() {
@@ -45,25 +48,35 @@ export class Ball {
       emissiveIntensity: 0.4,
       metalness: 0.3,
       roughness: 0.4,
-      wireframe: false,
     });
 
     this.sphere = new THREE.Mesh(geometry, material);
     this.sphere.castShadow = true;
     this.mesh.add(this.sphere);
 
-    // Wireframe overlay for visual effect
-    const wireMat = new THREE.MeshBasicMaterial({
-      color: COLORS.BALL,
-      wireframe: true,
-      transparent: true,
-      opacity: 0.15,
+    // Dark pentagon patches placed at icosahedron vertices so spin is visible
+    const phi = (1 + Math.sqrt(5)) / 2;
+    const patchDirs = [
+      [-1, phi, 0], [1, phi, 0], [-1, -phi, 0], [1, -phi, 0],
+      [0, -1, phi], [0, 1, phi], [0, -1, -phi], [0, 1, -phi],
+      [phi, 0, -1], [phi, 0, 1], [-phi, 0, -1], [-phi, 0, 1],
+    ];
+    const patchMat = new THREE.MeshStandardMaterial({
+      color: 0x1a1a2e,
+      emissive: COLORS.BALL,
+      emissiveIntensity: 0.15,
+      metalness: 0.4,
+      roughness: 0.5,
     });
-    const wire = new THREE.Mesh(
-      new THREE.IcosahedronGeometry(BALL.RADIUS * 1.01, 1),
-      wireMat
-    );
-    this.mesh.add(wire);
+    const patchGeo = new THREE.CircleGeometry(BALL.RADIUS * 0.38, 5);
+    patchDirs.forEach(v => {
+      const len = Math.sqrt(v[0]*v[0] + v[1]*v[1] + v[2]*v[2]);
+      const dir = new THREE.Vector3(v[0]/len, v[1]/len, v[2]/len);
+      const patch = new THREE.Mesh(patchGeo, patchMat);
+      patch.position.copy(dir).multiplyScalar(BALL.RADIUS * 1.001);
+      patch.lookAt(dir.clone().multiplyScalar(BALL.RADIUS * 2));
+      this.sphere.add(patch);
+    });
 
     // Inner glow light
     this.light = new THREE.PointLight(COLORS.BALL, 1.0, 20);
