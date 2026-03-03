@@ -214,4 +214,14 @@ export class NetworkManager {
       cbs.forEach(fn => fn(data));
     }
   }
+
+  disconnect() {
+    if (this.socket) {
+      this.socket.disconnect();
+      this.socket = null;
+    }
+    this._callbacks = {};
+    this.snapshots = [];
+    this.pendingInputs = [];
+  }
 }

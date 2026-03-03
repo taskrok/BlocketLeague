@@ -32,6 +32,8 @@ export class Game {
     this.mode = mode;
     this.network = networkManager;
     this.playerVariant = playerVariant;
+    this._destroyed = false;
+    this._rafId = null;
 
     // Game state
     this.state = 'countdown';
@@ -92,12 +94,13 @@ export class Game {
     this.renderer.toneMapping = THREE.ACESFilmicToneMapping;
     this.renderer.toneMappingExposure = 1.2;
 
-    window.addEventListener('resize', () => {
+    this._onResize = () => {
       this.camera.aspect = window.innerWidth / window.innerHeight;
       this.camera.updateProjectionMatrix();
       this.renderer.setSize(window.innerWidth, window.innerHeight);
       if (this.composer) this.composer.setSize(window.innerWidth, window.innerHeight);
-    });
+    };
+    window.addEventListener('resize', this._onResize);
   }
 
   _initPhysics() {
@@ -271,10 +274,12 @@ export class Game {
     this.network.on('gameOver', (data) => {
       this.state = 'ended';
       this.hud.showMatchEnd(data.blueScore, data.orangeScore);
+      if (this.onMatchEnd) this.onMatchEnd();
     });
 
     this.network.on('opponentLeft', () => {
       this.hud.showStatus('Opponent disconnected');
+      if (this.onMatchEnd) this.onMatchEnd();
     });
 
     this.network.on('disconnected', () => {
@@ -492,7 +497,8 @@ export class Game {
   // ========== MAIN LOOP ==========
 
   _loop() {
-    requestAnimationFrame(() => this._loop());
+    if (this._destroyed) return;
+    this._rafId = requestAnimationFrame(() => this._loop());
 
     const dt = Math.min(this.clock.getDelta(), 0.05);
 
@@ -887,5 +893,83 @@ export class Game {
     };
 
     car.update(aiInput, dt);
+  }
+
+  // ========== CLEANUP ==========
+
+  destroy() {
+    this._destroyed = true;
+
+    // Stop RAF loop
+    if (this._rafId !== null) {
+      cancelAnimationFrame(this._rafId);
+      this._rafId = null;
+    }
+
+    // Clear countdown interval
+    if (this._countdownInterval) {
+      clearInterval(this._countdownInterval);
+      this._countdownInterval = null;
+    }
+
+    // Remove resize listener
+    if (this._onResize) {
+      window.removeEventListener('resize', this._onResize);
+    }
+
+    // Destroy subsystems
+    if (this.cameraSettings) {
+      this.cameraSettings.destroy();
+    }
+    if (this.input) {
+      this.input.destroy();
+    }
+    if (this.hud) {
+      this.hud.reset();
+    }
+
+    // Disconnect network
+    if (this.network) {
+      this.network.disconnect();
+    }
+
+    // Dispose Three.js scene objects
+    if (this.scene) {
+      this.scene.traverse((obj) => {
+        if (obj.geometry) obj.geometry.dispose();
+        if (obj.material) {
+          if (Array.isArray(obj.material)) {
+            obj.material.forEach(m => m.dispose());
+          } else {
+            obj.material.dispose();
+          }
+        }
+      });
+    }
+
+    // Dispose renderer and composer
+    if (this.composer) {
+      this.composer.dispose();
+    }
+    if (this.renderer) {
+      this.renderer.dispose();
+    }
+
+    // Clear physics world bodies
+    if (this.world) {
+      while (this.world.bodies.length > 0) {
+        this.world.removeBody(this.world.bodies[0]);
+      }
+    }
+
+    // Clear explosions
+    this._activeExplosions = [];
+
+    // Null out references
+    this.playerCar = null;
+    this.opponentCar = null;
+    this.ball = null;
+    this.scene = null;
+    this.world = null;
   }
 }

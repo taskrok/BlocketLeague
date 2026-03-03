@@ -124,12 +124,13 @@ export class CameraSettings {
 
   _bindEvents() {
     // Desktop: Escape toggles
-    document.addEventListener('keydown', (e) => {
+    this._onKeydown = (e) => {
       if (e.key === 'Escape') {
         e.preventDefault();
         this.toggle();
       }
-    });
+    };
+    document.addEventListener('keydown', this._onKeydown);
 
     // Mobile: gear icon
     this.gearBtn.addEventListener('click', (e) => {
@@ -138,11 +139,12 @@ export class CameraSettings {
     });
 
     // Close when clicking outside the panel (on the game area)
-    document.addEventListener('pointerdown', (e) => {
+    this._onPointerdown = (e) => {
       if (this.open && !this.panel.contains(e.target) && e.target !== this.gearBtn) {
         this.close();
       }
-    });
+    };
+    document.addEventListener('pointerdown', this._onPointerdown);
   }
 
   toggle() {
@@ -171,6 +173,17 @@ export class CameraSettings {
       input.value = DEFAULTS[cfg.key];
       const v = DEFAULTS[cfg.key];
       valSpan.textContent = v % 1 === 0 ? v : v.toFixed(1);
+    }
+  }
+
+  destroy() {
+    document.removeEventListener('keydown', this._onKeydown);
+    document.removeEventListener('pointerdown', this._onPointerdown);
+    if (this.panel && this.panel.parentNode) {
+      this.panel.parentNode.removeChild(this.panel);
+    }
+    if (this.gearBtn && this.gearBtn.parentNode) {
+      this.gearBtn.parentNode.removeChild(this.gearBtn);
     }
   }
 }

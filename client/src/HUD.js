@@ -112,4 +112,16 @@ export class HUD {
     this.statusText.textContent = msg;
     this.statusText.style.opacity = msg ? '1' : '0';
   }
+
+  reset() {
+    this.timerEl.textContent = '5:00';
+    this.timerEl.style.color = '';
+    this.timerEl.style.textShadow = '';
+    this.scoreBlueEl.textContent = '0';
+    this.scoreOrangeEl.textContent = '0';
+    this.countdownEl.style.opacity = '0';
+    this.goalTextEl.style.opacity = '0';
+    if (this.statusText) this.statusText.style.opacity = '0';
+    if (this.demoText) this.demoText.style.opacity = '0';
+  }
 }

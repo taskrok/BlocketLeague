@@ -21,6 +21,7 @@ window.addEventListener('DOMContentLoaded', async () => {
   const btnMulti = document.getElementById('btn-multiplayer');
   const btnRandomize = document.getElementById('btn-randomize');
   const btnLetsGo = document.getElementById('btn-letsgo');
+  const btnResetColors = document.getElementById('btn-reset-colors');
   const btnBack = document.getElementById('btn-back');
   const btnPrevModel = document.getElementById('btn-prev-model');
   const btnNextModel = document.getElementById('btn-next-model');
@@ -32,6 +33,7 @@ window.addEventListener('DOMContentLoaded', async () => {
   let chosenVariant = null;
   let currentModelIndex = 0;
   let availableModelIds = [];
+  let activeGame = null;
 
   // --- 3D Preview state ---
   let previewRenderer = null;
@@ -193,7 +195,23 @@ window.addEventListener('DOMContentLoaded', async () => {
     chosenVariant = null;
   }
 
+  function destroyActiveGame() {
+    if (activeGame) {
+      activeGame.destroy();
+      activeGame = null;
+      window.game = null;
+    }
+  }
+
+  function returnToLobby() {
+    destroyActiveGame();
+    lobby.style.display = '';
+    lobbyButtons.style.display = '';
+    carSelector.style.display = 'none';
+  }
+
   function startGame() {
+    destroyActiveGame();
     stopPreview();
     disposePreview();
     carSelector.style.display = 'none';
@@ -202,9 +220,14 @@ window.addEventListener('DOMContentLoaded', async () => {
     if (selectedMode === 'multiplayer') {
       const network = new NetworkManager();
       const game = new Game(canvas, 'multiplayer', network, chosenVariant);
+      game.onMatchEnd = () => {
+        setTimeout(() => returnToLobby(), 4000);
+      };
+      activeGame = game;
       window.game = game;
     } else {
       const game = new Game(canvas, 'singleplayer', null, chosenVariant);
+      activeGame = game;
       window.game = game;
     }
   }
@@ -243,6 +266,13 @@ window.addEventListener('DOMContentLoaded', async () => {
     if (currentModelId) {
       chosenVariant.modelId = currentModelId;
     }
+    setPreviewCar(chosenVariant);
+  });
+
+  // Reset Colors — restore model's original texture colors
+  btnResetColors.addEventListener('click', () => {
+    if (!chosenVariant) return;
+    chosenVariant.bodyColor = null;
     setPreviewCar(chosenVariant);
   });
 

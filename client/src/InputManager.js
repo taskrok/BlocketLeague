@@ -56,7 +56,7 @@ export class InputManager {
     // Gamepad tracking
     this._gamepadIndex = null;
 
-    window.addEventListener('keydown', (e) => {
+    this._onKeydown = (e) => {
       if (e.key === 'F12') return; // allow dev tools
       this.keys[e.code] = true;
       // Track most recently pressed direction for dodge resolution
@@ -65,31 +65,36 @@ export class InputManager {
       if (e.code === 'KeyA' || e.code === 'ArrowLeft') this._lastSteerDir = 1;
       if (e.code === 'KeyD' || e.code === 'ArrowRight') this._lastSteerDir = -1;
       e.preventDefault();
-    });
+    };
+    window.addEventListener('keydown', this._onKeydown);
 
-    window.addEventListener('keyup', (e) => {
+    this._onKeyup = (e) => {
       if (e.key === 'F12') return;
       this.keys[e.code] = false;
       e.preventDefault();
-    });
+    };
+    window.addEventListener('keyup', this._onKeyup);
 
     // Prevent context menu on right click
-    window.addEventListener('contextmenu', (e) => e.preventDefault());
+    this._onContextmenu = (e) => e.preventDefault();
+    window.addEventListener('contextmenu', this._onContextmenu);
 
     // Gamepad connect/disconnect
-    window.addEventListener('gamepadconnected', (e) => {
+    this._onGamepadConnected = (e) => {
       this._gamepadIndex = e.gamepad.index;
       this._showGamepadNotification('Controller connected: ' + e.gamepad.id.split('(')[0].trim());
-    });
+    };
+    window.addEventListener('gamepadconnected', this._onGamepadConnected);
 
-    window.addEventListener('gamepaddisconnected', (e) => {
+    this._onGamepadDisconnected = (e) => {
       if (this._gamepadIndex === e.gamepad.index) {
         this._gamepadIndex = null;
         this._gpJumpWasDown = false;
         this._gpBallCamToggle = false;
         this._showGamepadNotification('Controller disconnected');
       }
-    });
+    };
+    window.addEventListener('gamepaddisconnected', this._onGamepadDisconnected);
 
     // Lazy-load touch controls only on actual touch devices
     this._touchState = null;
@@ -322,5 +327,16 @@ export class InputManager {
   // Get the input state (for sending to server)
   getState() {
     return { ...this.state };
+  }
+
+  destroy() {
+    window.removeEventListener('keydown', this._onKeydown);
+    window.removeEventListener('keyup', this._onKeyup);
+    window.removeEventListener('contextmenu', this._onContextmenu);
+    window.removeEventListener('gamepadconnected', this._onGamepadConnected);
+    window.removeEventListener('gamepaddisconnected', this._onGamepadDisconnected);
+    if (this._touch && this._touch.destroy) {
+      this._touch.destroy();
+    }
   }
 }

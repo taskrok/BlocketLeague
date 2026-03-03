@@ -98,7 +98,9 @@ function buildFromGLB(config) {
   // Kenney models share a colormap texture atlas (grid of solid color blocks).
   // Find the "body" mesh, sample its UVs to identify which color block is
   // the body paint, then replace those pixels with config.bodyColor.
-  _recolorBodyTexture(clone, config.bodyColor);
+  if (config.bodyColor != null) {
+    _recolorBodyTexture(clone, config.bodyColor);
+  }
 
   // --- Swap to MeshBasicMaterial (arena lighting is too dark for PBR) ---
   clone.traverse((child) => {
