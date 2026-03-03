@@ -224,6 +224,9 @@ export class GameRoom {
   }
 
   _startLoops() {
+    // Clear any existing loops to prevent stacking after goal resets
+    this._stopLoops();
+
     const physicsMs = 1000 / NETWORK.TICK_RATE;
     const broadcastMs = 1000 / NETWORK.SEND_RATE;
 
