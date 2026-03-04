@@ -42,8 +42,7 @@ export class TouchControls {
     // Detect actual mobile/tablet: media query preferred, but also check
     // ontouchstart as fallback since some phones don't match (hover: none)
     return window.matchMedia('(hover: none) and (pointer: coarse)').matches
-      || ('ontouchstart' in window && navigator.maxTouchPoints > 0
-          && window.matchMedia('(max-width: 1024px)').matches);
+      || ('ontouchstart' in window && navigator.maxTouchPoints > 0);
   }
 
   // ===== UI CREATION =====

@@ -211,10 +211,15 @@ window.addEventListener('DOMContentLoaded', async () => {
   }
 
   function requestFullscreen() {
-    const el = document.documentElement;
-    const rfs = el.requestFullscreen || el.webkitRequestFullscreen || el.msRequestFullscreen;
-    if (rfs) {
-      rfs.call(el).catch(() => {});
+    try {
+      const el = document.documentElement;
+      const rfs = el.requestFullscreen || el.webkitRequestFullscreen || el.msRequestFullscreen;
+      if (rfs) {
+        const result = rfs.call(el);
+        if (result && result.catch) result.catch(() => {});
+      }
+    } catch (e) {
+      // Fullscreen not supported (e.g. iPhone Safari)
     }
   }
 
