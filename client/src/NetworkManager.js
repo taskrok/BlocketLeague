@@ -115,8 +115,9 @@ export class NetworkManager {
   // ========== INTERPOLATION ==========
 
   getInterpolatedState(renderTime) {
-    if (this.snapshots.length === 0) return null;
-    if (this.snapshots.length === 1) return this.snapshots[0];
+    if (this.snapshots.length < 2) {
+      return this.snapshots.length > 0 ? this.snapshots[this.snapshots.length - 1] : null;
+    }
 
     // Find the two snapshots bracketing renderTime
     let before = null;
@@ -130,52 +131,15 @@ export class NetworkManager {
       }
     }
 
-    if (before && after) {
-      const range = after.localTime - before.localTime;
-      const t = range > 0 ? (renderTime - before.localTime) / range : 0;
-      return this._lerpSnapshots(before, after, t);
+    if (!before || !after) {
+      // Use latest available
+      return this.snapshots[this.snapshots.length - 1];
     }
 
-    // No bracketing pair — extrapolate from the last snapshot using velocity
-    const latest = this.snapshots[this.snapshots.length - 1];
-    const elapsed = (renderTime - latest.localTime) / 1000; // seconds
+    const range = after.localTime - before.localTime;
+    const t = range > 0 ? (renderTime - before.localTime) / range : 0;
 
-    // Cap extrapolation to avoid wild prediction (max ~100ms ahead)
-    if (elapsed < 0 || elapsed > 0.1) return latest;
-
-    return this._extrapolate(latest, elapsed);
-  }
-
-  _extrapolate(snap, dt) {
-    return {
-      tick: snap.tick,
-      ball: this._extrapolateEntity(snap.ball, dt),
-      players: snap.players.map(p => this._extrapolatePlayer(p, dt)),
-      boostPads: snap.boostPads,
-      score: snap.score,
-      timer: snap.timer,
-      state: snap.state,
-      localTime: snap.localTime,
-    };
-  }
-
-  _extrapolateEntity(e, dt) {
-    return {
-      px: e.px + e.vx * dt,
-      py: e.py + e.vy * dt,
-      pz: e.pz + e.vz * dt,
-      vx: e.vx, vy: e.vy, vz: e.vz,
-      qx: e.qx, qy: e.qy, qz: e.qz, qw: e.qw,
-    };
-  }
-
-  _extrapolatePlayer(p, dt) {
-    const e = this._extrapolateEntity(p, dt);
-    e.avx = p.avx; e.avy = p.avy; e.avz = p.avz;
-    e.boost = p.boost;
-    e.demolished = p.demolished;
-    e.lastProcessedInput = p.lastProcessedInput;
-    return e;
+    return this._lerpSnapshots(before, after, t);
   }
 
   _lerpSnapshots(a, b, t) {
@@ -192,12 +156,6 @@ export class NetworkManager {
   }
 
   _lerpEntity(a, b, t) {
-    // SLERP for quaternion (proper spherical interpolation)
-    const { qx, qy, qz, qw } = this._slerp(
-      a.qx, a.qy, a.qz, a.qw,
-      b.qx, b.qy, b.qz, b.qw,
-      t
-    );
     return {
       px: a.px + (b.px - a.px) * t,
       py: a.py + (b.py - a.py) * t,
@@ -205,35 +163,10 @@ export class NetworkManager {
       vx: a.vx + (b.vx - a.vx) * t,
       vy: a.vy + (b.vy - a.vy) * t,
       vz: a.vz + (b.vz - a.vz) * t,
-      qx, qy, qz, qw,
-    };
-  }
-
-  _slerp(ax, ay, az, aw, bx, by, bz, bw, t) {
-    // Ensure shortest path
-    let dot = ax * bx + ay * by + az * bz + aw * bw;
-    if (dot < 0) {
-      bx = -bx; by = -by; bz = -bz; bw = -bw;
-      dot = -dot;
-    }
-    // If very close, fall back to linear lerp + normalize
-    if (dot > 0.9995) {
-      const qx = ax + (bx - ax) * t;
-      const qy = ay + (by - ay) * t;
-      const qz = az + (bz - az) * t;
-      const qw = aw + (bw - aw) * t;
-      const inv = 1 / Math.sqrt(qx * qx + qy * qy + qz * qz + qw * qw);
-      return { qx: qx * inv, qy: qy * inv, qz: qz * inv, qw: qw * inv };
-    }
-    const theta = Math.acos(dot);
-    const sinTheta = Math.sin(theta);
-    const wa = Math.sin((1 - t) * theta) / sinTheta;
-    const wb = Math.sin(t * theta) / sinTheta;
-    return {
-      qx: ax * wa + bx * wb,
-      qy: ay * wa + by * wb,
-      qz: az * wa + bz * wb,
-      qw: aw * wa + bw * wb,
+      qx: a.qx + (b.qx - a.qx) * t,
+      qy: a.qy + (b.qy - a.qy) * t,
+      qz: a.qz + (b.qz - a.qz) * t,
+      qw: a.qw + (b.qw - a.qw) * t,
     };
   }
 

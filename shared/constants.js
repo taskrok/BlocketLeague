@@ -108,9 +108,7 @@ export const COLLISION_GROUPS = {
 export const NETWORK = {
   TICK_RATE: 60,               // server physics ticks per second
   SEND_RATE: 30,               // network updates per second
-  INTERPOLATION_DELAY: 50,     // ms (with extrapolation fallback)
-  RECONCILE_THRESHOLD: 0.5,    // position error (units) before correcting
-  RECONCILE_SMOOTH: 0.15,      // lerp factor toward server state (0–1)
+  INTERPOLATION_DELAY: 100,    // ms
 };
 
 // Boost pad positions (normalized -1 to 1 range, mapped to arena)
