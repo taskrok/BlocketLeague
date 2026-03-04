@@ -22,12 +22,30 @@ export class HUD {
     this.boostCircumference = 2 * Math.PI * 52; // r=52 from SVG
     this.boostArc.style.strokeDasharray = this.boostCircumference;
 
+    // Track active timeouts so we can clear them on reset/destroy
+    this._timeouts = [];
+
     // Hide controls hint after 8 seconds
-    setTimeout(() => {
+    this._addTimeout(() => {
       if (this.controlsHint) {
         this.controlsHint.classList.add('hidden');
       }
     }, 8000);
+  }
+
+  _addTimeout(fn, ms) {
+    const id = setTimeout(() => {
+      fn();
+      this._timeouts = this._timeouts.filter(t => t !== id);
+    }, ms);
+    this._timeouts.push(id);
+  }
+
+  _clearTimeouts() {
+    for (const id of this._timeouts) {
+      clearTimeout(id);
+    }
+    this._timeouts = [];
   }
 
   updateTimer(secondsRemaining) {
@@ -67,7 +85,7 @@ export class HUD {
     this.countdownEl.style.opacity = '1';
     this.countdownEl.style.transform = 'scale(1)';
 
-    setTimeout(() => {
+    this._addTimeout(() => {
       this.countdownEl.style.opacity = '0';
     }, 800);
   }
@@ -79,7 +97,7 @@ export class HUD {
     this.goalTextEl.style.textShadow = `0 0 40px ${color}, 0 0 80px ${color}`;
     this.goalTextEl.style.opacity = '1';
 
-    setTimeout(() => {
+    this._addTimeout(() => {
       this.goalTextEl.style.opacity = '0';
     }, 2000);
   }
@@ -102,7 +120,7 @@ export class HUD {
     if (!this.demoText) return;
     this.demoText.textContent = 'DEMOLISHED!';
     this.demoText.style.opacity = '1';
-    setTimeout(() => {
+    this._addTimeout(() => {
       this.demoText.style.opacity = '0';
     }, 1500);
   }
@@ -114,6 +132,7 @@ export class HUD {
   }
 
   reset() {
+    this._clearTimeouts();
     this.timerEl.textContent = '5:00';
     this.timerEl.style.color = '';
     this.timerEl.style.textShadow = '';

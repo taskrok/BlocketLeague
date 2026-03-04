@@ -63,11 +63,12 @@ export class TouchControls {
     if (hint) hint.style.display = 'none';
 
     // Prevent page scroll/zoom when touching the game area
-    document.addEventListener('touchmove', (e) => {
+    this._docTouchMove = (e) => {
       if (e.target.closest('#game-container')) {
         e.preventDefault();
       }
-    }, { passive: false });
+    };
+    document.addEventListener('touchmove', this._docTouchMove, { passive: false });
   }
 
   // ===== JOYSTICK =====
@@ -89,10 +90,14 @@ export class TouchControls {
     this._joyBase = base;
     this._joyStick = stick;
 
-    zone.addEventListener('touchstart', (e) => this._onStickStart(e), { passive: false });
-    zone.addEventListener('touchmove', (e) => this._onStickMove(e), { passive: false });
-    zone.addEventListener('touchend', (e) => this._onStickEnd(e), { passive: false });
-    zone.addEventListener('touchcancel', (e) => this._onStickEnd(e), { passive: false });
+    this._onStickStartBound = (e) => this._onStickStart(e);
+    this._onStickMoveBound = (e) => this._onStickMove(e);
+    this._onStickEndBound = (e) => this._onStickEnd(e);
+
+    zone.addEventListener('touchstart', this._onStickStartBound, { passive: false });
+    zone.addEventListener('touchmove', this._onStickMoveBound, { passive: false });
+    zone.addEventListener('touchend', this._onStickEndBound, { passive: false });
+    zone.addEventListener('touchcancel', this._onStickEndBound, { passive: false });
   }
 
   _onStickStart(e) {
@@ -252,5 +257,21 @@ export class TouchControls {
 
   hide() {
     if (this.container) this.container.style.display = 'none';
+  }
+
+  destroy() {
+    if (this._docTouchMove) {
+      document.removeEventListener('touchmove', this._docTouchMove);
+    }
+    if (this._joyZone) {
+      this._joyZone.removeEventListener('touchstart', this._onStickStartBound);
+      this._joyZone.removeEventListener('touchmove', this._onStickMoveBound);
+      this._joyZone.removeEventListener('touchend', this._onStickEndBound);
+      this._joyZone.removeEventListener('touchcancel', this._onStickEndBound);
+    }
+    if (this.container && this.container.parentNode) {
+      this.container.parentNode.removeChild(this.container);
+    }
+    this.active = false;
   }
 }

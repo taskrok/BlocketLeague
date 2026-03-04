@@ -417,30 +417,34 @@ export class Game {
     const group = new THREE.Group();
     group.position.set(pos.x, pos.y, pos.z);
 
-    // Flash sphere
-    const flashGeo = new THREE.SphereGeometry(1, 12, 12);
+    // Flash sphere — reuse shared geometry
+    if (!this._sharedFlashGeo) {
+      this._sharedFlashGeo = new THREE.SphereGeometry(1, 12, 12);
+    }
     const flashMat = new THREE.MeshBasicMaterial({
       color: color,
       transparent: true,
       opacity: 1,
     });
-    const flash = new THREE.Mesh(flashGeo, flashMat);
+    const flash = new THREE.Mesh(this._sharedFlashGeo, flashMat);
     group.add(flash);
 
     // Point light
     const light = new THREE.PointLight(color, 5, 30);
     group.add(light);
 
-    // Debris particles
+    // Debris particles — reuse shared geometry
+    if (!this._sharedDebrisGeo) {
+      this._sharedDebrisGeo = new THREE.BoxGeometry(0.3, 0.3, 0.3);
+    }
     const particles = [];
-    const debrisGeo = new THREE.BoxGeometry(0.3, 0.3, 0.3);
     for (let i = 0; i < DEMOLITION.PARTICLE_COUNT; i++) {
       const mat = new THREE.MeshBasicMaterial({
         color: color,
         transparent: true,
         opacity: 1,
       });
-      const p = new THREE.Mesh(debrisGeo, mat);
+      const p = new THREE.Mesh(this._sharedDebrisGeo, mat);
       p.position.set(0, 0, 0);
       const vx = (Math.random() - 0.5) * 2 * DEMOLITION.PARTICLE_SPEED;
       const vy = Math.random() * DEMOLITION.PARTICLE_SPEED;
@@ -481,17 +485,12 @@ export class Game {
         p.mesh.material.opacity = Math.max(0, 1 - particleT);
       }
 
-      // Cleanup when done
+      // Cleanup when done (shared geometry is NOT disposed — reused across explosions)
       if (ex.elapsed >= DEMOLITION.PARTICLE_LIFETIME) {
         this.scene.remove(ex.group);
-        ex.flash.geometry.dispose();
         ex.flash.material.dispose();
         for (const p of ex.particles) {
           p.mesh.material.dispose();
-        }
-        // Shared debris geometry disposed once
-        if (ex.particles.length > 0) {
-          ex.particles[0].mesh.geometry.dispose();
         }
         ex.light.dispose();
         this._activeExplosions.splice(i, 1);
