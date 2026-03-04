@@ -13,9 +13,9 @@ export class NetworkManager {
     this.seq = 0;
     this.playerNumber = -1;
 
-    // Snapshot buffer for interpolation (most recent 30)
+    // Snapshot buffer for interpolation (most recent 60)
     this.snapshots = [];
-    this.maxSnapshots = 30;
+    this.maxSnapshots = 60;
 
     // Pending input buffer for client-side prediction reconciliation
     this.pendingInputs = [];
@@ -156,6 +156,12 @@ export class NetworkManager {
   }
 
   _lerpEntity(a, b, t) {
+    // SLERP for quaternion (proper spherical interpolation)
+    const { qx, qy, qz, qw } = this._slerp(
+      a.qx, a.qy, a.qz, a.qw,
+      b.qx, b.qy, b.qz, b.qw,
+      t
+    );
     return {
       px: a.px + (b.px - a.px) * t,
       py: a.py + (b.py - a.py) * t,
@@ -163,10 +169,35 @@ export class NetworkManager {
       vx: a.vx + (b.vx - a.vx) * t,
       vy: a.vy + (b.vy - a.vy) * t,
       vz: a.vz + (b.vz - a.vz) * t,
-      qx: a.qx + (b.qx - a.qx) * t,
-      qy: a.qy + (b.qy - a.qy) * t,
-      qz: a.qz + (b.qz - a.qz) * t,
-      qw: a.qw + (b.qw - a.qw) * t,
+      qx, qy, qz, qw,
+    };
+  }
+
+  _slerp(ax, ay, az, aw, bx, by, bz, bw, t) {
+    // Ensure shortest path
+    let dot = ax * bx + ay * by + az * bz + aw * bw;
+    if (dot < 0) {
+      bx = -bx; by = -by; bz = -bz; bw = -bw;
+      dot = -dot;
+    }
+    // If very close, fall back to linear lerp + normalize
+    if (dot > 0.9995) {
+      const qx = ax + (bx - ax) * t;
+      const qy = ay + (by - ay) * t;
+      const qz = az + (bz - az) * t;
+      const qw = aw + (bw - aw) * t;
+      const inv = 1 / Math.sqrt(qx * qx + qy * qy + qz * qz + qw * qw);
+      return { qx: qx * inv, qy: qy * inv, qz: qz * inv, qw: qw * inv };
+    }
+    const theta = Math.acos(dot);
+    const sinTheta = Math.sin(theta);
+    const wa = Math.sin((1 - t) * theta) / sinTheta;
+    const wb = Math.sin(t * theta) / sinTheta;
+    return {
+      qx: ax * wa + bx * wb,
+      qy: ay * wa + by * wb,
+      qz: az * wa + bz * wb,
+      qw: aw * wa + bw * wb,
     };
   }
 
