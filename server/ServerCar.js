@@ -80,6 +80,13 @@ export class ServerCar {
       return;
     }
 
+    // During dodge flip (and brief decay after), suppress ground detection
+    // so the car can complete its rotation without being snapped to the floor.
+    if (this.isDodging || this._dodgeDecaying) {
+      this.isGrounded = false;
+      return;
+    }
+
     const wasGrounded = this.isGrounded;
     const pos = this.body.position;
 
@@ -555,6 +562,9 @@ export class ServerCar {
     // Maintain flip spin during dodge torque phase
     if (this.isDodging) {
       this.body.angularVelocity.copy(this._dodgeAngVel);
+      // Cancel gravity so the car floats during the flip — prevents floor
+      // collision from blocking the rotation
+      this.body.force.y -= PHYSICS.GRAVITY * CAR.MASS;
     }
 
     // End dodge torque phase after DODGE_DURATION, enter decay

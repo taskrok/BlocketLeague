@@ -163,10 +163,10 @@ export class Game {
   _initScene() {
     this.scene = new THREE.Scene();
     this.scene.background = new THREE.Color(0x050510);
-    this.scene.fog = new THREE.Fog(0x050510, 100, 210);
+    this.scene.fog = new THREE.Fog(0x050510, 140, 300);
 
     this.camera = new THREE.PerspectiveCamera(
-      70, window.innerWidth / window.innerHeight, 0.1, 250
+      70, window.innerWidth / window.innerHeight, 0.1, 400
     );
     this.camera.position.set(0, 15, -30);
 
@@ -210,10 +210,10 @@ export class Game {
   _initSceneMultiplayer() {
     this.scene = new THREE.Scene();
     this.scene.background = new THREE.Color(0x050510);
-    this.scene.fog = new THREE.Fog(0x050510, 100, 210);
+    this.scene.fog = new THREE.Fog(0x050510, 140, 300);
 
     this.camera = new THREE.PerspectiveCamera(
-      70, window.innerWidth / window.innerHeight, 0.1, 250
+      70, window.innerWidth / window.innerHeight, 0.1, 400
     );
     this.camera.position.set(0, 15, -30);
 

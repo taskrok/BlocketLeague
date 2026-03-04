@@ -251,6 +251,13 @@ export class Car {
       return;
     }
 
+    // During dodge flip (and brief decay after), suppress ground detection
+    // so the car can complete its rotation without being snapped to the floor.
+    if (this.isDodging || this._dodgeDecaying) {
+      this.isGrounded = false;
+      return;
+    }
+
     const wasGrounded = this.isGrounded;
     const pos = this.body.position;
 
@@ -759,7 +766,7 @@ export class Car {
         // Speed burst in dodge direction
         this.body.velocity.x += _v3.x * CAR.DODGE_FORCE;
         this.body.velocity.z += _v3.z * CAR.DODGE_FORCE;
-        this.body.velocity.y = Math.max(this.body.velocity.y, CAR.DODGE_VERTICAL);
+        this.body.velocity.y = CAR.DODGE_VERTICAL;
 
         // Flip spin using DODGE_SPIN_SPEED (one rotation in DODGE_DURATION)
         // Normalize so diagonal flips have the same rotation speed as cardinal
@@ -782,6 +789,9 @@ export class Car {
     // Maintain flip spin during dodge torque phase
     if (this.isDodging) {
       this.body.angularVelocity.copy(this._dodgeAngVel);
+      // Cancel gravity so the car floats during the flip — prevents floor
+      // collision from blocking the rotation
+      this.body.force.y -= PHYSICS.GRAVITY * CAR.MASS;
     }
 
     // End dodge torque phase after DODGE_DURATION, enter decay

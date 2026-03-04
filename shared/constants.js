@@ -4,19 +4,19 @@
 
 // Arena dimensions (in game units)
 export const ARENA = {
-  LENGTH: 169,      // Z-axis (goal to goal) — was 130 (×1.3)
-  WIDTH: 117,       // X-axis — was 90 (×1.3)
-  HEIGHT: 25,       // Y-axis (unchanged)
+  LENGTH: 237,      // Z-axis (goal to goal) — ×1.4 from 169
+  WIDTH: 164,       // X-axis — ×1.4 from 117
+  HEIGHT: 35,       // Y-axis — ×1.4 from 25
   WALL_THICKNESS: 2,
-  GOAL_WIDTH: 24,   // was 18 (×1.3, rounded)
-  GOAL_HEIGHT: 13,  // was 10 (×1.3)
-  GOAL_DEPTH: 13,   // was 10 (×1.3)
-  CURVE_RADIUS: 8,       // floor/wall/ceiling transition fillet radius
-  CORNER_RADIUS: 36,     // XZ plane vertical corner radius (larger = more octagonal)
-  GOAL_EDGE_RADIUS: 3,   // fillet radius on goal opening frame (posts + crossbar)
-  GOAL_FILLET_RADIUS: 5, // interior goal fillets (must be < GH/2)
+  GOAL_WIDTH: 34,   // ×1.4 from 24
+  GOAL_HEIGHT: 18,  // ×1.4 from 13
+  GOAL_DEPTH: 18,   // ×1.4 from 13
+  CURVE_RADIUS: 11,      // floor/wall/ceiling transition fillet radius (×1.4)
+  CORNER_RADIUS: 50,     // XZ plane vertical corner radius (×1.4)
+  GOAL_EDGE_RADIUS: 4,   // fillet radius on goal opening frame (×1.4)
+  GOAL_FILLET_RADIUS: 7, // interior goal fillets (must be < GH/2)
   CURVE_SEGMENTS: 16,    // segments per quarter-circle arc
-  GRID_CELL_SIZE: 5,     // grid spacing in world units
+  GRID_CELL_SIZE: 7,     // grid spacing in world units (scaled up)
 };
 
 // Car properties
@@ -30,10 +30,10 @@ export const CAR = {
   ACCELERATION: 28,
   BRAKE_FORCE: 70,
   TURN_SPEED: 2.8,
-  JUMP_FORCE: 17,
-  DOUBLE_JUMP_FORCE: 15,
+  JUMP_FORCE: 12,
+  DOUBLE_JUMP_FORCE: 12,
   DODGE_FORCE: 20,
-  DODGE_VERTICAL: 4,
+  DODGE_VERTICAL: 3,
   BOOST_ACCELERATION: 34,
   MAX_BOOST: 100,
   BOOST_USAGE_RATE: 33.3,     // per second
@@ -59,7 +59,7 @@ export const CAR = {
 
 // Ball properties
 export const BALL = {
-  RADIUS: 1.8,
+  RADIUS: 2.8,
   MASS: 2,
   RESTITUTION: 0.6,
   FRICTION: 0.3,
@@ -120,12 +120,16 @@ export const BOOST_PAD_LAYOUT = {
     { x: 0.45, z: -0.7 },     // back-right
     { x: -0.45, z: 0.7 },     // front-left
     { x: 0.45, z: 0.7 },      // front-right
+    { x: 0, z: -0.85 },       // deep back center
+    { x: 0, z: 0.85 },        // deep front center
   ],
   small: [
     // Center line
     { x: 0, z: 0 },
     { x: -0.2, z: 0 },
     { x: 0.2, z: 0 },
+    { x: -0.35, z: 0 },       // wider midfield
+    { x: 0.35, z: 0 },        // wider midfield
     // Quarter lines
     { x: 0, z: -0.35 },
     { x: -0.25, z: -0.35 },
@@ -138,11 +142,18 @@ export const BOOST_PAD_LAYOUT = {
     { x: 0.15, z: -0.6 },
     { x: -0.15, z: 0.6 },
     { x: 0.15, z: 0.6 },
+    { x: 0, z: -0.6 },        // goal center
+    { x: 0, z: 0.6 },         // goal center
     // Wide positions
     { x: -0.4, z: -0.35 },
     { x: 0.4, z: -0.35 },
     { x: -0.4, z: 0.35 },
     { x: 0.4, z: 0.35 },
+    // Diagonal fill
+    { x: -0.3, z: -0.5 },
+    { x: 0.3, z: -0.5 },
+    { x: -0.3, z: 0.5 },
+    { x: 0.3, z: 0.5 },
   ],
 };
 
@@ -175,6 +186,6 @@ export const DEMOLITION = {
 
 // Player spawn positions
 export const SPAWNS = {
-  PLAYER1: { x: 0, y: 2, z: -52 },  // was -40 (×1.3)
-  PLAYER2: { x: 0, y: 2, z: 52 },   // was 40  (×1.3)
+  PLAYER1: { x: 0, y: 2, z: -73 },  // ×1.4 from -52
+  PLAYER2: { x: 0, y: 2, z: 73 },   // ×1.4 from 52
 };
