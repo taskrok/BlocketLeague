@@ -30,11 +30,12 @@ import { computeBallHitImpulse } from '../../shared/BallHitImpulse.js';
 const _aiEuler = new CANNON.Vec3();
 
 export class Game {
-  constructor(canvas, mode = 'singleplayer', networkManager = null, playerVariant = null) {
+  constructor(canvas, mode = 'singleplayer', networkManager = null, playerVariant = null, joinedData = null) {
     this.canvas = canvas;
     this.mode = mode;
     this.network = networkManager;
     this.playerVariant = playerVariant;
+    this._joinedData = joinedData;
     this._destroyed = false;
     this._rafId = null;
 
@@ -49,6 +50,12 @@ export class Game {
     // Multiplayer state
     this.playerNumber = -1;
     this.playerCar = null;
+    this.remoteCars = [];   // Array of { car, slot } for all non-local players
+    this.allCars = [];      // Indexed by slot number
+    this.maxPlayers = 2;
+    this.myTeam = 'blue';
+
+    // Legacy alias for singleplayer AI
     this.opponentCar = null;
 
     // Explosion VFX
@@ -234,20 +241,16 @@ export class Game {
   }
 
   _initMultiplayer() {
-    this.hud.showStatus('Connecting...');
+    this._localVariant = this.playerVariant || generateCarVariant(COLORS.CYAN, modelLoader.getModelIds());
 
-    this.network.on('connected', () => {
-      this.hud.showStatus('Searching for opponent...');
-      const variant = this.playerVariant || generateCarVariant(COLORS.CYAN, modelLoader.getModelIds());
-      this._localVariant = variant;
-      this.network.joinGame(variant);
-    });
-
-    this.network.on('waiting', () => {
-      this.hud.showStatus('Waiting for opponent...');
-    });
+    // If joinedData was passed from the lobby flow, create cars immediately
+    if (this._joinedData) {
+      this.playerNumber = this._joinedData.playerNumber;
+      this._createMultiplayerCars(this._joinedData);
+    }
 
     this.network.on('joined', (data) => {
+      if (this.playerCar) return; // already created
       this.hud.showStatus('');
       this.playerNumber = data.playerNumber;
       this._createMultiplayerCars(data);
@@ -266,14 +269,17 @@ export class Game {
     });
 
     this.network.on('demolition', (data) => {
-      if (!this.playerCar || !this.opponentCar) return;
-      const victim = data.victimIdx === this.playerNumber ? this.playerCar : this.opponentCar;
+      if (!this.allCars || !this.allCars[data.victimIdx]) return;
+      const victim = this.allCars[data.victimIdx];
       if (victim.demolished) return;
       const pos = data.position;
-      const color = data.victimIdx === 0 ? COLORS.CYAN : COLORS.ORANGE;
+      const isBlueTeam = data.victimIdx < this.maxPlayers / 2;
+      const color = isBlueTeam ? COLORS.CYAN : COLORS.ORANGE;
       victim.demolish();
       this._spawnExplosion(pos, color);
-      this.hud.showDemolished();
+      if (data.victimIdx === this.playerNumber) {
+        this.hud.showDemolished();
+      }
     });
 
     this.network.on('goalScored', (data) => {
@@ -296,44 +302,74 @@ export class Game {
       if (this.onMatchEnd) this.onMatchEnd();
     });
 
-    this.network.on('opponentLeft', () => {
-      this.hud.showStatus('Opponent disconnected');
+    this.network.on('playerLeft', () => {
+      this.hud.showStatus('A player disconnected');
       if (this.onMatchEnd) this.onMatchEnd();
     });
 
     this.network.on('disconnected', () => {
       this.hud.showStatus('Disconnected from server');
     });
-
-    this.network.connect();
   }
 
   _createMultiplayerCars(data) {
-    const isBlue = data.playerNumber === 0;
-    const playerSpawn = isBlue ? SPAWNS.PLAYER1 : SPAWNS.PLAYER2;
-    const opponentSpawn = isBlue ? SPAWNS.PLAYER2 : SPAWNS.PLAYER1;
-    const playerColor = isBlue ? COLORS.CYAN : COLORS.ORANGE;
-    const opponentColor = isBlue ? COLORS.ORANGE : COLORS.CYAN;
-    const playerDir = isBlue ? 1 : -1;
-    const opponentDir = isBlue ? -1 : 1;
+    this.maxPlayers = data.maxPlayers || 2;
+    this.myTeam = data.team || (data.playerNumber < this.maxPlayers / 2 ? 'blue' : 'orange');
+    const spawns = data.spawns || (this.maxPlayers === 2
+      ? [SPAWNS.PLAYER1, SPAWNS.PLAYER2]
+      : [...SPAWNS.TEAM_BLUE, ...SPAWNS.TEAM_ORANGE]);
+
+    // Initialize allCars array
+    this.allCars = new Array(this.maxPlayers).fill(null);
+
+    // Create player's own car
+    const mySlot = data.playerNumber;
+    const myColor = this.myTeam === 'blue' ? COLORS.CYAN : COLORS.ORANGE;
+    const myDir = this.myTeam === 'blue' ? 1 : -1;
 
     this.playerCar = new Car(
       this.scene, this.world,
-      playerSpawn, playerColor, playerDir,
+      spawns[mySlot], myColor, myDir,
       this.arena.trimeshBody, this._localVariant
     );
     this.playerCar.body.material = this.carMaterial;
+    this.allCars[mySlot] = this.playerCar;
 
-    this.opponentCar = new Car(
-      this.scene, this.world,
-      opponentSpawn, opponentColor, opponentDir,
-      this.arena.trimeshBody, data.opponentVariant
-    );
-    this.opponentCar.body.material = this.carMaterial;
+    // Create remote cars for all other players
+    this.remoteCars = [];
+    const otherPlayers = data.otherPlayers || [];
 
-    // Make opponent car kinematic — moved by server state, not local physics
-    this.opponentCar.body.type = CANNON.Body.KINEMATIC;
-    this.opponentCar.body.updateMassProperties();
+    // Fallback for legacy 1v1 data (opponentVariant field)
+    if (otherPlayers.length === 0 && data.opponentVariant) {
+      const oppSlot = mySlot === 0 ? 1 : 0;
+      otherPlayers.push({
+        slot: oppSlot,
+        team: oppSlot < this.maxPlayers / 2 ? 'blue' : 'orange',
+        variantConfig: data.opponentVariant,
+      });
+    }
+
+    for (const other of otherPlayers) {
+      const otherColor = other.team === 'blue' ? COLORS.CYAN : COLORS.ORANGE;
+      const otherDir = other.team === 'blue' ? 1 : -1;
+
+      const remoteCar = new Car(
+        this.scene, this.world,
+        spawns[other.slot], otherColor, otherDir,
+        this.arena.trimeshBody, other.variantConfig
+      );
+      remoteCar.body.material = this.carMaterial;
+      remoteCar.body.type = CANNON.Body.KINEMATIC;
+      remoteCar.body.updateMassProperties();
+
+      this.allCars[other.slot] = remoteCar;
+      this.remoteCars.push({ car: remoteCar, slot: other.slot });
+    }
+
+    // Legacy alias for singleplayer AI references
+    if (this.remoteCars.length === 1) {
+      this.opponentCar = this.remoteCars[0].car;
+    }
 
     this.cameraController.setTarget(this.playerCar);
   }
@@ -629,7 +665,9 @@ export class Game {
 
     // Sync meshes
     this.playerCar._syncMesh();
-    this.opponentCar._syncMesh();
+    for (const { car } of this.remoteCars) {
+      car._syncMesh();
+    }
     this.ball.update(dt);
 
     // Animate boost pads (visual only)
@@ -678,29 +716,27 @@ export class Game {
   // ========== REMOTE STATE APPLICATION ==========
 
   _applyRemoteState(interpState) {
-    if (!this.opponentCar) return;
+    // Apply state to all remote cars
+    for (const { car, slot } of this.remoteCars) {
+      const carData = interpState.players[slot];
+      if (!carData) continue;
 
-    const opponentIdx = this.playerNumber === 0 ? 1 : 0;
-    const opponentData = interpState.players[opponentIdx];
-
-    if (opponentData) {
-      // Sync demolished state for opponent
-      if (opponentData.demolished && !this.opponentCar.demolished) {
-        this.opponentCar.demolished = true;
-        this.opponentCar.mesh.visible = false;
-        this.opponentCar.body.collisionFilterMask = 0;
-      } else if (!opponentData.demolished && this.opponentCar.demolished) {
-        this.opponentCar.demolished = false;
-        this.opponentCar.mesh.visible = true;
-        this.opponentCar.body.collisionFilterMask = COLLISION_GROUPS.ARENA_BOXES | COLLISION_GROUPS.BALL | COLLISION_GROUPS.CAR;
+      // Sync demolished state
+      if (carData.demolished && !car.demolished) {
+        car.demolished = true;
+        car.mesh.visible = false;
+        car.body.collisionFilterMask = 0;
+      } else if (!carData.demolished && car.demolished) {
+        car.demolished = false;
+        car.mesh.visible = true;
+        car.body.collisionFilterMask = COLLISION_GROUPS.ARENA_BOXES | COLLISION_GROUPS.BALL | COLLISION_GROUPS.CAR;
       }
 
-      // Set opponent car body position/quaternion/velocity
-      this.opponentCar.body.position.set(opponentData.px, opponentData.py, opponentData.pz);
-      this.opponentCar.body.velocity.set(opponentData.vx, opponentData.vy, opponentData.vz);
-      this.opponentCar.body.quaternion.set(opponentData.qx, opponentData.qy, opponentData.qz, opponentData.qw);
-      this.opponentCar.body.angularVelocity.set(opponentData.avx, opponentData.avy, opponentData.avz);
-      this.opponentCar.boost = opponentData.boost;
+      car.body.position.set(carData.px, carData.py, carData.pz);
+      car.body.velocity.set(carData.vx, carData.vy, carData.vz);
+      car.body.quaternion.set(carData.qx, carData.qy, carData.qz, carData.qw);
+      car.body.angularVelocity.set(carData.avx, carData.avy, carData.avz);
+      car.boost = carData.boost;
     }
 
     // Set ball position/quaternion from interpolated data
@@ -992,6 +1028,8 @@ export class Game {
     // Null out references
     this.playerCar = null;
     this.opponentCar = null;
+    this.remoteCars = [];
+    this.allCars = [];
     this.ball = null;
     this.scene = null;
     this.world = null;

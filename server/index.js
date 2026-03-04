@@ -43,38 +43,74 @@ app.get('*', (req, res) => {
 
 // ========== ROOM MANAGEMENT ==========
 
-const rooms = new Map();
-let roomCounter = 0;
+const rooms = new Map();     // code → GameRoom
+const playerRooms = new Map(); // socketId → GameRoom
 
-function getOrCreateRoom() {
-  // Find a room that isn't full
-  for (const [id, room] of rooms) {
-    if (!room.isFull()) {
-      return room;
+const ROOM_CODE_CHARS = 'ABCDEFGHJKLMNPQRSTUVWXYZ'; // exclude I, O
+const ROOM_EXPIRY_MS = 5 * 60 * 1000; // 5 minutes
+
+function generateRoomCode() {
+  let code;
+  do {
+    code = '';
+    for (let i = 0; i < 4; i++) {
+      code += ROOM_CODE_CHARS[Math.floor(Math.random() * ROOM_CODE_CHARS.length)];
     }
-  }
-  // Create new room
-  const roomId = `room_${++roomCounter}`;
-  const room = new GameRoom(io, roomId);
-  rooms.set(roomId, room);
-  console.log(`Created room: ${roomId}`);
-  return room;
+  } while (rooms.has(code));
+  return code;
 }
-
-// Map socketId → room for quick lookup
-const playerRooms = new Map();
 
 // ========== SOCKET HANDLERS ==========
 
 io.on('connection', (socket) => {
   console.log(`Player connected: ${socket.id}`);
 
-  socket.on('joinGame', (data) => {
+  socket.on('createRoom', (data) => {
+    const mode = data && data.mode === '2v2' ? '2v2' : '1v1';
+    const maxPlayers = mode === '2v2' ? 4 : 2;
     const variantConfig = data && data.variantConfig ? data.variantConfig : {};
-    const room = getOrCreateRoom();
+
+    const code = generateRoomCode();
+    const room = new GameRoom(io, code, maxPlayers);
+    rooms.set(code, room);
+
     room.addPlayer(socket, variantConfig);
     playerRooms.set(socket.id, room);
-    console.log(`Player ${socket.id} joined ${room.roomId}`);
+
+    socket.emit('roomCreated', { code, mode });
+    console.log(`Room ${code} created (${mode}) by ${socket.id}`);
+
+    // Expire unfilled rooms after 5 minutes
+    setTimeout(() => {
+      if (rooms.has(code) && !rooms.get(code).isFull()) {
+        const r = rooms.get(code);
+        r.players.filter(p => p).forEach(p => {
+          p.socket.emit('roomExpired', {});
+        });
+        r._stopLoops();
+        rooms.delete(code);
+        console.log(`Room ${code} expired`);
+      }
+    }, ROOM_EXPIRY_MS);
+  });
+
+  socket.on('joinRoom', (data) => {
+    const code = (data && data.code || '').toUpperCase().trim();
+    const variantConfig = data && data.variantConfig ? data.variantConfig : {};
+
+    const room = rooms.get(code);
+    if (!room) {
+      socket.emit('joinError', { message: 'Room not found' });
+      return;
+    }
+    if (room.isFull()) {
+      socket.emit('joinError', { message: 'Room is full' });
+      return;
+    }
+
+    room.addPlayer(socket, variantConfig);
+    playerRooms.set(socket.id, room);
+    console.log(`Player ${socket.id} joined room ${code}`);
   });
 
   socket.on('input', (input) => {

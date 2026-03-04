@@ -1,5 +1,6 @@
 // ============================================
-// GameRoom — Server-side room orchestration for 1v1 match
+// GameRoom — Server-side room orchestration
+// Supports 1v1 (2 players) and 2v2 (4 players)
 // Authoritative physics, state machine, broadcast
 // ============================================
 
@@ -15,10 +16,11 @@ import { ServerCar } from './ServerCar.js';
 import { ServerBoostPads } from './ServerBoostPads.js';
 
 export class GameRoom {
-  constructor(io, roomId) {
+  constructor(io, roomId, maxPlayers = 2) {
     this.io = io;
     this.roomId = roomId;
-    this.players = [null, null]; // [slot 0 = blue, slot 1 = orange]
+    this.maxPlayers = maxPlayers;
+    this.players = new Array(maxPlayers).fill(null);
     this.state = 'waiting'; // waiting, countdown, playing, goal, overtime, ended
     this.scores = { blue: 0, orange: 0 };
     this.matchTime = GAME.MATCH_DURATION;
@@ -31,8 +33,29 @@ export class GameRoom {
     this._countdownInterval = null;
   }
 
+  // ========== TEAM HELPERS ==========
+
+  _getTeam(slot) {
+    return slot < this.maxPlayers / 2 ? 'blue' : 'orange';
+  }
+
+  _getDirection(slot) {
+    return slot < this.maxPlayers / 2 ? 1 : -1;
+  }
+
+  _getSpawns() {
+    if (this.maxPlayers === 2) {
+      return [SPAWNS.PLAYER1, SPAWNS.PLAYER2];
+    }
+    return [...SPAWNS.TEAM_BLUE, ...SPAWNS.TEAM_ORANGE];
+  }
+
+  // ========== PLAYER MANAGEMENT ==========
+
   addPlayer(socket, variantConfig) {
-    const slot = this.players[0] === null ? 0 : 1;
+    const slot = this.players.findIndex(p => p === null);
+    if (slot === -1) return -1;
+
     this.players[slot] = {
       socket,
       socketId: socket.id,
@@ -42,13 +65,13 @@ export class GameRoom {
     };
     socket.join(this.roomId);
 
-    if (this.players[0] && this.players[1]) {
-      // Both players joined — start match
+    // Broadcast lobby state to all players in the room
+    this._broadcastLobbyState();
+
+    if (this.players.every(p => p !== null)) {
       this._initPhysics();
       this._notifyJoined();
       this._startCountdown();
-    } else {
-      socket.emit('waiting', {});
     }
 
     return slot;
@@ -63,10 +86,14 @@ export class GameRoom {
       this.players[idx] = null;
     }
 
-    // Notify remaining player
-    const remaining = this.players.find(p => p !== null);
-    if (remaining) {
-      remaining.socket.emit('opponentLeft', {});
+    // Notify remaining players
+    const remaining = this.players.filter(p => p !== null);
+    if (this.state === 'waiting') {
+      this._broadcastLobbyState();
+    } else {
+      remaining.forEach(p => {
+        p.socket.emit('playerLeft', { slot: idx });
+      });
     }
   }
 
@@ -78,11 +105,19 @@ export class GameRoom {
   }
 
   isFull() {
-    return this.players[0] !== null && this.players[1] !== null;
+    return this.players.every(p => p !== null);
   }
 
   isEmpty() {
-    return this.players[0] === null && this.players[1] === null;
+    return this.players.every(p => p === null);
+  }
+
+  _broadcastLobbyState() {
+    const count = this.players.filter(p => p !== null).length;
+    this.io.to(this.roomId).emit('lobbyUpdate', {
+      playerCount: count,
+      maxPlayers: this.maxPlayers,
+    });
   }
 
   // ========== INITIALIZATION ==========
@@ -123,15 +158,18 @@ export class GameRoom {
     this.world.defaultContactMaterial.restitution = 0.3;
     this.world.defaultContactMaterial.friction = 0.0;
 
-    // Create arena, ball, cars, boost pads
+    // Create arena, ball
     this.arena = new ServerArena(this.world);
     this.ball = new ServerBall(this.world);
 
-    this.cars = [
-      new ServerCar(this.world, SPAWNS.PLAYER1, 1),   // blue
-      new ServerCar(this.world, SPAWNS.PLAYER2, -1),   // orange
-    ];
-    this.cars.forEach(car => { car.body.material = this.carMaterial; });
+    // Create cars for all players
+    const spawns = this._getSpawns();
+    this.cars = [];
+    for (let i = 0; i < this.maxPlayers; i++) {
+      const car = new ServerCar(this.world, spawns[i], this._getDirection(i));
+      car.body.material = this.carMaterial;
+      this.cars.push(car);
+    }
 
     // Psyonix-style ball hit impulse on car-ball collision
     this.ball.body.addEventListener('collide', (e) => {
@@ -151,11 +189,19 @@ export class GameRoom {
       this.ball.body.velocity.z = impulse.z;
     });
 
-    // Car-car collision: demolition check
-    this.cars[0].body.addEventListener('collide', (e) => {
-      if (!(e.body.collisionFilterGroup & COLLISION_GROUPS.CAR)) return;
-      this._handleCarDemolition(this.cars[0], this.cars[1]);
-    });
+    // Car-car collision: demolition check (all pairs, cross-team only)
+    for (let i = 0; i < this.cars.length; i++) {
+      this.cars[i].body.addEventListener('collide', (e) => {
+        if (!(e.body.collisionFilterGroup & COLLISION_GROUPS.CAR)) return;
+        const otherCar = this.cars.find(c => c.body === e.body);
+        if (!otherCar) return;
+        const otherIdx = this.cars.indexOf(otherCar);
+        // Only demolish across teams
+        if (this._getTeam(i) !== this._getTeam(otherIdx)) {
+          this._handleCarDemolition(this.cars[i], otherCar);
+        }
+      });
+    }
 
     this.boostPads = new ServerBoostPads();
   }
@@ -190,13 +236,24 @@ export class GameRoom {
   }
 
   _notifyJoined() {
+    const spawns = this._getSpawns();
     this.players.forEach((player, idx) => {
-      const opponentIdx = idx === 0 ? 1 : 0;
+      const otherPlayers = this.players
+        .map((p, i) => ({
+          slot: i,
+          variantConfig: p.variantConfig,
+          team: this._getTeam(i),
+        }))
+        .filter((_, i) => i !== idx);
+
       player.socket.emit('joined', {
         playerId: player.socketId,
         playerNumber: idx,
         roomId: this.roomId,
-        opponentVariant: this.players[opponentIdx].variantConfig,
+        maxPlayers: this.maxPlayers,
+        team: this._getTeam(idx),
+        otherPlayers,
+        spawns,
       });
     });
   }
@@ -281,8 +338,10 @@ export class GameRoom {
     // Update boost pads + demolition timers
     if (this.state === 'playing' || this.state === 'overtime') {
       this.boostPads.update(dt, this.cars);
-      this.cars[0].updateDemolition(dt, SPAWNS.PLAYER1, 1);
-      this.cars[1].updateDemolition(dt, SPAWNS.PLAYER2, -1);
+      const spawns = this._getSpawns();
+      for (let i = 0; i < this.cars.length; i++) {
+        this.cars[i].updateDemolition(dt, spawns[i], this._getDirection(i));
+      }
       this._checkGoal();
       this._updateTimer(dt);
     }
@@ -352,7 +411,7 @@ export class GameRoom {
   }
 
   _resetAfterGoal() {
-    // Clear demolished state + restore collision masks before reset
+    // Clear demolished state + restore collision masks
     for (const car of this.cars) {
       if (car.demolished) {
         car.demolished = false;
@@ -361,8 +420,10 @@ export class GameRoom {
       }
     }
     this.ball.reset();
-    this.cars[0].reset(SPAWNS.PLAYER1, 1);
-    this.cars[1].reset(SPAWNS.PLAYER2, -1);
+    const spawns = this._getSpawns();
+    for (let i = 0; i < this.cars.length; i++) {
+      this.cars[i].reset(spawns[i], this._getDirection(i));
+    }
     this.boostPads.resetAll();
     this._startCountdown();
   }

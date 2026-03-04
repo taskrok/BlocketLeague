@@ -29,11 +29,31 @@ window.addEventListener('DOMContentLoaded', async () => {
   const loadingScreen = document.getElementById('loading-screen');
   const loadingFill = document.getElementById('loading-fill');
 
+  // Room lobby elements
+  const roomLobby = document.getElementById('room-lobby');
+  const roomLobbyOptions = roomLobby.querySelector('.room-lobby-options');
+  const btnCreateRoom = document.getElementById('btn-create-room');
+  const btnJoinRoom = document.getElementById('btn-join-room');
+  const roomCodeInput = document.getElementById('room-code-input');
+  const modeSelector = document.getElementById('mode-selector');
+  const btnMode1v1 = document.getElementById('btn-mode-1v1');
+  const btnMode2v2 = document.getElementById('btn-mode-2v2');
+  const waitingRoom = document.getElementById('waiting-room');
+  const roomCodeDisplay = document.getElementById('room-code-display');
+  const roomStatus = document.getElementById('room-status');
+  const btnRoomBack = document.getElementById('btn-room-back');
+
   let selectedMode = null;
   let chosenVariant = null;
   let currentModelIndex = 0;
   let availableModelIds = [];
   let activeGame = null;
+
+  // Room lobby state
+  let selectedRoomMode = null; // '1v1' | '2v2'
+  let roomCode = null;
+  let isRoomCreator = false;
+  let networkManager = null;
 
   // --- 3D Preview state ---
   let previewRenderer = null;
@@ -169,6 +189,7 @@ window.addEventListener('DOMContentLoaded', async () => {
   function showCarSelector(mode) {
     selectedMode = mode;
     lobbyButtons.style.display = 'none';
+    roomLobby.style.display = 'none';
     carSelector.style.display = 'flex';
 
     initPreview();
@@ -205,9 +226,17 @@ window.addEventListener('DOMContentLoaded', async () => {
 
   function returnToLobby() {
     destroyActiveGame();
+    if (networkManager) {
+      networkManager.disconnect();
+      networkManager = null;
+    }
     lobby.style.display = '';
     lobbyButtons.style.display = '';
+    roomLobby.style.display = 'none';
     carSelector.style.display = 'none';
+    roomCode = null;
+    selectedRoomMode = null;
+    isRoomCreator = false;
   }
 
   function requestFullscreen() {
@@ -223,28 +252,90 @@ window.addEventListener('DOMContentLoaded', async () => {
     }
   }
 
+  function showWaitingRoom(code) {
+    lobbyButtons.style.display = 'none';
+    roomLobby.style.display = 'flex';
+    roomLobbyOptions.style.display = 'none';
+    modeSelector.style.display = 'none';
+    waitingRoom.style.display = 'flex';
+    roomCodeDisplay.textContent = code;
+    roomStatus.textContent = 'Waiting for players...';
+  }
+
+  // --- Start game (singleplayer or multiplayer after room is ready) ---
+
   function startGame() {
     destroyActiveGame();
     stopPreview();
     disposePreview();
     carSelector.style.display = 'none';
-    lobby.style.display = 'none';
 
-    // Go fullscreen on mobile to reclaim URL bar space
-    requestFullscreen();
+    if (selectedMode === 'singleplayer') {
+      lobby.style.display = 'none';
+      requestFullscreen();
+      const game = new Game(canvas, 'singleplayer', null, chosenVariant);
+      activeGame = game;
+      window.game = game;
+      return;
+    }
 
-    if (selectedMode === 'multiplayer') {
-      const network = new NetworkManager();
-      const game = new Game(canvas, 'multiplayer', network, chosenVariant);
+    // Multiplayer: connect, create/join room, show waiting room
+    const network = new NetworkManager();
+    networkManager = network;
+
+    network.on('connected', () => {
+      const variant = chosenVariant || generateCarVariant(COLORS.CYAN, availableModelIds);
+
+      if (isRoomCreator) {
+        network.createRoom(selectedRoomMode, variant);
+      } else {
+        network.joinRoom(roomCode, variant);
+      }
+    });
+
+    network.on('roomCreated', (data) => {
+      roomCode = data.code;
+      showWaitingRoom(data.code);
+    });
+
+    network.on('lobbyUpdate', (data) => {
+      roomStatus.textContent = `Waiting for players... (${data.playerCount}/${data.maxPlayers})`;
+    });
+
+    network.on('joinError', (data) => {
+      alert(data.message);
+      returnToLobby();
+    });
+
+    network.on('roomExpired', () => {
+      alert('Room expired');
+      returnToLobby();
+    });
+
+    network.on('joined', (data) => {
+      // All players are in — launch the game
+      lobby.style.display = 'none';
+      requestFullscreen();
+      const game = new Game(canvas, 'multiplayer', network, chosenVariant, data);
       game.onMatchEnd = () => {
         setTimeout(() => returnToLobby(), 4000);
       };
       activeGame = game;
       window.game = game;
-    } else {
-      const game = new Game(canvas, 'singleplayer', null, chosenVariant);
-      activeGame = game;
-      window.game = game;
+      networkManager = null; // Game owns the network now
+    });
+
+    network.on('disconnected', () => {
+      if (!activeGame) {
+        returnToLobby();
+      }
+    });
+
+    network.connect();
+
+    // For joiners, show waiting room with the code they entered
+    if (!isRoomCreator) {
+      showWaitingRoom(roomCode);
     }
   }
 
@@ -254,8 +345,58 @@ window.addEventListener('DOMContentLoaded', async () => {
     showCarSelector('singleplayer');
   });
 
+  // "Play Online" → show room lobby
   btnMulti.addEventListener('click', () => {
+    lobbyButtons.style.display = 'none';
+    roomLobby.style.display = 'flex';
+    roomLobbyOptions.style.display = 'flex';
+    modeSelector.style.display = 'none';
+    waitingRoom.style.display = 'none';
+    roomCodeInput.value = '';
+  });
+
+  // "Create Room" → show mode selector
+  btnCreateRoom.addEventListener('click', () => {
+    isRoomCreator = true;
+    roomLobbyOptions.style.display = 'none';
+    modeSelector.style.display = 'flex';
+  });
+
+  // Mode selection → car selector
+  btnMode1v1.addEventListener('click', () => {
+    selectedRoomMode = '1v1';
     showCarSelector('multiplayer');
+  });
+
+  btnMode2v2.addEventListener('click', () => {
+    selectedRoomMode = '2v2';
+    showCarSelector('multiplayer');
+  });
+
+  // "Join Room" → validate code → car selector
+  btnJoinRoom.addEventListener('click', () => {
+    const code = roomCodeInput.value.toUpperCase().trim();
+    if (code.length !== 4) return;
+    isRoomCreator = false;
+    roomCode = code;
+    showCarSelector('multiplayer');
+  });
+
+  // Auto-uppercase room code input
+  roomCodeInput.addEventListener('input', () => {
+    roomCodeInput.value = roomCodeInput.value.toUpperCase().replace(/[^A-Z]/g, '');
+  });
+
+  // Room lobby back button
+  btnRoomBack.addEventListener('click', () => {
+    if (networkManager) {
+      networkManager.disconnect();
+      networkManager = null;
+    }
+    roomLobby.style.display = 'none';
+    lobbyButtons.style.display = '';
+    roomCode = null;
+    selectedRoomMode = null;
   });
 
   // Prev/Next model buttons

@@ -73,8 +73,24 @@ export class NetworkManager {
       this._emit('gameOver', data);
     });
 
-    this.socket.on('opponentLeft', (data) => {
-      this._emit('opponentLeft', data);
+    this.socket.on('playerLeft', (data) => {
+      this._emit('playerLeft', data);
+    });
+
+    this.socket.on('roomCreated', (data) => {
+      this._emit('roomCreated', data);
+    });
+
+    this.socket.on('lobbyUpdate', (data) => {
+      this._emit('lobbyUpdate', data);
+    });
+
+    this.socket.on('joinError', (data) => {
+      this._emit('joinError', data);
+    });
+
+    this.socket.on('roomExpired', (data) => {
+      this._emit('roomExpired', data);
     });
 
     this.socket.on('disconnect', () => {
@@ -82,9 +98,15 @@ export class NetworkManager {
     });
   }
 
-  joinGame(variantConfig) {
+  createRoom(mode, variantConfig) {
     if (this.socket) {
-      this.socket.emit('joinGame', { variantConfig });
+      this.socket.emit('createRoom', { mode, variantConfig });
+    }
+  }
+
+  joinRoom(code, variantConfig) {
+    if (this.socket) {
+      this.socket.emit('joinRoom', { code, variantConfig });
     }
   }
 

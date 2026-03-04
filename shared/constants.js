@@ -186,6 +186,16 @@ export const DEMOLITION = {
 
 // Player spawn positions
 export const SPAWNS = {
-  PLAYER1: { x: 0, y: 2, z: -73 },  // ×1.4 from -52
-  PLAYER2: { x: 0, y: 2, z: 73 },   // ×1.4 from 52
+  // 1v1 (centered)
+  PLAYER1: { x: 0, y: 2, z: -73 },
+  PLAYER2: { x: 0, y: 2, z: 73 },
+  // 2v2 (offset on X axis)
+  TEAM_BLUE: [
+    { x: -15, y: 2, z: -73 },
+    { x: 15, y: 2, z: -73 },
+  ],
+  TEAM_ORANGE: [
+    { x: -15, y: 2, z: 73 },
+    { x: 15, y: 2, z: 73 },
+  ],
 };

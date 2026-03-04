@@ -434,6 +434,98 @@ body {
   color: rgba(255, 255, 255, 0.8);
 }
 
+/* ===== Room Lobby ===== */
+
+#room-lobby {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 24px;
+}
+
+.room-lobby-options {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 16px;
+}
+
+.room-join-row {
+  display: flex;
+  gap: 12px;
+  align-items: center;
+}
+
+.room-code-input {
+  width: 130px;
+  padding: 14px 16px;
+  font-size: 24px;
+  font-weight: 800;
+  letter-spacing: 8px;
+  text-align: center;
+  text-transform: uppercase;
+  background: rgba(255, 136, 0, 0.08);
+  border: 2px solid rgba(255, 136, 0, 0.4);
+  border-radius: 4px;
+  color: #ff8800;
+  font-family: 'Orbitron', sans-serif;
+  outline: none;
+}
+
+.room-code-input::placeholder {
+  color: rgba(255, 136, 0, 0.3);
+  letter-spacing: 8px;
+}
+
+.room-code-input:focus {
+  border-color: #ff8800;
+  box-shadow: 0 0 15px rgba(255, 136, 0, 0.3);
+}
+
+.room-code-display {
+  font-size: 56px;
+  font-weight: 800;
+  letter-spacing: 12px;
+  color: #ff8800;
+  text-shadow: 0 0 30px rgba(255, 136, 0, 0.5);
+  font-family: 'Orbitron', sans-serif;
+}
+
+.room-status {
+  font-size: 16px;
+  font-weight: 600;
+  letter-spacing: 2px;
+  color: #00ffff;
+  text-shadow: 0 0 10px rgba(0, 255, 255, 0.4);
+}
+
+.room-label {
+  font-size: 14px;
+  font-weight: 700;
+  letter-spacing: 2px;
+  text-transform: uppercase;
+  color: rgba(255, 255, 255, 0.6);
+}
+
+#mode-selector {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 12px;
+}
+
+.mode-buttons {
+  display: flex;
+  gap: 16px;
+}
+
+#waiting-room {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 12px;
+}
+
 /* ===== Touch Controls ===== */
 
 #touch-controls {

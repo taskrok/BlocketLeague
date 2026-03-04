@@ -63,6 +63,29 @@
         <button id="btn-singleplayer" class="lobby-btn">Play vs AI</button>
         <button id="btn-multiplayer" class="lobby-btn lobby-btn-online">Play Online</button>
       </div>
+      <div id="room-lobby" style="display:none;">
+        <div class="room-lobby-options">
+          <button id="btn-create-room" class="lobby-btn lobby-btn-online">Create Room</button>
+          <div class="room-join-row">
+            <input id="room-code-input" type="text" maxlength="4" placeholder="CODE"
+                   class="room-code-input" autocomplete="off" spellcheck="false" />
+            <button id="btn-join-room" class="lobby-btn lobby-btn-online">Join</button>
+          </div>
+        </div>
+        <div id="mode-selector" style="display:none;">
+          <span class="room-label">Choose Mode</span>
+          <div class="mode-buttons">
+            <button id="btn-mode-1v1" class="lobby-btn">1v1</button>
+            <button id="btn-mode-2v2" class="lobby-btn lobby-btn-online">2v2</button>
+          </div>
+        </div>
+        <div id="waiting-room" style="display:none;">
+          <span class="room-label">Room Code</span>
+          <div id="room-code-display" class="room-code-display">----</div>
+          <div id="room-status" class="room-status">Waiting for players...</div>
+        </div>
+        <button id="btn-room-back" class="lobby-btn lobby-btn-back">Back</button>
+      </div>
       <div id="car-selector">
         <div class="car-model-nav">
           <button id="btn-prev-model" class="lobby-btn lobby-btn-nav">&lt;</button>
