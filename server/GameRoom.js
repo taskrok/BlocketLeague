@@ -367,7 +367,7 @@ export class GameRoom {
     this._startCountdown();
   }
 
-  // ========== BROADCAST (60Hz) ==========
+  // ========== BROADCAST (30Hz) ==========
 
   _broadcast() {
     const bp = this.ball.body.position;

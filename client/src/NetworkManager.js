@@ -13,9 +13,9 @@ export class NetworkManager {
     this.seq = 0;
     this.playerNumber = -1;
 
-    // Snapshot buffer for interpolation (most recent 60)
+    // Snapshot buffer for interpolation (most recent 30)
     this.snapshots = [];
-    this.maxSnapshots = 60;
+    this.maxSnapshots = 30;
 
     // Pending input buffer for client-side prediction reconciliation
     this.pendingInputs = [];
@@ -115,9 +115,8 @@ export class NetworkManager {
   // ========== INTERPOLATION ==========
 
   getInterpolatedState(renderTime) {
-    if (this.snapshots.length < 2) {
-      return this.snapshots.length > 0 ? this.snapshots[this.snapshots.length - 1] : null;
-    }
+    if (this.snapshots.length === 0) return null;
+    if (this.snapshots.length === 1) return this.snapshots[0];
 
     // Find the two snapshots bracketing renderTime
     let before = null;
@@ -131,15 +130,52 @@ export class NetworkManager {
       }
     }
 
-    if (!before || !after) {
-      // Use latest available
-      return this.snapshots[this.snapshots.length - 1];
+    if (before && after) {
+      const range = after.localTime - before.localTime;
+      const t = range > 0 ? (renderTime - before.localTime) / range : 0;
+      return this._lerpSnapshots(before, after, t);
     }
 
-    const range = after.localTime - before.localTime;
-    const t = range > 0 ? (renderTime - before.localTime) / range : 0;
+    // No bracketing pair — extrapolate from the last snapshot using velocity
+    const latest = this.snapshots[this.snapshots.length - 1];
+    const elapsed = (renderTime - latest.localTime) / 1000; // seconds
 
-    return this._lerpSnapshots(before, after, t);
+    // Cap extrapolation to avoid wild prediction (max ~100ms ahead)
+    if (elapsed < 0 || elapsed > 0.1) return latest;
+
+    return this._extrapolate(latest, elapsed);
+  }
+
+  _extrapolate(snap, dt) {
+    return {
+      tick: snap.tick,
+      ball: this._extrapolateEntity(snap.ball, dt),
+      players: snap.players.map(p => this._extrapolatePlayer(p, dt)),
+      boostPads: snap.boostPads,
+      score: snap.score,
+      timer: snap.timer,
+      state: snap.state,
+      localTime: snap.localTime,
+    };
+  }
+
+  _extrapolateEntity(e, dt) {
+    return {
+      px: e.px + e.vx * dt,
+      py: e.py + e.vy * dt,
+      pz: e.pz + e.vz * dt,
+      vx: e.vx, vy: e.vy, vz: e.vz,
+      qx: e.qx, qy: e.qy, qz: e.qz, qw: e.qw,
+    };
+  }
+
+  _extrapolatePlayer(p, dt) {
+    const e = this._extrapolateEntity(p, dt);
+    e.avx = p.avx; e.avy = p.avy; e.avz = p.avz;
+    e.boost = p.boost;
+    e.demolished = p.demolished;
+    e.lastProcessedInput = p.lastProcessedInput;
+    return e;
   }
 
   _lerpSnapshots(a, b, t) {

@@ -80,6 +80,7 @@ export class Game {
 
     this.clock = new THREE.Clock();
     this.accumulator = 0;
+    this._inputAccum = 0; // throttle input sending to tick rate
 
     this._loop();
   }
@@ -594,9 +595,13 @@ export class Game {
     }
 
     if (this.state === 'playing' || this.state === 'overtime') {
-      // Send input to server
-      const input = this.network.sendInput(inputState);
-      this.network.addPendingInput(input);
+      // Throttle input sending to tick rate (don't flood server every frame)
+      this._inputAccum += dt;
+      if (this._inputAccum >= PHYSICS.TIMESTEP) {
+        this._inputAccum -= PHYSICS.TIMESTEP;
+        const input = this.network.sendInput(inputState);
+        this.network.addPendingInput(input);
+      }
 
       // Client-side prediction: apply input locally
       this.playerCar.update(inputState, dt);
@@ -660,15 +665,37 @@ export class Game {
       this.playerCar.body.collisionFilterMask = COLLISION_GROUPS.ARENA_BOXES | COLLISION_GROUPS.BALL | COLLISION_GROUPS.CAR;
     }
 
-    // Snap local car to server state
     const body = this.playerCar.body;
-    body.position.set(myState.px, myState.py, myState.pz);
-    body.velocity.set(myState.vx, myState.vy, myState.vz);
-    body.quaternion.set(myState.qx, myState.qy, myState.qz, myState.qw);
-    body.angularVelocity.set(myState.avx, myState.avy, myState.avz);
+
+    // Measure prediction error
+    const dx = myState.px - body.position.x;
+    const dy = myState.py - body.position.y;
+    const dz = myState.pz - body.position.z;
+    const errorSq = dx * dx + dy * dy + dz * dz;
+    const threshold = NETWORK.RECONCILE_THRESHOLD;
+
+    if (errorSq > threshold * threshold) {
+      if (errorSq > 25) {
+        // Large error (>5 units) — hard snap (teleport, respawn, etc.)
+        body.position.set(myState.px, myState.py, myState.pz);
+        body.velocity.set(myState.vx, myState.vy, myState.vz);
+        body.quaternion.set(myState.qx, myState.qy, myState.qz, myState.qw);
+        body.angularVelocity.set(myState.avx, myState.avy, myState.avz);
+      } else {
+        // Small-to-medium error — smooth correction
+        const s = NETWORK.RECONCILE_SMOOTH;
+        body.position.x += dx * s;
+        body.position.y += dy * s;
+        body.position.z += dz * s;
+        body.velocity.x += (myState.vx - body.velocity.x) * s;
+        body.velocity.y += (myState.vy - body.velocity.y) * s;
+        body.velocity.z += (myState.vz - body.velocity.z) * s;
+      }
+    }
+
     this.playerCar.boost = myState.boost;
 
-    // Replay pending inputs on top of server state
+    // Replay pending inputs on top of corrected state
     const pending = this.network.getPendingInputs();
     for (const input of pending) {
       this.playerCar.update(input, PHYSICS.TIMESTEP);
