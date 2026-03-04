@@ -39,9 +39,11 @@ export class TouchControls {
   }
 
   _isTouchDevice() {
-    // Use media query to detect actual mobile/tablet — avoids false positives
-    // on Windows desktops that report maxTouchPoints > 0
-    return window.matchMedia('(hover: none) and (pointer: coarse)').matches;
+    // Detect actual mobile/tablet: media query preferred, but also check
+    // ontouchstart as fallback since some phones don't match (hover: none)
+    return window.matchMedia('(hover: none) and (pointer: coarse)').matches
+      || ('ontouchstart' in window && navigator.maxTouchPoints > 0
+          && window.matchMedia('(max-width: 1024px)').matches);
   }
 
   // ===== UI CREATION =====

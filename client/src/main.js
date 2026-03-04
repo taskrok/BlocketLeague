@@ -210,12 +210,23 @@ window.addEventListener('DOMContentLoaded', async () => {
     carSelector.style.display = 'none';
   }
 
+  function requestFullscreen() {
+    const el = document.documentElement;
+    const rfs = el.requestFullscreen || el.webkitRequestFullscreen || el.msRequestFullscreen;
+    if (rfs) {
+      rfs.call(el).catch(() => {});
+    }
+  }
+
   function startGame() {
     destroyActiveGame();
     stopPreview();
     disposePreview();
     carSelector.style.display = 'none';
     lobby.style.display = 'none';
+
+    // Go fullscreen on mobile to reclaim URL bar space
+    requestFullscreen();
 
     if (selectedMode === 'multiplayer') {
       const network = new NetworkManager();

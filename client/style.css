@@ -4,6 +4,11 @@
   box-sizing: border-box;
 }
 
+html, body {
+  height: 100%;
+  height: 100dvh;
+}
+
 body {
   background: #000;
   overflow: hidden;
@@ -14,7 +19,9 @@ body {
 #game-container {
   width: 100vw;
   height: 100vh;
+  height: 100dvh; /* dynamic viewport height — accounts for mobile URL bar */
   position: relative;
+  overflow: hidden;
 }
 
 #game-canvas {
@@ -443,8 +450,8 @@ body {
 /* Joystick */
 .touch-joy-zone {
   position: absolute;
-  bottom: 24px;
-  left: 20px;
+  bottom: calc(24px + env(safe-area-inset-bottom, 0px));
+  left: calc(20px + env(safe-area-inset-left, 0px));
   width: 140px;
   height: 140px;
   pointer-events: auto;
@@ -484,8 +491,8 @@ body {
 /* Button Zone - diamond layout */
 .touch-btn-zone {
   position: absolute;
-  bottom: 24px;
-  right: 20px;
+  bottom: calc(24px + env(safe-area-inset-bottom, 0px));
+  right: calc(20px + env(safe-area-inset-right, 0px));
   width: 160px;
   height: 160px;
   pointer-events: none;

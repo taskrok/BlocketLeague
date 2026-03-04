@@ -98,15 +98,20 @@ export class InputManager {
 
     // Lazy-load touch controls only on actual touch devices
     this._touchState = null;
-    if (window.matchMedia('(hover: none) and (pointer: coarse)').matches) {
+    const isTouchDevice = window.matchMedia('(hover: none) and (pointer: coarse)').matches
+      || ('ontouchstart' in window && navigator.maxTouchPoints > 0);
+    if (isTouchDevice) {
       import('./TouchControls.js').then(({ TouchControls }) => {
         try {
           this._touch = new TouchControls();
           this._touchState = this._touch.state;
+          console.log('Touch controls loaded');
         } catch (e) {
           console.warn('Touch controls failed to init:', e);
         }
-      }).catch(() => {});
+      }).catch((e) => {
+        console.warn('Touch controls import failed:', e);
+      });
     }
   }
 
