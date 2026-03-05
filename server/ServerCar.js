@@ -21,6 +21,7 @@ export class ServerCar {
     this.isDodging = false;
     this.dodgeTime = 0;
     this.jumpLockout = 0;
+    this._jumpedFromWall = false;
     this._dodgeAngVel = null;
     this._dodgeDecaying = false;
     this._dodgeDecayStart = 0;
@@ -81,7 +82,8 @@ export class ServerCar {
   }
 
   _checkGround() {
-    if (this.hasJumped && (Date.now() - this.jumpLockout) < 100) {
+    const lockoutDuration = this._jumpedFromWall ? 250 : 100;
+    if (this.hasJumped && (Date.now() - this.jumpLockout) < lockoutDuration) {
       this.isGrounded = false;
       return;
     }
@@ -147,6 +149,7 @@ export class ServerCar {
       this.canDoubleJump = false;
       this.isDodging = false;
       this._dodgeDecaying = false;
+      this._jumpedFromWall = false;
 
       // Landing recovery: if tilted on nose/tail/side, snap toward upright
       const up = this.body.quaternion.vmult(new CANNON.Vec3(0, 1, 0));
@@ -318,6 +321,34 @@ export class ServerCar {
                 bestDist = dist;
                 best = { sx: cx + GFR * ux, sy: pos.y, sz: cz + GFR * uz, normal: new CANNON.Vec3(-ux, 0, -uz), dist };
               }
+            }
+          }
+        }
+      }
+
+      // 1/8 sphere corner patches (4 per goal): floor+side+back & ceiling+side+back
+      for (const ps of [-1, 1]) {
+        for (const yPos of ['floor', 'ceiling']) {
+          const cx = ps * (GW - GFR);
+          const cy = yPos === 'floor' ? GFR : GH - GFR;
+          const cz = side * (HL + GD - GFR);
+          const ySign = yPos === 'floor' ? -1 : 1;
+
+          const dcx = pos.x - cx;
+          const dcy = pos.y - cy;
+          const dcz = pos.z - cz;
+          const d = Math.sqrt(dcx * dcx + dcy * dcy + dcz * dcz);
+          if (d < 0.001) continue;
+
+          const ux = dcx / d;
+          const uy = dcy / d;
+          const uz = dcz / d;
+
+          if (ps * ux >= 0 && ySign * uy <= 0 && side * uz >= 0) {
+            const dist = Math.abs(d - GFR);
+            if (dist < detectRange && dist < bestDist) {
+              bestDist = dist;
+              best = { sx: cx + GFR * ux, sy: cy + GFR * uy, sz: cz + GFR * uz, normal: new CANNON.Vec3(-ux, -uy, -uz), dist };
             }
           }
         }
@@ -542,6 +573,8 @@ export class ServerCar {
 
     if (input.jumpPressed && this.isGrounded && !this.hasJumped) {
       const n = this.surfaceNormal;
+      this._jumpedFromWall = this.onWall;
+
       this.body.velocity.x += n.x * CAR.JUMP_FORCE;
       this.body.velocity.y += n.y * CAR.JUMP_FORCE;
       this.body.velocity.z += n.z * CAR.JUMP_FORCE;
@@ -722,6 +755,7 @@ export class ServerCar {
 
     this.boost = 34;
     this.hasJumped = false;
+    this._jumpedFromWall = false;
     this.canDoubleJump = false;
     this.isDodging = false;
     this._dodgeDecaying = false;

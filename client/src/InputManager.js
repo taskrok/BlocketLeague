@@ -39,6 +39,7 @@ export class InputManager {
       lookX: 0,         // -1 (look left) to 1 (look right) — right stick / J,L keys
       dodgeForward: 0,  // -1 to 1, dodge direction (separate from throttle)
       dodgeSteer: 0,    // -1 to 1, dodge direction (separate from steer)
+      scoreboard: false, // hold to show scoreboard
     };
 
     // Keyboard edge detection
@@ -155,6 +156,7 @@ export class InputManager {
 
     const airRollLeft = gp.buttons[GP_LB] ? gp.buttons[GP_LB].pressed : false;
     const airRollRight = gp.buttons[GP_RB] ? gp.buttons[GP_RB].pressed : false;
+    const scoreboard = airRollLeft; // LB doubles as scoreboard hold
 
     const handbrake = gp.buttons[GP_X] ? gp.buttons[GP_X].pressed : false;
 
@@ -180,6 +182,7 @@ export class InputManager {
       lookX,
       dodgeForward,
       dodgeSteer,
+      scoreboard,
     };
   }
 
@@ -214,6 +217,8 @@ export class InputManager {
 
     const kbHandbrake = !!(k['ControlLeft'] || k['ControlRight']);
 
+    const kbScoreboard = !!k['Tab'];
+
     // Camera swivel: J = look left (-1), L = look right (+1)
     const kbLookLeft = k['KeyJ'] ? -1 : 0;
     const kbLookRight = k['KeyL'] ? 1 : 0;
@@ -247,6 +252,7 @@ export class InputManager {
       this.state.lookX = kbLookX;
       this.state.dodgeForward = kbDodgeForward;
       this.state.dodgeSteer = kbDodgeSteer;
+      this.state.scoreboard = kbScoreboard;
       return;
     }
 
@@ -302,6 +308,9 @@ export class InputManager {
     if (gp && Math.abs(gp.dodgeSteer) > Math.abs(dodgeSteer)) dodgeSteer = gp.dodgeSteer;
     if (tc && Math.abs(tc.dodgeSteer || 0) > Math.abs(dodgeSteer)) dodgeSteer = tc.dodgeSteer;
     this.state.dodgeSteer = dodgeSteer;
+
+    // Scoreboard: OR
+    this.state.scoreboard = !!(kbScoreboard || (gp && gp.scoreboard));
   }
 
   _showGamepadNotification(message) {

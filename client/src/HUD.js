@@ -17,6 +17,7 @@ export class HUD {
     this.controlsHint = document.getElementById('controls-hint');
     this.statusText = document.getElementById('status-text');
     this.demoText = document.getElementById('demo-text');
+    this.hudTop = document.getElementById('hud-top');
 
     // Boost meter constants
     this.boostCircumference = 2 * Math.PI * 52; // r=52 from SVG
@@ -111,12 +112,20 @@ export class HUD {
     this.timerEl.style.textShadow = '0 0 20px rgba(255, 51, 0, 0.7)';
   }
 
-  showMatchEnd(blueScore, orangeScore) {
-    this.goalTextEl.textContent = blueScore > orangeScore ? 'BLUE WINS!' : 'ORANGE WINS!';
-    const color = blueScore > orangeScore ? '#0088ff' : '#ff6600';
-    this.goalTextEl.style.color = color;
-    this.goalTextEl.style.textShadow = `0 0 40px ${color}, 0 0 80px ${color}`;
-    this.goalTextEl.style.opacity = '1';
+  showMatchEnd(blueScore, orangeScore, stats, mvpIdx, maxPlayers) {
+    if (!stats) {
+      // Fallback: no stats available
+      this.goalTextEl.textContent = blueScore > orangeScore ? 'BLUE WINS!' : 'ORANGE WINS!';
+      const color = blueScore > orangeScore ? '#0088ff' : '#ff6600';
+      this.goalTextEl.style.color = color;
+      this.goalTextEl.style.textShadow = `0 0 40px ${color}, 0 0 80px ${color}`;
+      this.goalTextEl.style.opacity = '1';
+      return;
+    }
+
+    // Hide the simple goal text, show full scoreboard
+    this.goalTextEl.style.opacity = '0';
+    this._showScoreboard(blueScore, orangeScore, stats, mvpIdx, maxPlayers || stats.length);
   }
 
   showDemolished() {
@@ -196,6 +205,171 @@ export class HUD {
     this.statusText.style.opacity = msg ? '1' : '0';
   }
 
+  showLiveScoreboard(blueScore, orangeScore, stats, maxPlayers, pings) {
+    if (!stats) return;
+    const half = maxPlayers / 2;
+    const hasPings = pings && pings.length >= maxPlayers;
+
+    // Create element once, then update contents
+    if (!this._liveScoreboardEl) {
+      const el = document.createElement('div');
+      el.id = 'live-scoreboard';
+      this._liveScoreboardEl = el;
+      const container = document.getElementById('game-container');
+      (container || document.body).appendChild(el);
+    }
+
+    const el = this._liveScoreboardEl;
+    el.style.display = '';
+    if (this.hudTop) this.hudTop.style.opacity = '0';
+
+    const cols = hasPings ? 8 : 7;
+    const pingHeader = hasPings ? '<th class="sb-ping-col">Ping</th>' : '';
+
+    // Rebuild content (cheap, runs only while held)
+    let html = `<table class="scoreboard-table live">
+      <thead><tr>
+        <th class="sb-player-col">Player</th>
+        <th>G</th><th>A</th><th>Sv</th><th>Sh</th><th>D</th><th class="sb-score-col">Pts</th>${pingHeader}
+      </tr></thead><tbody>`;
+
+    for (let i = 0; i < half; i++) {
+      html += this._liveStatRow(i, stats[i], maxPlayers, 'blue', hasPings ? pings[i] : null);
+    }
+    html += `<tr class="scoreboard-separator"><td colspan="${cols}"><div class="sb-sep-line"></div></td></tr>`;
+    for (let i = half; i < maxPlayers; i++) {
+      html += this._liveStatRow(i, stats[i], maxPlayers, 'orange', hasPings ? pings[i] : null);
+    }
+    html += '</tbody></table>';
+
+    // Score header
+    el.innerHTML = `<div class="live-score-row"><span class="sb-blue">${blueScore}</span> <span class="sb-dash">-</span> <span class="sb-orange">${orangeScore}</span></div>${html}`;
+  }
+
+  _liveStatRow(idx, s, maxPlayers, team, ping) {
+    const label = this._getPlayerLabel(idx, maxPlayers);
+    const pingCell = ping !== null ? `<td class="sb-ping">${this._pingText(ping)}</td>` : '';
+    return `<tr class="scoreboard-row ${team}"><td class="sb-player-col">${label}</td><td>${s.goals}</td><td>${s.assists}</td><td>${s.saves}</td><td>${s.shots}</td><td>${s.demos}</td><td class="sb-score">${s.score}</td>${pingCell}</tr>`;
+  }
+
+  _pingText(ms) {
+    const v = Math.round(ms);
+    const color = v < 60 ? '#0f0' : v < 120 ? '#ff0' : '#f00';
+    return `<span style="color:${color}">${v}ms</span>`;
+  }
+
+  hideLiveScoreboard() {
+    if (this._liveScoreboardEl) {
+      this._liveScoreboardEl.style.display = 'none';
+    }
+    if (this.hudTop) this.hudTop.style.opacity = '1';
+  }
+
+  _showScoreboard(blueScore, orangeScore, stats, mvpIdx, maxPlayers) {
+    if (this._scoreboardEl) this._scoreboardEl.remove();
+
+    // Hide conflicting HUD elements
+    if (this.hudTop) this.hudTop.style.opacity = '0';
+    this.goalTextEl.style.opacity = '0';
+    this.showReplayIndicator(false);
+    this.hideLiveScoreboard();
+
+    const blueWins = blueScore > orangeScore;
+    const winColor = blueWins ? '#0088ff' : '#ff6600';
+    const winText = blueWins ? 'BLUE WINS!' : 'ORANGE WINS!';
+    const half = maxPlayers / 2;
+
+    const el = document.createElement('div');
+    el.id = 'match-scoreboard';
+    this._scoreboardEl = el;
+
+    // Header
+    const header = document.createElement('div');
+    header.className = 'scoreboard-header';
+    header.style.color = winColor;
+    header.style.textShadow = `0 0 30px ${winColor}, 0 0 60px ${winColor}`;
+    header.textContent = winText;
+    el.appendChild(header);
+
+    // Score row
+    const scoreRow = document.createElement('div');
+    scoreRow.className = 'scoreboard-score-row';
+    scoreRow.innerHTML = `<span class="sb-blue">${blueScore}</span> <span class="sb-dash">-</span> <span class="sb-orange">${orangeScore}</span>`;
+    el.appendChild(scoreRow);
+
+    // Table
+    const table = document.createElement('table');
+    table.className = 'scoreboard-table';
+
+    // Header row
+    const thead = document.createElement('thead');
+    thead.innerHTML = `<tr>
+      <th class="sb-player-col">Player</th>
+      <th>Goals</th>
+      <th>Assists</th>
+      <th>Saves</th>
+      <th>Shots</th>
+      <th>Demos</th>
+      <th class="sb-score-col">Score</th>
+    </tr>`;
+    table.appendChild(thead);
+
+    const tbody = document.createElement('tbody');
+
+    // Blue team rows
+    for (let i = 0; i < half; i++) {
+      tbody.appendChild(this._makeStatRow(i, stats[i], mvpIdx, maxPlayers, 'blue'));
+    }
+
+    // Separator
+    const sepRow = document.createElement('tr');
+    sepRow.className = 'scoreboard-separator';
+    sepRow.innerHTML = `<td colspan="7"><div class="sb-sep-line"></div></td>`;
+    tbody.appendChild(sepRow);
+
+    // Orange team rows
+    for (let i = half; i < maxPlayers; i++) {
+      tbody.appendChild(this._makeStatRow(i, stats[i], mvpIdx, maxPlayers, 'orange'));
+    }
+
+    table.appendChild(tbody);
+    el.appendChild(table);
+
+    const container = document.getElementById('game-container');
+    (container || document.body).appendChild(el);
+  }
+
+  _makeStatRow(idx, stat, mvpIdx, maxPlayers, team) {
+    const tr = document.createElement('tr');
+    tr.className = `scoreboard-row ${team}`;
+
+    const isMVP = idx === mvpIdx;
+    const label = this._getPlayerLabel(idx, maxPlayers);
+    const mvpStar = isMVP ? '<span class="sb-mvp">&#9733;</span> ' : '';
+
+    tr.innerHTML = `
+      <td class="sb-player-col">${mvpStar}${label}</td>
+      <td>${stat.goals}</td>
+      <td>${stat.assists}</td>
+      <td>${stat.saves}</td>
+      <td>${stat.shots}</td>
+      <td>${stat.demos}</td>
+      <td class="sb-score">${stat.score}</td>
+    `;
+    return tr;
+  }
+
+  _getPlayerLabel(idx, maxPlayers) {
+    if (maxPlayers === 2) {
+      return idx === 0 ? 'Player' : 'AI';
+    }
+    const half = maxPlayers / 2;
+    if (idx < half) {
+      return `Blue ${idx + 1}`;
+    }
+    return `Orange ${idx - half + 1}`;
+  }
+
   reset() {
     this._clearTimeouts();
     this.timerEl.textContent = '5:00';
@@ -210,6 +384,14 @@ export class HUD {
     if (this.pingEl) {
       this.pingEl.remove();
       this.pingEl = null;
+    }
+    if (this._scoreboardEl) {
+      this._scoreboardEl.remove();
+      this._scoreboardEl = null;
+    }
+    if (this._liveScoreboardEl) {
+      this._liveScoreboardEl.remove();
+      this._liveScoreboardEl = null;
     }
     this.showReplayIndicator(false);
   }

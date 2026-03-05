@@ -37,6 +37,7 @@ export class Car {
     this.isDodging = false;
     this.dodgeTime = 0;
     this.jumpLockout = 0;         // timestamp: suppress ground check briefly after jump
+    this._jumpedFromWall = false; // wall jumps need longer lockout to escape detect range
     this._dodgeAngVel = null;     // world-space angular velocity maintained during dodge
     this._dodgeDecaying = false;  // vertical momentum decay after dodge torque phase
     this._dodgeDecayStart = 0;    // timestamp when decay phase began
@@ -250,9 +251,11 @@ export class Car {
   }
 
   _checkGround() {
-    // After jumping, suppress ground detection for 100ms so the car
-    // can clear the floor threshold before _checkGround re-grounds it.
-    if (this.hasJumped && (performance.now() - this.jumpLockout) < 100) {
+    // After jumping, suppress ground detection so the car can clear the surface.
+    // Wall jumps need longer (250ms) because the car moves horizontally and the
+    // detect range (~3.9 units) takes longer to escape than a floor jump.
+    const lockoutDuration = this._jumpedFromWall ? 250 : 100;
+    if (this.hasJumped && (performance.now() - this.jumpLockout) < lockoutDuration) {
       this.isGrounded = false;
       return;
     }
@@ -323,6 +326,7 @@ export class Car {
       this.canDoubleJump = false;
       this.isDodging = false;
       this._dodgeDecaying = false;
+      this._jumpedFromWall = false;
 
       // Landing recovery: if tilted on nose/tail/side, snap toward upright
       // to prevent edge-bouncing/skipping across the field
@@ -519,6 +523,39 @@ export class Car {
                 const sz = cz + GFR * uz;
                 best = { sx, sy: pos.y, sz, normal: new CANNON.Vec3(-ux, 0, -uz), dist };
               }
+            }
+          }
+        }
+      }
+
+      // -- 1/8 sphere corner patches (4 per goal): floor+side+back & ceiling+side+back --
+      // These fill the dead zone where edge fillets don't overlap at diagonal corners.
+      for (const ps of [-1, 1]) {
+        for (const yPos of ['floor', 'ceiling']) {
+          const cx = ps * (GW - GFR);
+          const cy = yPos === 'floor' ? GFR : GH - GFR;
+          const cz = side * (HL + GD - GFR);
+          const ySign = yPos === 'floor' ? -1 : 1;
+
+          const dcx = pos.x - cx;
+          const dcy = pos.y - cy;
+          const dcz = pos.z - cz;
+          const d = Math.sqrt(dcx * dcx + dcy * dcy + dcz * dcz);
+          if (d < 0.001) continue;
+
+          const ux = dcx / d;
+          const uy = dcy / d;
+          const uz = dcz / d;
+
+          // Valid octant: toward side wall, toward floor/ceiling, toward back wall
+          if (ps * ux >= 0 && ySign * uy <= 0 && side * uz >= 0) {
+            const dist = Math.abs(d - GFR);
+            if (dist < detectRange && dist < bestDist) {
+              bestDist = dist;
+              const sx = cx + GFR * ux;
+              const sy = cy + GFR * uy;
+              const sz = cz + GFR * uz;
+              best = { sx, sy, sz, normal: new CANNON.Vec3(-ux, -uy, -uz), dist };
             }
           }
         }
@@ -775,6 +812,8 @@ export class Car {
     // First jump — launch along surface normal
     if (input.jumpPressed && this.isGrounded && !this.hasJumped) {
       const n = this.surfaceNormal;
+      this._jumpedFromWall = this.onWall;
+
       this.body.velocity.x += n.x * CAR.JUMP_FORCE;
       this.body.velocity.y += n.y * CAR.JUMP_FORCE;
       this.body.velocity.z += n.z * CAR.JUMP_FORCE;
@@ -980,6 +1019,7 @@ export class Car {
 
     this.boost = 34;
     this.hasJumped = false;
+    this._jumpedFromWall = false;
     this.canDoubleJump = false;
     this.isDodging = false;
     this._dodgeDecaying = false;

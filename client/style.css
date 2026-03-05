@@ -46,6 +46,7 @@ body {
   left: 50%;
   transform: translateX(-50%);
   text-align: center;
+  transition: opacity 0.15s;
 }
 
 #timer {
@@ -988,5 +989,207 @@ body {
   #car-preview {
     width: 300px;
     height: 210px;
+  }
+}
+
+/* ===== Match Scoreboard ===== */
+
+#match-scoreboard {
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  transform: translate(-50%, -50%);
+  z-index: 300;
+  background: rgba(5, 5, 16, 0.92);
+  backdrop-filter: blur(16px);
+  -webkit-backdrop-filter: blur(16px);
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  border-radius: 12px;
+  padding: 32px 40px;
+  min-width: 480px;
+  text-align: center;
+  box-shadow: 0 0 60px rgba(0, 0, 0, 0.6), 0 0 30px rgba(0, 136, 255, 0.1);
+  pointer-events: auto;
+}
+
+.scoreboard-header {
+  font-family: 'Orbitron', sans-serif;
+  font-size: 32px;
+  font-weight: 800;
+  letter-spacing: 4px;
+  text-transform: uppercase;
+  margin-bottom: 8px;
+}
+
+.scoreboard-score-row {
+  font-family: 'Orbitron', sans-serif;
+  font-size: 48px;
+  font-weight: 800;
+  margin-bottom: 24px;
+  letter-spacing: 4px;
+}
+
+.scoreboard-score-row .sb-blue {
+  color: #0088ff;
+  text-shadow: 0 0 16px rgba(0, 136, 255, 0.5);
+}
+
+.scoreboard-score-row .sb-orange {
+  color: #ff6600;
+  text-shadow: 0 0 16px rgba(255, 102, 0, 0.5);
+}
+
+.scoreboard-score-row .sb-dash {
+  color: rgba(255, 255, 255, 0.3);
+  margin: 0 12px;
+}
+
+.scoreboard-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 14px;
+  letter-spacing: 1px;
+}
+
+.scoreboard-table th {
+  font-size: 11px;
+  font-weight: 700;
+  text-transform: uppercase;
+  color: rgba(255, 255, 255, 0.4);
+  padding: 6px 10px;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.1);
+  letter-spacing: 2px;
+}
+
+.scoreboard-table td {
+  padding: 8px 10px;
+  text-align: center;
+  color: rgba(255, 255, 255, 0.7);
+}
+
+.scoreboard-table .sb-player-col {
+  text-align: left;
+  min-width: 100px;
+}
+
+.scoreboard-row.blue td {
+  color: rgba(80, 170, 255, 0.9);
+}
+
+.scoreboard-row.orange td {
+  color: rgba(255, 140, 50, 0.9);
+}
+
+.sb-mvp {
+  color: #ffd700;
+  text-shadow: 0 0 10px rgba(255, 215, 0, 0.6);
+  font-size: 16px;
+}
+
+.sb-score {
+  font-weight: 800;
+  color: #fff !important;
+  font-size: 16px;
+}
+
+.scoreboard-separator td {
+  padding: 4px 0;
+}
+
+.sb-sep-line {
+  height: 1px;
+  background: rgba(255, 255, 255, 0.1);
+}
+
+/* ===== Live Scoreboard (hold to show) ===== */
+
+#live-scoreboard {
+  position: absolute;
+  top: 20px;
+  left: 50%;
+  transform: translateX(-50%);
+  z-index: 250;
+  background: rgba(5, 5, 16, 0.65);
+  backdrop-filter: blur(8px);
+  -webkit-backdrop-filter: blur(8px);
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  border-radius: 8px;
+  padding: 16px 24px;
+  min-width: 380px;
+  text-align: center;
+  pointer-events: none;
+}
+
+#live-scoreboard .live-score-row {
+  font-family: 'Orbitron', sans-serif;
+  font-size: 28px;
+  font-weight: 800;
+  margin-bottom: 10px;
+  letter-spacing: 3px;
+}
+
+#live-scoreboard .sb-blue {
+  color: #0088ff;
+  text-shadow: 0 0 12px rgba(0, 136, 255, 0.4);
+}
+
+#live-scoreboard .sb-orange {
+  color: #ff6600;
+  text-shadow: 0 0 12px rgba(255, 102, 0, 0.4);
+}
+
+#live-scoreboard .sb-dash {
+  color: rgba(255, 255, 255, 0.25);
+  margin: 0 8px;
+}
+
+#live-scoreboard .scoreboard-table {
+  opacity: 0.85;
+}
+
+#live-scoreboard .scoreboard-table th {
+  font-size: 10px;
+  padding: 4px 8px;
+}
+
+#live-scoreboard .scoreboard-table td {
+  padding: 5px 8px;
+  font-size: 13px;
+}
+
+@media (max-width: 560px) {
+  #live-scoreboard {
+    min-width: unset;
+    width: 90vw;
+    padding: 12px 12px;
+  }
+}
+
+@media (max-width: 560px) {
+  #match-scoreboard {
+    min-width: unset;
+    width: 94vw;
+    padding: 20px 16px;
+  }
+
+  .scoreboard-header {
+    font-size: 22px;
+  }
+
+  .scoreboard-score-row {
+    font-size: 36px;
+  }
+
+  .scoreboard-table {
+    font-size: 12px;
+  }
+
+  .scoreboard-table th {
+    font-size: 9px;
+    padding: 4px 6px;
+  }
+
+  .scoreboard-table td {
+    padding: 6px 6px;
   }
 }

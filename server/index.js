@@ -137,6 +137,13 @@ io.on('connection', (socket) => {
     socket.volatile.emit('pong_measure');
   });
 
+  socket.on('report_rtt', (rtt) => {
+    const room = playerRooms.get(socket.id);
+    if (room && typeof rtt === 'number') {
+      room.setPlayerPing(socket.id, Math.min(Math.round(rtt), 999));
+    }
+  });
+
   socket.on('disconnect', () => {
     console.log(`Player disconnected: ${socket.id}`);
     const room = playerRooms.get(socket.id);

@@ -27,6 +27,7 @@ import {
   NETWORK, DEMOLITION,
 } from '../../shared/constants.js';
 import { computeBallHitImpulse } from '../../shared/BallHitImpulse.js';
+import { PerformanceTracker } from '../../shared/PerformanceTracker.js';
 
 // Reusable temp vector for AI euler extraction
 const _aiEuler = new CANNON.Vec3();
@@ -220,6 +221,7 @@ export class Game {
     this._initCarCollisionHandler();
 
     this.boostPads = new BoostPads(this.scene);
+    this.perfTracker = new PerformanceTracker(2);
   }
 
   // ========== MULTIPLAYER SCENE INIT ==========
@@ -327,7 +329,7 @@ export class Game {
 
     this.network.on('gameOver', (data) => {
       this.state = 'ended';
-      this.hud.showMatchEnd(data.blueScore, data.orangeScore);
+      this.hud.showMatchEnd(data.blueScore, data.orangeScore, data.stats, data.mvpIdx, this.maxPlayers);
       if (this.onMatchEnd) this.onMatchEnd();
     });
 
@@ -443,6 +445,13 @@ export class Game {
       const carVel = other.velocity;
       const carForward = other.quaternion.vmult(new CANNON.Vec3(0, 0, 1));
 
+      // Track touch BEFORE impulse (singleplayer only)
+      let carIdx = -1;
+      if (this.perfTracker) {
+        carIdx = other === this.playerCar.body ? 0 : 1;
+        this.perfTracker.recordTouch(carIdx, ballPos, ballVel, carPos);
+      }
+
       const impulse = computeBallHitImpulse(ballPos, ballVel, carPos, carVel, carForward, {
         carSpeed: car ? car.getSpeed() : 0,
         isDodging: car ? car.isDodging : false,
@@ -452,6 +461,11 @@ export class Game {
       this.ball.body.velocity.x = impulse.x;
       this.ball.body.velocity.y = impulse.y;
       this.ball.body.velocity.z = impulse.z;
+
+      // Finalize touch AFTER impulse (singleplayer only)
+      if (this.perfTracker && carIdx >= 0) {
+        this.perfTracker.finalizePendingTouch(this.ball.body.velocity);
+      }
     });
   }
 
@@ -470,15 +484,24 @@ export class Game {
     const speedA = carA.getSpeed();
     const speedB = carB.getSpeed();
 
+    let attacker = null;
     let victim = null;
 
     if (speedA >= CAR_CONST.SUPERSONIC_THRESHOLD && speedA > speedB) {
+      attacker = carA;
       victim = carB;
     } else if (speedB >= CAR_CONST.SUPERSONIC_THRESHOLD && speedB > speedA) {
+      attacker = carB;
       victim = carA;
     }
 
     if (!victim) return;
+
+    if (this.perfTracker && attacker) {
+      const attackerIdx = attacker === this.playerCar ? 0 : 1;
+      this.perfTracker.recordDemolition(attackerIdx);
+    }
+
     this._demolishCar(victim);
   }
 
@@ -624,6 +647,16 @@ export class Game {
       this.hud.updateSpeed(this.playerCar.getSpeed(), CAR_CONST.BOOST_MAX_SPEED);
     }
 
+    // Live scoreboard (hold Tab / LB)
+    if (inputState.scoreboard && this.state !== 'ended' && this.state !== 'countdown' && this.state !== 'replay') {
+      const stats = this.perfTracker ? this.perfTracker.getStats() : null;
+      const mp = this.perfTracker ? this.perfTracker.maxPlayers : this.maxPlayers;
+      const pings = this.network ? this.network.playerPings : null;
+      this.hud.showLiveScoreboard(this.scores.blue, this.scores.orange, stats, mp, pings);
+    } else {
+      this.hud.hideLiveScoreboard();
+    }
+
     // Ping display (multiplayer only)
     if (this.network && this.network.rtt > 0) {
       this.hud.updatePing(this.network.rtt);
@@ -639,6 +672,7 @@ export class Game {
     if (this.state === 'replay') {
       this._updateReplay(dt);
       this._updateExplosions(dt);
+      if (this._checkReplaySkipInput()) this._skipReplay();
       return;
     }
 
@@ -661,6 +695,9 @@ export class Game {
       this.playerCar.updateDemolition(dt, SPAWNS.PLAYER1, 1);
       this.opponentCar.updateDemolition(dt, SPAWNS.PLAYER2, -1);
       this.boostPads.update(dt, [this.playerCar, this.opponentCar]);
+      if (this.perfTracker) {
+        this.perfTracker.setMatchTime(GAME.MATCH_DURATION - this.matchTime);
+      }
       this._updateTimer(dt);
 
       // Record frame for replay
@@ -690,6 +727,7 @@ export class Game {
     if (this.state === 'replay') {
       this._updateReplay(dt);
       this._updateExplosions(dt);
+      if (this._checkReplaySkipInput()) this._skipReplay();
       return;
     }
 
@@ -900,7 +938,7 @@ export class Game {
         this.hud.showOvertime();
       } else {
         this.state = 'ended';
-        this.hud.showMatchEnd(this.scores.blue, this.scores.orange);
+        this._showEndStats();
       }
     }
 
@@ -910,6 +948,10 @@ export class Game {
   _checkGoal() {
     const goalSide = this.arena.isInGoal(this.ball.body.position);
     if (goalSide === 0) return;
+
+    if (this.perfTracker) {
+      this.perfTracker.recordGoal(goalSide);
+    }
 
     if (goalSide === 1) {
       this.scores.orange++;
@@ -939,7 +981,7 @@ export class Game {
     if (this._goalWasOvertime) {
       setTimeout(() => {
         this.state = 'ended';
-        this.hud.showMatchEnd(this.scores.blue, this.scores.orange);
+        this._showEndStats();
       }, GAME.GOAL_RESET_TIME * 1000);
     }
   }
@@ -952,10 +994,8 @@ export class Game {
     this.state = 'replay';
     this.hud.showReplayIndicator(true);
 
-    // Skip on any key or click
-    this._replaySkipHandler = () => this._skipReplay();
-    window.addEventListener('keydown', this._replaySkipHandler);
-    window.addEventListener('pointerdown', this._replaySkipHandler);
+    // Snapshot current keys so held keys don't instantly skip
+    this._prevReplayKeys = { ...this.input.keys };
   }
 
   _updateReplay(dt) {
@@ -972,6 +1012,35 @@ export class Game {
     }
   }
 
+  /** Detect any new key/button press this frame for replay skip. */
+  _checkReplaySkipInput() {
+    // Check keyboard — any key newly pressed
+    const keys = this.input.keys;
+    if (!this._prevReplayKeys) this._prevReplayKeys = {};
+    let pressed = false;
+    for (const code in keys) {
+      if (keys[code] && !this._prevReplayKeys[code]) {
+        pressed = true;
+      }
+    }
+    // Snapshot current state for next frame
+    this._prevReplayKeys = { ...keys };
+
+    // Check gamepad — any button newly pressed
+    if (!pressed && navigator.getGamepads) {
+      const gamepads = navigator.getGamepads();
+      for (const gp of gamepads) {
+        if (!gp) continue;
+        for (const btn of gp.buttons) {
+          if (btn.pressed) { pressed = true; break; }
+        }
+        if (pressed) break;
+      }
+    }
+
+    return pressed;
+  }
+
   _skipReplay() {
     if (this.state !== 'replay') return;
     this.replayPlayer.skip();
@@ -979,14 +1048,8 @@ export class Game {
   }
 
   _onReplayFinished() {
-    // Remove skip listeners
-    if (this._replaySkipHandler) {
-      window.removeEventListener('keydown', this._replaySkipHandler);
-      window.removeEventListener('pointerdown', this._replaySkipHandler);
-      this._replaySkipHandler = null;
-    }
-
     this.hud.showReplayIndicator(false);
+    this._prevReplayKeys = null;
 
     // Reset camera smoothing so it doesn't lerp from the orbit position
     if (this.cameraController) {
@@ -1015,6 +1078,7 @@ export class Game {
 
   _resetAfterGoal() {
     this.replayBuffer.clear();
+    if (this.perfTracker) this.perfTracker.resetTouchHistory();
 
     // Clear demolished state before reset
     for (const car of [this.playerCar, this.opponentCar]) {
@@ -1029,6 +1093,16 @@ export class Game {
     this.playerCar.reset(SPAWNS.PLAYER1, 1);
     this.opponentCar.reset(SPAWNS.PLAYER2, -1);
     this._startCountdown();
+  }
+
+  _showEndStats() {
+    if (this.perfTracker) {
+      const winningTeam = this.scores.blue > this.scores.orange ? 'blue' : 'orange';
+      const mvpIdx = this.perfTracker.computeMVP(winningTeam);
+      this.hud.showMatchEnd(this.scores.blue, this.scores.orange, this.perfTracker.getStats(), mvpIdx, 2);
+    } else {
+      this.hud.showMatchEnd(this.scores.blue, this.scores.orange);
+    }
   }
 
   // ========== AI (single-player only) ==========

@@ -15,6 +15,7 @@ import { ServerArena } from './ServerArena.js';
 import { ServerBall } from './ServerBall.js';
 import { ServerCar } from './ServerCar.js';
 import { ServerBoostPads } from './ServerBoostPads.js';
+import { PerformanceTracker } from '../shared/PerformanceTracker.js';
 
 export class GameRoom {
   constructor(io, roomId, maxPlayers = 2) {
@@ -32,6 +33,7 @@ export class GameRoom {
     this._physicsInterval = null;
     this._broadcastInterval = null;
     this._countdownInterval = null;
+    this.playerPings = new Array(maxPlayers).fill(0);
   }
 
   // ========== TEAM HELPERS ==========
@@ -230,12 +232,18 @@ export class GameRoom {
       const other = e.body;
       if (!(other.collisionFilterGroup & COLLISION_GROUPS.CAR)) return;
 
-      const car = this.cars.find(c => c.body === other);
+      const carIdx = this.cars.findIndex(c => c.body === other);
+      const car = carIdx >= 0 ? this.cars[carIdx] : null;
       const ballPos = this.ball.body.position;
       const ballVel = this.ball.body.velocity;
       const carPos = other.position;
       const carVel = other.velocity;
       const carForward = other.quaternion.vmult(new CANNON.Vec3(0, 0, 1));
+
+      // Record touch BEFORE impulse
+      if (carIdx >= 0) {
+        this.perfTracker.recordTouch(carIdx, ballPos, ballVel, carPos);
+      }
 
       const impulse = computeBallHitImpulse(ballPos, ballVel, carPos, carVel, carForward, {
         carSpeed: car ? car.getSpeed() : 0,
@@ -246,6 +254,11 @@ export class GameRoom {
       this.ball.body.velocity.x = impulse.x;
       this.ball.body.velocity.y = impulse.y;
       this.ball.body.velocity.z = impulse.z;
+
+      // Finalize touch AFTER impulse
+      if (carIdx >= 0) {
+        this.perfTracker.finalizePendingTouch(this.ball.body.velocity);
+      }
     });
 
     // Car-car collision: demolition check (all pairs, cross-team only)
@@ -263,6 +276,7 @@ export class GameRoom {
     }
 
     this.boostPads = new ServerBoostPads();
+    this.perfTracker = new PerformanceTracker(this.maxPlayers);
   }
 
   _handleCarDemolition(carA, carB) {
@@ -286,10 +300,14 @@ export class GameRoom {
 
     const pos = { x: victim.body.position.x, y: victim.body.position.y, z: victim.body.position.z };
     const victimIdx = this.cars.indexOf(victim);
+    const attackerIdx = this.cars.indexOf(attacker);
     victim.demolish();
+
+    this.perfTracker.recordDemolition(attackerIdx);
 
     this.io.to(this.roomId).emit('demolition', {
       victimIdx,
+      attackerIdx,
       position: pos,
     });
   }
@@ -394,8 +412,9 @@ export class GameRoom {
     // Clamp ball velocity/angular velocity
     this.ball.update(dt);
 
-    // Update boost pads + demolition timers
+    // Update perf tracker time, boost pads + demolition timers
     if (this.state === 'playing' || this.state === 'overtime') {
+      this.perfTracker.setMatchTime(GAME.MATCH_DURATION - this.matchTime);
       this.boostPads.update(dt, this.cars);
       const spawns = this._getSpawns();
       for (let i = 0; i < this.cars.length; i++) {
@@ -427,10 +446,13 @@ export class GameRoom {
     }
 
     const team = goalSide === 1 ? 'orange' : 'blue';
+    const { scorerIdx, assistIdx } = this.perfTracker.recordGoal(goalSide);
     this.io.to(this.roomId).emit('goalScored', {
       team,
       blueScore: this.scores.blue,
       orangeScore: this.scores.orange,
+      scorerIdx,
+      assistIdx,
     });
 
     this.state = 'goal';
@@ -439,9 +461,13 @@ export class GameRoom {
     if (this.isOvertime) {
       setTimeout(() => {
         this.state = 'ended';
+        const winningTeam = this.scores.blue > this.scores.orange ? 'blue' : 'orange';
+        const mvpIdx = this.perfTracker.computeMVP(winningTeam);
         this.io.to(this.roomId).emit('gameOver', {
           blueScore: this.scores.blue,
           orangeScore: this.scores.orange,
+          stats: this.perfTracker.getStats(),
+          mvpIdx,
         });
         this._stopLoops();
       }, GAME.GOAL_RESET_TIME * 1000);
@@ -460,9 +486,13 @@ export class GameRoom {
         this.io.to(this.roomId).emit('overtime', {});
       } else {
         this.state = 'ended';
+        const winningTeam = this.scores.blue > this.scores.orange ? 'blue' : 'orange';
+        const mvpIdx = this.perfTracker.computeMVP(winningTeam);
         this.io.to(this.roomId).emit('gameOver', {
           blueScore: this.scores.blue,
           orangeScore: this.scores.orange,
+          stats: this.perfTracker.getStats(),
+          mvpIdx,
         });
         this._stopLoops();
       }
@@ -484,6 +514,7 @@ export class GameRoom {
       this.cars[i].reset(spawns[i], this._getDirection(i));
     }
     this.boostPads.resetAll();
+    this.perfTracker.resetTouchHistory();
     this._startCountdown();
   }
 
@@ -527,9 +558,21 @@ export class GameRoom {
     // Binary encode + volatile emit (drops packets under pressure instead of queuing)
     const buffer = encodeGameState(gameState, this.maxPlayers);
     this.io.to(this.roomId).volatile.emit('gameState', buffer);
+
+    // Broadcast pings ~1Hz (every 30th broadcast at 30Hz)
+    if (this.tick % 60 === 0) {
+      this.io.to(this.roomId).volatile.emit('playerPings', this.playerPings);
+    }
   }
 
   // ========== HELPERS ==========
+
+  setPlayerPing(socketId, rtt) {
+    const idx = this.players.findIndex(p => p && p.socketId === socketId);
+    if (idx >= 0) {
+      this.playerPings[idx] = rtt;
+    }
+  }
 
   _emptyInput() {
     return {

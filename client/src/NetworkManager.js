@@ -31,6 +31,7 @@ export class NetworkManager {
 
     // RTT measurement
     this.rtt = 0;
+    this.playerPings = null; // per-slot ping array from server
     this._pingStart = 0;
     this._pingInterval = null;
   }
@@ -114,6 +115,11 @@ export class NetworkManager {
 
     this.socket.on('pong_measure', () => {
       this.rtt = performance.now() - this._pingStart;
+      this.socket.volatile.emit('report_rtt', Math.round(this.rtt));
+    });
+
+    this.socket.on('playerPings', (pings) => {
+      this.playerPings = pings;
     });
 
     this.socket.on('disconnect', () => {
