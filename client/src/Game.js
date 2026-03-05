@@ -1012,33 +1012,31 @@ export class Game {
     }
   }
 
-  /** Detect any new key/button press this frame for replay skip. */
+  /** Detect jump input (Space / A button) for replay skip. */
   _checkReplaySkipInput() {
-    // Check keyboard — any key newly pressed
+    // Keyboard: Space
     const keys = this.input.keys;
-    if (!this._prevReplayKeys) this._prevReplayKeys = {};
-    let pressed = false;
-    for (const code in keys) {
-      if (keys[code] && !this._prevReplayKeys[code]) {
-        pressed = true;
-      }
-    }
-    // Snapshot current state for next frame
-    this._prevReplayKeys = { ...keys };
+    const spaceDown = !!keys['Space'];
+    const spacePressed = spaceDown && !this._prevReplaySpace;
+    this._prevReplaySpace = spaceDown;
 
-    // Check gamepad — any button newly pressed
-    if (!pressed && navigator.getGamepads) {
+    if (spacePressed) return true;
+
+    // Gamepad: A button (index 0)
+    if (navigator.getGamepads) {
       const gamepads = navigator.getGamepads();
       for (const gp of gamepads) {
         if (!gp) continue;
-        for (const btn of gp.buttons) {
-          if (btn.pressed) { pressed = true; break; }
+        const aDown = gp.buttons[0] && gp.buttons[0].pressed;
+        if (aDown && !this._prevReplayA) {
+          this._prevReplayA = true;
+          return true;
         }
-        if (pressed) break;
+        this._prevReplayA = !!(aDown);
       }
     }
 
-    return pressed;
+    return false;
   }
 
   _skipReplay() {
