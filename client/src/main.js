@@ -19,9 +19,7 @@ window.addEventListener('DOMContentLoaded', async () => {
   const previewCanvas = document.getElementById('car-preview');
   const btnSingle = document.getElementById('btn-singleplayer');
   const btnMulti = document.getElementById('btn-multiplayer');
-  const btnRandomize = document.getElementById('btn-randomize');
   const btnLetsGo = document.getElementById('btn-letsgo');
-  const btnResetColors = document.getElementById('btn-reset-colors');
   const btnBack = document.getElementById('btn-back');
   const btnPrevModel = document.getElementById('btn-prev-model');
   const btnNextModel = document.getElementById('btn-next-model');
@@ -40,7 +38,10 @@ window.addEventListener('DOMContentLoaded', async () => {
   const btnMode2v2 = document.getElementById('btn-mode-2v2');
   const waitingRoom = document.getElementById('waiting-room');
   const roomCodeDisplay = document.getElementById('room-code-display');
+  const roomModeLabel = document.getElementById('room-mode-label');
   const roomStatus = document.getElementById('room-status');
+  const blueSlots = document.getElementById('blue-slots');
+  const orangeSlots = document.getElementById('orange-slots');
   const btnRoomBack = document.getElementById('btn-room-back');
 
   let selectedMode = null;
@@ -259,7 +260,51 @@ window.addEventListener('DOMContentLoaded', async () => {
     modeSelector.style.display = 'none';
     waitingRoom.style.display = 'flex';
     roomCodeDisplay.textContent = code;
+    roomModeLabel.textContent = selectedRoomMode || '';
     roomStatus.textContent = 'Waiting for players...';
+    blueSlots.innerHTML = '';
+    orangeSlots.innerHTML = '';
+  }
+
+  // --- Render team lobby slots ---
+
+  function renderTeamSlots(slots, network) {
+    const myTeam = slots.find(s => s.isYou)?.team;
+
+    blueSlots.innerHTML = '';
+    orangeSlots.innerHTML = '';
+
+    for (const s of slots) {
+      const div = document.createElement('div');
+      div.className = 'team-slot';
+
+      if (s.filled) {
+        if (s.isYou) {
+          div.classList.add('filled', 'you');
+          div.textContent = 'You';
+        } else {
+          div.classList.add('filled');
+          div.textContent = 'Player';
+        }
+      } else {
+        div.classList.add('open');
+        if (s.team !== myTeam) {
+          div.classList.add('joinable');
+          div.textContent = 'Join';
+          div.addEventListener('click', () => {
+            network.switchTeam();
+          });
+        } else {
+          div.textContent = 'Open';
+        }
+      }
+
+      if (s.team === 'blue') {
+        blueSlots.appendChild(div);
+      } else {
+        orangeSlots.appendChild(div);
+      }
+    }
   }
 
   // --- Start game (singleplayer or multiplayer after room is ready) ---
@@ -304,6 +349,12 @@ window.addEventListener('DOMContentLoaded', async () => {
 
     network.on('lobbyUpdate', (data) => {
       roomStatus.textContent = `Waiting for players... (${data.playerCount}/${data.maxPlayers})`;
+      if (data.mode) {
+        roomModeLabel.textContent = data.mode;
+      }
+      if (data.slots) {
+        renderTeamSlots(data.slots, network);
+      }
     });
 
     network.on('joinError', (data) => {
@@ -413,23 +464,6 @@ window.addEventListener('DOMContentLoaded', async () => {
     chosenVariant.modelId = availableModelIds[currentModelIndex];
     setPreviewCar(chosenVariant);
     updateModelLabel();
-  });
-
-  // Random Colors — re-rolls colors but keeps current model
-  btnRandomize.addEventListener('click', () => {
-    const currentModelId = chosenVariant ? chosenVariant.modelId : null;
-    chosenVariant = generateCarVariant(COLORS.CYAN, availableModelIds);
-    if (currentModelId) {
-      chosenVariant.modelId = currentModelId;
-    }
-    setPreviewCar(chosenVariant);
-  });
-
-  // Reset Colors — restore model's original texture colors
-  btnResetColors.addEventListener('click', () => {
-    if (!chosenVariant) return;
-    chosenVariant.bodyColor = null;
-    setPreviewCar(chosenVariant);
   });
 
   btnLetsGo.addEventListener('click', () => {

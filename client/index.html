@@ -80,8 +80,20 @@
           </div>
         </div>
         <div id="waiting-room" style="display:none;">
-          <span class="room-label">Room Code</span>
-          <div id="room-code-display" class="room-code-display">----</div>
+          <div class="team-lobby-header">
+            <div id="room-code-display" class="room-code-display">----</div>
+            <span id="room-mode-label" class="room-label">2v2</span>
+          </div>
+          <div id="team-lobby" class="team-lobby">
+            <div class="team-col blue">
+              <div class="team-header blue">BLUE</div>
+              <div id="blue-slots" class="team-slots"></div>
+            </div>
+            <div class="team-col orange">
+              <div class="team-header orange">ORANGE</div>
+              <div id="orange-slots" class="team-slots"></div>
+            </div>
+          </div>
           <div id="room-status" class="room-status">Waiting for players...</div>
         </div>
         <button id="btn-room-back" class="lobby-btn lobby-btn-back">Back</button>
@@ -94,8 +106,6 @@
         </div>
         <canvas id="car-preview"></canvas>
         <div class="car-selector-buttons">
-          <button id="btn-randomize" class="lobby-btn">Random Colors</button>
-          <button id="btn-reset-colors" class="lobby-btn lobby-btn-back">Reset Colors</button>
           <button id="btn-letsgo" class="lobby-btn">Let's Go</button>
         </div>
         <button id="btn-back" class="lobby-btn lobby-btn-back">Back</button>

@@ -18,6 +18,8 @@ export class TouchControls {
       handbrake: false,
       pitchUp: false,
       pitchDown: false,
+      dodgeForward: 0,
+      dodgeSteer: 0,
     };
 
     // Edge detection
@@ -232,6 +234,10 @@ export class TouchControls {
     // Pitch mirrors throttle (W/S map to both throttle and pitch in keyboard mode)
     this.state.pitchUp = throttle > 0;
     this.state.pitchDown = throttle < 0;
+
+    // Dodge direction mirrors joystick so flips go the right way
+    this.state.dodgeForward = throttle;
+    this.state.dodgeSteer = steer;
 
     // Jump with edge detection
     const jumpDown = this._isPressed(this._jumpBtn);

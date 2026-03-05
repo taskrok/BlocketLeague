@@ -31,7 +31,7 @@ function randChoice(arr) {
 export function generateCarVariant(teamColor, availableModelIds = []) {
   return {
     modelId: availableModelIds.length > 0 ? randChoice(availableModelIds) : null,
-    bodyColor: randHex(0, 200, 0, 200, 0, 200),
+    bodyColor: null,
     neonColor: teamColor || randHex(50, 255, 50, 255, 50, 255),
     wheelAccentColor: randHex(30, 180, 30, 180, 30, 180),
     lightColor: randHex(155, 255, 155, 255, 155, 255),

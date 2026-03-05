@@ -11,9 +11,13 @@
  * @param {{x:number,y:number,z:number}} carPos
  * @param {{x:number,y:number,z:number}} carVel
  * @param {{x:number,y:number,z:number}} carForward  unit vector
+ * @param {object} [opts] optional car state flags
+ * @param {number} [opts.carSpeed] car linear speed
+ * @param {boolean} [opts.isDodging] car is in dodge flip
+ * @param {boolean} [opts.dodgeDecaying] car is in dodge decay phase
  * @returns {{x:number,y:number,z:number}} velocity impulse to apply to ball
  */
-export function computeBallHitImpulse(ballPos, ballVel, carPos, carVel, carForward) {
+export function computeBallHitImpulse(ballPos, ballVel, carPos, carVel, carForward, opts) {
   // Direction: from car toward ball, with squished vertical + car-facing bias
   let dx = ballPos.x - carPos.x;
   let dy = (ballPos.y - carPos.y) * 0.35;
@@ -49,10 +53,23 @@ export function computeBallHitImpulse(ballPos, ballVel, carPos, carVel, carForwa
   const rvz = carVel.z - ballVel.z;
   const relSpeed = Math.sqrt(rvx * rvx + rvy * rvy + rvz * rvz);
 
-  // Power curve: slight super-linear scaling
+  // Power curve: super-linear scaling
   const powerFactor = 1.0 + 0.5 * Math.min(relSpeed / 50, 1.0);
 
-  const mag = relSpeed * powerFactor;
+  // Supersonic bonus: ramp from 1.0 to 1.35 as car approaches max speed
+  let speedBonus = 1.0;
+  const spd = opts && opts.carSpeed || 0;
+  if (spd > 30) {
+    speedBonus = 1.0 + 0.35 * Math.min((spd - 30) / 16, 1.0);
+  }
+
+  // Dodge flip bonus: hits during a flip feel punchier
+  let dodgeBonus = 1.0;
+  if (opts && (opts.isDodging || opts.dodgeDecaying)) {
+    dodgeBonus = 1.3;
+  }
+
+  const mag = relSpeed * powerFactor * speedBonus * dodgeBonus;
 
   return {
     x: dx * mag,
