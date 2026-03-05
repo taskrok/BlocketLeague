@@ -1,11 +1,12 @@
 // ============================================
 // NetworkManager — Client socket.io wrapper
-// Handles connection, input sending, snapshot buffering,
-// interpolation, and pending input buffer for reconciliation
+// Binary protocol, input deduplication, adaptive interpolation,
+// RTT measurement, SLERP quaternion interpolation
 // ============================================
 
 import { io } from 'socket.io-client';
 import { NETWORK } from '../../shared/constants.js';
+import { decodeGameState, encodeInput } from '../../shared/BinaryProtocol.js';
 
 export class NetworkManager {
   constructor() {
@@ -22,12 +23,27 @@ export class NetworkManager {
 
     // Event callbacks
     this._callbacks = {};
+
+    // Input deduplication: only send when input changes (or every N frames)
+    this._lastEncodedBytes = null;
+    this._unchangedFrames = 0;
+
+    // Adaptive interpolation
+    this._packetIntervals = [];
+    this._lastPacketTime = 0;
+    this._adaptiveDelay = NETWORK.INTERPOLATION_DELAY;
+
+    // RTT measurement
+    this.rtt = 0;
+    this._pingStart = 0;
+    this._pingInterval = null;
   }
 
   connect() {
     this.socket = io({ transports: ['websocket'] });
 
     this.socket.on('connect', () => {
+      this._startPing();
       this._emit('connected');
     });
 
@@ -45,16 +61,23 @@ export class NetworkManager {
     });
 
     this.socket.on('gameState', (data) => {
+      // Decode binary protocol (or pass through if already object)
+      const snapshot = decodeGameState(data);
+
       // Tag with local receive time for interpolation
-      data.localTime = performance.now();
-      this.snapshots.push(data);
+      snapshot.localTime = performance.now();
+
+      // Update adaptive interpolation delay
+      this._updateJitter(snapshot.localTime);
+
+      this.snapshots.push(snapshot);
 
       // Keep buffer bounded
       if (this.snapshots.length > this.maxSnapshots) {
         this.snapshots.shift();
       }
 
-      this._emit('gameState', data);
+      this._emit('gameState', snapshot);
     });
 
     this.socket.on('demolition', (data) => {
@@ -93,7 +116,12 @@ export class NetworkManager {
       this._emit('roomExpired', data);
     });
 
+    this.socket.on('pong_measure', () => {
+      this.rtt = performance.now() - this._pingStart;
+    });
+
     this.socket.on('disconnect', () => {
+      this._stopPing();
       this._emit('disconnected');
     });
   }
@@ -109,6 +137,8 @@ export class NetworkManager {
       this.socket.emit('joinRoom', { code, variantConfig });
     }
   }
+
+  // ========== INPUT (binary + deduplication) ==========
 
   sendInput(inputState) {
     this.seq++;
@@ -127,16 +157,43 @@ export class NetworkManager {
       dodgeSteer: inputState.dodgeSteer,
     };
 
-    if (this.socket) {
-      this.socket.emit('input', input);
+    // Binary encode
+    const buffer = encodeInput(input);
+    const bytes = new Uint8Array(buffer);
+
+    // Deduplication: compare payload bytes (skip seq at offset 0-3)
+    let changed = !this._lastEncodedBytes;
+    if (!changed) {
+      for (let i = 4; i < bytes.length; i++) {
+        if (bytes[i] !== this._lastEncodedBytes[i]) {
+          changed = true;
+          break;
+        }
+      }
+    }
+
+    if (changed) {
+      this._unchangedFrames = 0;
+      this._lastEncodedBytes = new Uint8Array(bytes);
+    } else {
+      this._unchangedFrames++;
+    }
+
+    // Send if changed, or periodically for robustness (handles packet loss)
+    if (changed || this._unchangedFrames % NETWORK.INPUT_RESEND_INTERVAL === 0) {
+      if (this.socket) {
+        this.socket.volatile.emit('input', buffer);
+      }
     }
 
     return input;
   }
 
-  // ========== INTERPOLATION ==========
+  // ========== INTERPOLATION (with SLERP + adaptive delay) ==========
 
-  getInterpolatedState(renderTime) {
+  getInterpolatedState() {
+    const renderTime = performance.now() - this._adaptiveDelay;
+
     if (this.snapshots.length < 2) {
       return this.snapshots.length > 0 ? this.snapshots[this.snapshots.length - 1] : null;
     }
@@ -154,7 +211,6 @@ export class NetworkManager {
     }
 
     if (!before || !after) {
-      // Use latest available
       return this.snapshots[this.snapshots.length - 1];
     }
 
@@ -167,7 +223,7 @@ export class NetworkManager {
   _lerpSnapshots(a, b, t) {
     return {
       tick: b.tick,
-      ball: this._lerpEntity(a.ball, b.ball, t),
+      ball: this._lerpBall(a.ball, b.ball, t),
       players: a.players.map((pa, i) => this._lerpPlayer(pa, b.players[i], t)),
       boostPads: b.boostPads,
       score: b.score,
@@ -177,7 +233,7 @@ export class NetworkManager {
     };
   }
 
-  _lerpEntity(a, b, t) {
+  _lerpBall(a, b, t) {
     return {
       px: a.px + (b.px - a.px) * t,
       py: a.py + (b.py - a.py) * t,
@@ -193,14 +249,86 @@ export class NetworkManager {
   }
 
   _lerpPlayer(a, b, t) {
-    const entity = this._lerpEntity(a, b, t);
-    entity.avx = a.avx + (b.avx - a.avx) * t;
-    entity.avy = a.avy + (b.avy - a.avy) * t;
-    entity.avz = a.avz + (b.avz - a.avz) * t;
-    entity.boost = a.boost + (b.boost - a.boost) * t;
-    entity.demolished = b.demolished;
-    entity.lastProcessedInput = b.lastProcessedInput;
-    return entity;
+    // Position + velocity: linear interpolation
+    const result = {
+      px: a.px + (b.px - a.px) * t,
+      py: a.py + (b.py - a.py) * t,
+      pz: a.pz + (b.pz - a.pz) * t,
+      vx: a.vx + (b.vx - a.vx) * t,
+      vy: a.vy + (b.vy - a.vy) * t,
+      vz: a.vz + (b.vz - a.vz) * t,
+      avx: a.avx + (b.avx - a.avx) * t,
+      avy: a.avy + (b.avy - a.avy) * t,
+      avz: a.avz + (b.avz - a.avz) * t,
+      boost: a.boost + (b.boost - a.boost) * t,
+      demolished: b.demolished,
+      lastProcessedInput: b.lastProcessedInput,
+    };
+
+    // Quaternion: SLERP for smooth rotation interpolation
+    const sq = slerp(a.qx, a.qy, a.qz, a.qw, b.qx, b.qy, b.qz, b.qw, t);
+    result.qx = sq[0];
+    result.qy = sq[1];
+    result.qz = sq[2];
+    result.qw = sq[3];
+
+    return result;
+  }
+
+  // ========== ADAPTIVE INTERPOLATION ==========
+
+  _updateJitter(now) {
+    if (this._lastPacketTime > 0) {
+      const interval = now - this._lastPacketTime;
+      this._packetIntervals.push(interval);
+      if (this._packetIntervals.length > 30) {
+        this._packetIntervals.shift();
+      }
+
+      if (this._packetIntervals.length >= 5) {
+        const intervals = this._packetIntervals;
+        const avg = intervals.reduce((s, v) => s + v, 0) / intervals.length;
+        const variance = intervals.reduce((s, v) => s + (v - avg) * (v - avg), 0) / intervals.length;
+        const jitter = Math.sqrt(variance);
+
+        // Target delay: average interval + 2x jitter margin
+        const target = avg + jitter * 2;
+        const clamped = Math.max(
+          NETWORK.MIN_INTERPOLATION_DELAY,
+          Math.min(NETWORK.MAX_INTERPOLATION_DELAY, target)
+        );
+
+        // Smooth the transition (don't jump suddenly)
+        this._adaptiveDelay += (clamped - this._adaptiveDelay) * 0.1;
+      }
+    }
+    this._lastPacketTime = now;
+  }
+
+  getAdaptiveDelay() {
+    return this._adaptiveDelay;
+  }
+
+  // ========== RTT MEASUREMENT ==========
+
+  _startPing() {
+    this._pingInterval = setInterval(() => {
+      if (this.socket) {
+        this._pingStart = performance.now();
+        this.socket.volatile.emit('ping_measure');
+      }
+    }, NETWORK.PING_INTERVAL);
+  }
+
+  _stopPing() {
+    if (this._pingInterval) {
+      clearInterval(this._pingInterval);
+      this._pingInterval = null;
+    }
+  }
+
+  getRTT() {
+    return this.rtt;
   }
 
   // ========== PENDING INPUT BUFFER ==========
@@ -238,6 +366,7 @@ export class NetworkManager {
   }
 
   disconnect() {
+    this._stopPing();
     if (this.socket) {
       this.socket.disconnect();
       this.socket = null;
@@ -245,5 +374,42 @@ export class NetworkManager {
     this._callbacks = {};
     this.snapshots = [];
     this.pendingInputs = [];
+    this._lastEncodedBytes = null;
+    this._packetIntervals = [];
   }
+}
+
+// ========== SLERP (quaternion spherical interpolation) ==========
+
+function slerp(ax, ay, az, aw, bx, by, bz, bw, t) {
+  // Compute dot product
+  let dot = ax * bx + ay * by + az * bz + aw * bw;
+
+  // If dot < 0, negate one quaternion to take shortest path
+  if (dot < 0) {
+    bx = -bx; by = -by; bz = -bz; bw = -bw;
+    dot = -dot;
+  }
+
+  // If very close, use linear interpolation to avoid division by zero
+  if (dot > 0.9995) {
+    const rx = ax + (bx - ax) * t;
+    const ry = ay + (by - ay) * t;
+    const rz = az + (bz - az) * t;
+    const rw = aw + (bw - aw) * t;
+    const inv = 1 / Math.sqrt(rx * rx + ry * ry + rz * rz + rw * rw);
+    return [rx * inv, ry * inv, rz * inv, rw * inv];
+  }
+
+  const theta = Math.acos(dot);
+  const sinTheta = Math.sin(theta);
+  const wa = Math.sin((1 - t) * theta) / sinTheta;
+  const wb = Math.sin(t * theta) / sinTheta;
+
+  return [
+    ax * wa + bx * wb,
+    ay * wa + by * wb,
+    az * wa + bz * wb,
+    aw * wa + bw * wb,
+  ];
 }

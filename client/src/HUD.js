@@ -22,6 +22,9 @@ export class HUD {
     this.boostCircumference = 2 * Math.PI * 52; // r=52 from SVG
     this.boostArc.style.strokeDasharray = this.boostCircumference;
 
+    // Ping display (created dynamically for multiplayer)
+    this.pingEl = null;
+
     // Track active timeouts so we can clear them on reset/destroy
     this._timeouts = [];
 
@@ -125,6 +128,28 @@ export class HUD {
     }, 1500);
   }
 
+  updatePing(rttMs) {
+    if (!this.pingEl) {
+      this.pingEl = document.createElement('div');
+      Object.assign(this.pingEl.style, {
+        position: 'fixed',
+        top: '8px',
+        right: '8px',
+        color: '#0ff',
+        fontFamily: 'monospace',
+        fontSize: '12px',
+        opacity: '0.7',
+        zIndex: '100',
+        pointerEvents: 'none',
+      });
+      document.body.appendChild(this.pingEl);
+    }
+    const ping = Math.round(rttMs);
+    const color = ping < 60 ? '#0f0' : ping < 120 ? '#ff0' : '#f00';
+    this.pingEl.style.color = color;
+    this.pingEl.textContent = `${ping}ms`;
+  }
+
   showStatus(msg) {
     if (!this.statusText) return;
     this.statusText.textContent = msg;
@@ -142,5 +167,9 @@ export class HUD {
     this.goalTextEl.style.opacity = '0';
     if (this.statusText) this.statusText.style.opacity = '0';
     if (this.demoText) this.demoText.style.opacity = '0';
+    if (this.pingEl) {
+      this.pingEl.remove();
+      this.pingEl = null;
+    }
   }
 }

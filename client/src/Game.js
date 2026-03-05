@@ -58,6 +58,9 @@ export class Game {
     // Legacy alias for singleplayer AI
     this.opponentCar = null;
 
+    // Smooth reconciliation: visual correction offset decays over time
+    this._correctionOffset = { x: 0, y: 0, z: 0 };
+
     // Explosion VFX
     this._activeExplosions = [];
 
@@ -190,7 +193,9 @@ export class Game {
 
     const modelIds = modelLoader.getModelIds();
     const playerVariant = this.playerVariant || generateCarVariant(COLORS.CYAN, modelIds);
+    playerVariant.bodyColor = COLORS.TEAM_BLUE_BODY;
     const opponentVariant = generateCarVariant(COLORS.ORANGE, modelIds);
+    opponentVariant.bodyColor = COLORS.TEAM_ORANGE_BODY;
 
     this.playerCar = new Car(
       this.scene, this.world,
@@ -326,11 +331,13 @@ export class Game {
     const mySlot = data.playerNumber;
     const myColor = this.myTeam === 'blue' ? COLORS.CYAN : COLORS.ORANGE;
     const myDir = this.myTeam === 'blue' ? 1 : -1;
+    const myBodyColor = this.myTeam === 'blue' ? COLORS.TEAM_BLUE_BODY : COLORS.TEAM_ORANGE_BODY;
 
+    const localVariant = { ...this._localVariant, bodyColor: myBodyColor };
     this.playerCar = new Car(
       this.scene, this.world,
       spawns[mySlot], myColor, myDir,
-      this.arena.trimeshBody, this._localVariant
+      this.arena.trimeshBody, localVariant
     );
     this.playerCar.body.material = this.carMaterial;
     this.allCars[mySlot] = this.playerCar;
@@ -352,11 +359,13 @@ export class Game {
     for (const other of otherPlayers) {
       const otherColor = other.team === 'blue' ? COLORS.CYAN : COLORS.ORANGE;
       const otherDir = other.team === 'blue' ? 1 : -1;
+      const otherBodyColor = other.team === 'blue' ? COLORS.TEAM_BLUE_BODY : COLORS.TEAM_ORANGE_BODY;
 
+      const remoteVariant = { ...other.variantConfig, bodyColor: otherBodyColor };
       const remoteCar = new Car(
         this.scene, this.world,
         spawns[other.slot], otherColor, otherDir,
-        this.arena.trimeshBody, other.variantConfig
+        this.arena.trimeshBody, remoteVariant
       );
       remoteCar.body.material = this.carMaterial;
       remoteCar.body.type = CANNON.Body.KINEMATIC;
@@ -400,13 +409,21 @@ export class Game {
       // Check if the other body is a car (collision filter group)
       if (!(other.collisionFilterGroup & COLLISION_GROUPS.CAR)) return;
 
+      const car = this.allCars
+        ? this.allCars.find(c => c && c.body === other)
+        : (this.playerCar && this.playerCar.body === other ? this.playerCar : this.opponentCar);
+
       const ballPos = this.ball.body.position;
       const ballVel = this.ball.body.velocity;
       const carPos = other.position;
       const carVel = other.velocity;
       const carForward = other.quaternion.vmult(new CANNON.Vec3(0, 0, 1));
 
-      const impulse = computeBallHitImpulse(ballPos, ballVel, carPos, carVel, carForward);
+      const impulse = computeBallHitImpulse(ballPos, ballVel, carPos, carVel, carForward, {
+        carSpeed: car ? car.getSpeed() : 0,
+        isDodging: car ? car.isDodging : false,
+        dodgeDecaying: car ? car._dodgeDecaying : false,
+      });
 
       this.ball.body.velocity.x = impulse.x;
       this.ball.body.velocity.y = impulse.y;
@@ -583,6 +600,11 @@ export class Game {
       this.hud.updateSpeed(this.playerCar.getSpeed(), CAR_CONST.BOOST_MAX_SPEED);
     }
 
+    // Ping display (multiplayer only)
+    if (this.network && this.network.rtt > 0) {
+      this.hud.updatePing(this.network.rtt);
+    }
+
     this.composer.render();
   }
 
@@ -645,9 +667,8 @@ export class Game {
       }
     }
 
-    // Interpolate remote entities (opponent + ball)
-    const renderTime = performance.now() - NETWORK.INTERPOLATION_DELAY;
-    const interpState = this.network.getInterpolatedState(renderTime);
+    // Interpolate remote entities (adaptive delay, no fixed renderTime arg)
+    const interpState = this.network.getInterpolatedState();
 
     if (interpState) {
       this._applyRemoteState(interpState);
@@ -663,8 +684,25 @@ export class Game {
       this._syncBoostPads(interpState.boostPads);
     }
 
-    // Sync meshes
+    // Decay correction offset for smooth reconciliation
+    const decay = 1 - NETWORK.BLEND_RATE;
+    this._correctionOffset.x *= decay;
+    this._correctionOffset.y *= decay;
+    this._correctionOffset.z *= decay;
+
+    // Sync player car mesh with visual correction offset applied
+    const body = this.playerCar.body;
+    const ox = this._correctionOffset.x;
+    const oy = this._correctionOffset.y;
+    const oz = this._correctionOffset.z;
+    body.position.x += ox;
+    body.position.y += oy;
+    body.position.z += oz;
     this.playerCar._syncMesh();
+    body.position.x -= ox;
+    body.position.y -= oy;
+    body.position.z -= oz;
+
     for (const { car } of this.remoteCars) {
       car._syncMesh();
     }
@@ -698,18 +736,41 @@ export class Game {
       this.playerCar.body.collisionFilterMask = COLLISION_GROUPS.ARENA_BOXES | COLLISION_GROUPS.BALL | COLLISION_GROUPS.CAR;
     }
 
-    // Snap local car to server state
+    // Save current visual position (physics + correction offset)
     const body = this.playerCar.body;
+    const oldVisualX = body.position.x + this._correctionOffset.x;
+    const oldVisualY = body.position.y + this._correctionOffset.y;
+    const oldVisualZ = body.position.z + this._correctionOffset.z;
+
+    // Snap physics to server authoritative state
     body.position.set(myState.px, myState.py, myState.pz);
     body.velocity.set(myState.vx, myState.vy, myState.vz);
     body.quaternion.set(myState.qx, myState.qy, myState.qz, myState.qw);
     body.angularVelocity.set(myState.avx, myState.avy, myState.avz);
     this.playerCar.boost = myState.boost;
 
-    // Replay pending inputs on top of server state
+    // Replay pending inputs on top of server state (exact prediction)
     const pending = this.network.getPendingInputs();
     for (const input of pending) {
       this.playerCar.update(input, PHYSICS.TIMESTEP);
+    }
+
+    // Compute new correction offset = old visual pos - new predicted physics pos
+    const newOffX = oldVisualX - body.position.x;
+    const newOffY = oldVisualY - body.position.y;
+    const newOffZ = oldVisualZ - body.position.z;
+    const offsetDist = Math.sqrt(newOffX * newOffX + newOffY * newOffY + newOffZ * newOffZ);
+
+    if (offsetDist > NETWORK.SNAP_THRESHOLD) {
+      // Large error: snap (zero offset, no smoothing)
+      this._correctionOffset.x = 0;
+      this._correctionOffset.y = 0;
+      this._correctionOffset.z = 0;
+    } else {
+      // Small error: carry visual offset (it decays each frame in _loopMultiplayer)
+      this._correctionOffset.x = newOffX;
+      this._correctionOffset.y = newOffY;
+      this._correctionOffset.z = newOffZ;
     }
   }
 
@@ -749,11 +810,19 @@ export class Game {
   }
 
   _syncBoostPads(bitmask) {
-    if (bitmask === undefined) return;
+    if (bitmask === undefined || bitmask === null) return;
 
     for (let i = 0; i < this.boostPads.pads.length; i++) {
       const pad = this.boostPads.pads[i];
-      const shouldBeActive = !!(bitmask & (1 << i));
+      let shouldBeActive;
+
+      if (bitmask instanceof Uint8Array) {
+        // Binary protocol: byte array bitmask (supports >32 pads)
+        shouldBeActive = !!((bitmask[i >> 3] || 0) & (1 << (i & 7)));
+      } else {
+        // Legacy: number bitmask (only works for pads 0-31)
+        shouldBeActive = !!(bitmask & (1 << i));
+      }
 
       if (pad.active !== shouldBeActive) {
         pad.active = shouldBeActive;

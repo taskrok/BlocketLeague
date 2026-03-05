@@ -71,12 +71,24 @@ export class ServerBoostPads {
 
   getActiveBitmask() {
     let mask = 0;
-    for (let i = 0; i < this.pads.length; i++) {
+    for (let i = 0; i < Math.min(this.pads.length, 32); i++) {
       if (this.pads[i].active) {
         mask |= (1 << i);
       }
     }
     return mask;
+  }
+
+  // Returns Uint8Array bitmask supporting >32 pads (used by binary protocol)
+  getActiveBitmaskBytes() {
+    const numBytes = Math.ceil(this.pads.length / 8);
+    const bytes = new Uint8Array(numBytes);
+    for (let i = 0; i < this.pads.length; i++) {
+      if (this.pads[i].active) {
+        bytes[i >> 3] |= (1 << (i & 7));
+      }
+    }
+    return bytes;
   }
 
   resetAll() {

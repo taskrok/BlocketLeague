@@ -10,6 +10,7 @@ import {
   NETWORK, COLLISION_GROUPS, CAR as CAR_CONST, DEMOLITION,
 } from '../shared/constants.js';
 import { computeBallHitImpulse } from '../shared/BallHitImpulse.js';
+import { encodeGameState } from '../shared/BinaryProtocol.js';
 import { ServerArena } from './ServerArena.js';
 import { ServerBall } from './ServerBall.js';
 import { ServerCar } from './ServerCar.js';
@@ -52,8 +53,23 @@ export class GameRoom {
 
   // ========== PLAYER MANAGEMENT ==========
 
-  addPlayer(socket, variantConfig) {
-    const slot = this.players.findIndex(p => p === null);
+  addPlayer(socket, variantConfig, preferredTeam) {
+    let slot = -1;
+
+    // If preferredTeam specified, try that team first
+    if (preferredTeam) {
+      const half = this.maxPlayers / 2;
+      const start = preferredTeam === 'blue' ? 0 : half;
+      const end = preferredTeam === 'blue' ? half : this.maxPlayers;
+      for (let i = start; i < end; i++) {
+        if (this.players[i] === null) { slot = i; break; }
+      }
+    }
+
+    // Fallback to first available slot
+    if (slot === -1) {
+      slot = this.players.findIndex(p => p === null);
+    }
     if (slot === -1) return -1;
 
     this.players[slot] = {
@@ -112,12 +128,50 @@ export class GameRoom {
     return this.players.every(p => p === null);
   }
 
+  switchTeam(socketId) {
+    const idx = this.players.findIndex(p => p && p.socketId === socketId);
+    if (idx === -1) return;
+    if (this.state !== 'waiting') return;
+
+    const currentTeam = this._getTeam(idx);
+    const half = this.maxPlayers / 2;
+    const targetStart = currentTeam === 'blue' ? half : 0;
+    const targetEnd = currentTeam === 'blue' ? this.maxPlayers : half;
+
+    for (let i = targetStart; i < targetEnd; i++) {
+      if (this.players[i] === null) {
+        this.players[i] = this.players[idx];
+        this.players[idx] = null;
+        this._broadcastLobbyState();
+        return;
+      }
+    }
+    // No empty slot on other team — ignore
+  }
+
   _broadcastLobbyState() {
-    const count = this.players.filter(p => p !== null).length;
-    this.io.to(this.roomId).emit('lobbyUpdate', {
-      playerCount: count,
-      maxPlayers: this.maxPlayers,
-    });
+    const playerCount = this.players.filter(p => p !== null).length;
+    const mode = this.maxPlayers === 4 ? '2v2' : '1v1';
+    const slots = this.players.map((p, i) => ({
+      slot: i,
+      team: this._getTeam(i),
+      filled: p !== null,
+    }));
+
+    for (const p of this.players) {
+      if (!p) continue;
+      const mySlot = this.players.indexOf(p);
+      const personalSlots = slots.map(s => ({
+        ...s,
+        isYou: s.slot === mySlot,
+      }));
+      p.socket.emit('lobbyUpdate', {
+        playerCount,
+        maxPlayers: this.maxPlayers,
+        mode,
+        slots: personalSlots,
+      });
+    }
   }
 
   // ========== INITIALIZATION ==========
@@ -176,13 +230,18 @@ export class GameRoom {
       const other = e.body;
       if (!(other.collisionFilterGroup & COLLISION_GROUPS.CAR)) return;
 
+      const car = this.cars.find(c => c.body === other);
       const ballPos = this.ball.body.position;
       const ballVel = this.ball.body.velocity;
       const carPos = other.position;
       const carVel = other.velocity;
       const carForward = other.quaternion.vmult(new CANNON.Vec3(0, 0, 1));
 
-      const impulse = computeBallHitImpulse(ballPos, ballVel, carPos, carVel, carForward);
+      const impulse = computeBallHitImpulse(ballPos, ballVel, carPos, carVel, carForward, {
+        carSpeed: car ? car.getSpeed() : 0,
+        isDodging: car ? car.isDodging : false,
+        dodgeDecaying: car ? car._dodgeDecaying : false,
+      });
 
       this.ball.body.velocity.x = impulse.x;
       this.ball.body.velocity.y = impulse.y;
@@ -428,7 +487,7 @@ export class GameRoom {
     this._startCountdown();
   }
 
-  // ========== BROADCAST (30Hz) ==========
+  // ========== BROADCAST (30Hz, binary protocol) ==========
 
   _broadcast() {
     const bp = this.ball.body.position;
@@ -459,13 +518,15 @@ export class GameRoom {
         qx: bq.x, qy: bq.y, qz: bq.z, qw: bq.w,
       },
       players: playersData,
-      boostPads: this.boostPads.getActiveBitmask(),
+      boostPads: this.boostPads.getActiveBitmaskBytes(),
       score: { blue: this.scores.blue, orange: this.scores.orange },
       timer: this.matchTime,
       state: this.state,
     };
 
-    this.io.to(this.roomId).emit('gameState', gameState);
+    // Binary encode + volatile emit (drops packets under pressure instead of queuing)
+    const buffer = encodeGameState(gameState, this.maxPlayers);
+    this.io.to(this.roomId).volatile.emit('gameState', buffer);
   }
 
   // ========== HELPERS ==========

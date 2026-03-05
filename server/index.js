@@ -8,6 +8,7 @@ import { Server } from 'socket.io';
 import { fileURLToPath } from 'url';
 import { dirname, join } from 'path';
 import { GameRoom } from './GameRoom.js';
+import { decodeInput } from '../shared/BinaryProtocol.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
@@ -113,11 +114,27 @@ io.on('connection', (socket) => {
     console.log(`Player ${socket.id} joined room ${code}`);
   });
 
-  socket.on('input', (input) => {
+  socket.on('switchTeam', () => {
     const room = playerRooms.get(socket.id);
     if (room) {
+      room.switchTeam(socket.id);
+    }
+  });
+
+  socket.on('input', (data) => {
+    const room = playerRooms.get(socket.id);
+    if (room) {
+      // Support both binary (ArrayBuffer/Buffer) and legacy JSON input
+      const input = (Buffer.isBuffer(data) || data instanceof ArrayBuffer)
+        ? decodeInput(data)
+        : data;
       room.receiveInput(socket.id, input);
     }
+  });
+
+  // RTT measurement
+  socket.on('ping_measure', () => {
+    socket.volatile.emit('pong_measure');
   });
 
   socket.on('disconnect', () => {
