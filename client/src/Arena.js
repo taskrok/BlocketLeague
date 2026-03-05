@@ -34,6 +34,7 @@ export class Arena {
     this._buildLighting();
     this._buildFieldMarkings();
     this._buildFieldText();
+    this._buildExteriorText();
   }
 
   // ========== GRASS FLOOR ==========
@@ -330,9 +331,10 @@ export class Arena {
 
   _buildGoals() {
     const t = ARENA.WALL_THICKNESS;
-    const wallOutset = 1.5;
     const group = COLLISION_GROUPS.ARENA_BOXES;
     const mask = COLLISION_GROUPS.CAR;
+    const fr = ARENA.GOAL_FILLET_RADIUS; // interior corner rounding radius
+    const SEGS = 5; // segments per quarter-arc fillet
 
     const goalMaterials = [
       new THREE.MeshStandardMaterial({
@@ -352,27 +354,28 @@ export class Arena {
     ];
 
     [-1, 1].forEach((side, idx) => {
-      const zBase = side * HL;
-      const zBack = zBase + side * GD;
+      const zMouth = side * HL;
+      const zBack = zMouth + side * GD;
 
-      // --- Car-containment box colliders ---
+      // --- Car-containment box colliders (flush, with fillet arcs) ---
 
-      // Back wall
+      // Back wall — narrowed to leave room for side-back fillet arcs
       const backBody = new CANNON.Body({
         type: CANNON.Body.STATIC,
-        shape: new CANNON.Box(new CANNON.Vec3(GW, GH / 2, t / 2)),
-        position: new CANNON.Vec3(0, GH / 2, side * (HL + GD + t / 2 + wallOutset)),
+        shape: new CANNON.Box(new CANNON.Vec3(GW - fr, GH / 2, t / 2)),
+        position: new CANNON.Vec3(0, GH / 2, side * (HL + GD) + side * t / 2),
         collisionFilterGroup: group,
         collisionFilterMask: mask,
       });
       this.world.addBody(backBody);
 
-      // Side walls
+      // Side walls — shortened to stop before back fillet zone
       [-1, 1].forEach((sx) => {
+        const flatDepth = (GD - fr) / 2;
         const sideBody = new CANNON.Body({
           type: CANNON.Body.STATIC,
-          shape: new CANNON.Box(new CANNON.Vec3(t / 2, GH / 2, GD / 2)),
-          position: new CANNON.Vec3(sx * (GW + t / 2 + wallOutset), GH / 2, zBase + side * GD / 2),
+          shape: new CANNON.Box(new CANNON.Vec3(t / 2, GH / 2, flatDepth)),
+          position: new CANNON.Vec3(sx * (GW + t / 2), GH / 2, zMouth + side * flatDepth),
           collisionFilterGroup: group,
           collisionFilterMask: mask,
         });
@@ -383,11 +386,66 @@ export class Arena {
       const ceilBody = new CANNON.Body({
         type: CANNON.Body.STATIC,
         shape: new CANNON.Box(new CANNON.Vec3(GW, t / 2, GD / 2)),
-        position: new CANNON.Vec3(0, GH + t / 2 + wallOutset, zBase + side * GD / 2),
+        position: new CANNON.Vec3(0, GH + t / 2, zMouth + side * GD / 2),
         collisionFilterGroup: group,
         collisionFilterMask: mask,
       });
       this.world.addBody(ceilBody);
+
+      // Back corner fillet arcs (where side wall meets back wall)
+      const segAngle = (Math.PI / 2) / SEGS;
+      const chordHalf = (fr + t / 2) * Math.tan(segAngle / 2);
+
+      [-1, 1].forEach(sx => {
+        const cx = sx * (GW - fr);
+        const cz = side * (HL + GD - fr);
+
+        for (let i = 0; i < SEGS; i++) {
+          const theta = (i + 0.5) * segAngle;
+          const r = fr + t / 2;
+          const px = cx + sx * r * Math.sin(theta);
+          const pz = cz + side * r * Math.cos(theta);
+          const yRot = Math.atan2(sx * Math.sin(theta), side * Math.cos(theta));
+
+          const body = new CANNON.Body({
+            type: CANNON.Body.STATIC,
+            position: new CANNON.Vec3(px, GH / 2, pz),
+            collisionFilterGroup: group,
+            collisionFilterMask: mask,
+          });
+          body.addShape(new CANNON.Box(new CANNON.Vec3(chordHalf, GH / 2, t / 2)));
+          body.quaternion.setFromEuler(0, yRot, 0);
+          this.world.addBody(body);
+        }
+      });
+
+      // Goal mouth post fillets (where end wall meets goal side wall at opening)
+      const ger = ARENA.GOAL_EDGE_RADIUS;
+      const mouthSegAngle = (Math.PI / 2) / SEGS;
+      const mouthChordHalf = (ger + t / 2) * Math.tan(mouthSegAngle / 2);
+
+      [-1, 1].forEach(sx => {
+        const cx = sx * (GW - ger);
+        const cz = side * (HL + ger);
+
+        for (let i = 0; i < SEGS; i++) {
+          const theta = (i + 0.5) * mouthSegAngle;
+          const r = ger + t / 2;
+          const px = cx + sx * r * Math.sin(theta);
+          const pz = cz - side * r * Math.cos(theta);
+          const yRot = Math.atan2(sx * Math.sin(theta), -side * Math.cos(theta));
+
+          const body = new CANNON.Body({
+            type: CANNON.Body.STATIC,
+            position: new CANNON.Vec3(px, GH / 2, pz),
+            collisionFilterGroup: group,
+            collisionFilterMask: mask,
+          });
+          body.addShape(new CANNON.Box(new CANNON.Vec3(mouthChordHalf, GH / 2, t / 2)));
+          body.quaternion.setFromEuler(0, yRot, 0);
+          this.world.addBody(body);
+        }
+      });
 
       // --- Visual overlays (decoration only, no physics) ---
 
@@ -405,7 +463,7 @@ export class Arena {
         emissiveIntensity: 2,
       });
       const line = new THREE.Mesh(lineGeo, lineMat);
-      line.position.set(0, 0.06, zBase);
+      line.position.set(0, 0.06, zMouth);
       this.scene.add(line);
     });
   }
@@ -545,6 +603,86 @@ export class Arena {
       });
     };
     img.src = logoSvgUrl;
+  }
+
+  // ========== EXTERIOR NEON TEXT ==========
+
+  _buildExteriorText() {
+    const text = 'HIGH PING HEROES';
+
+    // Render neon block letters to canvas
+    const canvas = document.createElement('canvas');
+    canvas.width = 4096;
+    canvas.height = 512;
+    const ctx = canvas.getContext('2d');
+
+    // Black fill — additive blending makes black invisible
+    ctx.fillStyle = '#000';
+    ctx.fillRect(0, 0, canvas.width, canvas.height);
+
+    const cx = canvas.width / 2;
+    const cy = canvas.height / 2;
+    ctx.font = '900 260px "Arial Black", Arial, sans-serif';
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
+
+    // Neon glow: layered soft shadows (outer → inner)
+    [
+      { blur: 80, color: '#00ffff', alpha: 0.08 },
+      { blur: 40, color: '#00ffff', alpha: 0.15 },
+      { blur: 20, color: '#00ffff', alpha: 0.3 },
+      { blur: 8,  color: '#66ffff', alpha: 0.6 },
+    ].forEach(({ blur, color, alpha }) => {
+      ctx.save();
+      ctx.shadowColor = color;
+      ctx.shadowBlur = blur;
+      ctx.globalAlpha = alpha;
+      ctx.fillStyle = color;
+      ctx.fillText(text, cx, cy);
+      ctx.restore();
+    });
+
+    // Bright core
+    ctx.globalAlpha = 1.0;
+    ctx.fillStyle = '#eeffff';
+    ctx.fillText(text, cx, cy);
+
+    const texture = new THREE.CanvasTexture(canvas);
+    texture.minFilter = THREE.LinearFilter;
+    texture.magFilter = THREE.LinearFilter;
+
+    const mat = new THREE.MeshBasicMaterial({
+      map: texture,
+      transparent: true,
+      blending: THREE.AdditiveBlending,
+      depthWrite: false,
+      depthTest: false,
+      side: THREE.DoubleSide,
+    });
+
+    const aspect = canvas.width / canvas.height;
+    const textH = 12;
+    const textW = textH * aspect;
+    const geo = new THREE.PlaneGeometry(textW, textH);
+    const offset = 1.5;
+    const yPos = H * 0.45;
+
+    // Place on side walls only (not goal ends)
+    // Right wall — faces +X (toward inside of arena)
+    const right = new THREE.Mesh(geo, mat);
+    right.position.set(HW + offset, yPos, 0);
+    right.rotation.y = -Math.PI / 2;
+    right.frustumCulled = false;
+    right.renderOrder = 999;
+    this.scene.add(right);
+
+    // Left wall — faces -X (toward inside of arena)
+    const left = new THREE.Mesh(geo, mat);
+    left.position.set(-HW - offset, yPos, 0);
+    left.rotation.y = Math.PI / 2;
+    left.frustumCulled = false;
+    left.renderOrder = 999;
+    this.scene.add(left);
   }
 
   // ========== GOAL DETECTION ==========

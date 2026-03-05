@@ -208,32 +208,36 @@ export class ServerArena {
   }
 
   // ========== GOALS (car-containment only, ball handled by trimesh) ==========
+  // Flush colliders (no wallOutset) + fillet arc segments at interior corners
+  // so cars don't clip through the mesh or get stuck in sharp 90-degree edges.
 
   _buildGoals() {
     const t = ARENA.WALL_THICKNESS;
-    const wallOutset = 1.5;
     const group = COLLISION_GROUPS.ARENA_BOXES;
     const mask = COLLISION_GROUPS.CAR;
+    const fr = ARENA.GOAL_FILLET_RADIUS; // interior corner rounding radius
+    const SEGS = 5; // segments per quarter-arc fillet
 
     [-1, 1].forEach(side => {
-      const zBase = side * HL;
+      const zMouth = side * HL;
 
-      // Back wall
+      // Back wall — narrowed to leave room for side-back fillet arcs
       const backBody = new CANNON.Body({
         type: CANNON.Body.STATIC,
-        shape: new CANNON.Box(new CANNON.Vec3(GW, GH / 2, t / 2)),
-        position: new CANNON.Vec3(0, GH / 2, side * (HL + GD + t / 2 + wallOutset)),
+        shape: new CANNON.Box(new CANNON.Vec3(GW - fr, GH / 2, t / 2)),
+        position: new CANNON.Vec3(0, GH / 2, side * (HL + GD) + side * t / 2),
         collisionFilterGroup: group,
         collisionFilterMask: mask,
       });
       this.world.addBody(backBody);
 
-      // Side walls
+      // Side walls — shortened to stop before back fillet zone
       [-1, 1].forEach(sx => {
+        const flatDepth = (GD - fr) / 2;
         const sideBody = new CANNON.Body({
           type: CANNON.Body.STATIC,
-          shape: new CANNON.Box(new CANNON.Vec3(t / 2, GH / 2, GD / 2)),
-          position: new CANNON.Vec3(sx * (GW + t / 2 + wallOutset), GH / 2, zBase + side * GD / 2),
+          shape: new CANNON.Box(new CANNON.Vec3(t / 2, GH / 2, flatDepth)),
+          position: new CANNON.Vec3(sx * (GW + t / 2), GH / 2, zMouth + side * flatDepth),
           collisionFilterGroup: group,
           collisionFilterMask: mask,
         });
@@ -244,11 +248,69 @@ export class ServerArena {
       const ceilBody = new CANNON.Body({
         type: CANNON.Body.STATIC,
         shape: new CANNON.Box(new CANNON.Vec3(GW, t / 2, GD / 2)),
-        position: new CANNON.Vec3(0, GH + t / 2 + wallOutset, zBase + side * GD / 2),
+        position: new CANNON.Vec3(0, GH + t / 2, zMouth + side * GD / 2),
         collisionFilterGroup: group,
         collisionFilterMask: mask,
       });
       this.world.addBody(ceilBody);
+
+      // Back corner fillet arcs (where side wall meets back wall)
+      // Approximated as angled box segments, same approach as arena corners
+      const segAngle = (Math.PI / 2) / SEGS;
+      const chordHalf = (fr + t / 2) * Math.tan(segAngle / 2);
+
+      [-1, 1].forEach(sx => {
+        const cx = sx * (GW - fr);
+        const cz = side * (HL + GD - fr);
+
+        for (let i = 0; i < SEGS; i++) {
+          const theta = (i + 0.5) * segAngle;
+          const r = fr + t / 2;
+          const px = cx + sx * r * Math.sin(theta);
+          const pz = cz + side * r * Math.cos(theta);
+          const yRot = Math.atan2(sx * Math.sin(theta), side * Math.cos(theta));
+
+          const body = new CANNON.Body({
+            type: CANNON.Body.STATIC,
+            position: new CANNON.Vec3(px, GH / 2, pz),
+            collisionFilterGroup: group,
+            collisionFilterMask: mask,
+          });
+          body.addShape(new CANNON.Box(new CANNON.Vec3(chordHalf, GH / 2, t / 2)));
+          body.quaternion.setFromEuler(0, yRot, 0);
+          this.world.addBody(body);
+        }
+      });
+
+      // Goal mouth post fillets (where end wall meets goal side wall at opening)
+      // Cars slide smoothly into goal instead of snagging on sharp post edge
+      const ger = ARENA.GOAL_EDGE_RADIUS;
+      const mouthSegAngle = (Math.PI / 2) / SEGS;
+      const mouthChordHalf = (ger + t / 2) * Math.tan(mouthSegAngle / 2);
+
+      [-1, 1].forEach(sx => {
+        const cx = sx * (GW - ger);
+        const cz = side * (HL + ger);
+
+        for (let i = 0; i < SEGS; i++) {
+          const theta = (i + 0.5) * mouthSegAngle;
+          const r = ger + t / 2;
+          // Arc sweeps from end-wall face into the goal interior
+          const px = cx + sx * r * Math.sin(theta);
+          const pz = cz - side * r * Math.cos(theta);
+          const yRot = Math.atan2(sx * Math.sin(theta), -side * Math.cos(theta));
+
+          const body = new CANNON.Body({
+            type: CANNON.Body.STATIC,
+            position: new CANNON.Vec3(px, GH / 2, pz),
+            collisionFilterGroup: group,
+            collisionFilterMask: mask,
+          });
+          body.addShape(new CANNON.Box(new CANNON.Vec3(mouthChordHalf, GH / 2, t / 2)));
+          body.quaternion.setFromEuler(0, yRot, 0);
+          this.world.addBody(body);
+        }
+      });
     });
   }
 
