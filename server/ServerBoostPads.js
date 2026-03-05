@@ -58,7 +58,7 @@ export class ServerBoostPads {
         const dz = carPos.z - pad.z;
         const dist = Math.sqrt(dx * dx + dz * dz);
 
-        if (dist < pad.radius + 1.5) {
+        if (dist < pad.radius) {
           if (car.boost < 100 || pad.isLarge) {
             car.addBoost(pad.amount);
             pad.active = false;

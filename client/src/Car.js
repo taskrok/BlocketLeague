@@ -29,7 +29,7 @@ export class Car {
     this.variantConfig = variantConfig;
 
     // State
-    this.boost = 33;
+    this.boost = 34;
     this.isGrounded = false;
     this.hasJumped = false;
     this.canDoubleJump = false;
@@ -64,9 +64,14 @@ export class Car {
       new CANNON.Vec3(CAR.WIDTH / 2, CAR.HEIGHT / 2, CAR.LENGTH / 2)
     );
 
+    // Tilt hitbox nose-down to match Octane profile
+    const tiltRad = (CAR.HITBOX_ANGLE * Math.PI) / 180;
+    const shapeOffset = new CANNON.Vec3(0, 0, 0);
+    const shapeQuat = new CANNON.Quaternion();
+    shapeQuat.setFromEuler(tiltRad, 0, 0);
+
     this.body = new CANNON.Body({
       mass: CAR.MASS,
-      shape: shape,
       position: new CANNON.Vec3(position.x, position.y, position.z),
       linearDamping: 0.01,
       angularDamping: 0.5,
@@ -74,6 +79,7 @@ export class Car {
       collisionFilterGroup: COLLISION_GROUPS.CAR,
       collisionFilterMask: COLLISION_GROUPS.ARENA_BOXES | COLLISION_GROUPS.BALL | COLLISION_GROUPS.CAR,
     });
+    this.body.addShape(shape, shapeOffset, shapeQuat);
 
     if (this.direction === -1) {
       this.body.quaternion.setFromEuler(0, Math.PI, 0);
@@ -317,6 +323,25 @@ export class Car {
       this.canDoubleJump = false;
       this.isDodging = false;
       this._dodgeDecaying = false;
+
+      // Landing recovery: if tilted on nose/tail/side, snap toward upright
+      // to prevent edge-bouncing/skipping across the field
+      _v4.set(0, 1, 0);
+      this.body.quaternion.vmult(_v4, _v4);
+      const upDot = _v4.dot(this.surfaceNormal);
+      if (upDot < 0.85) {
+        // Aggressively correct orientation on landing
+        this.body.quaternion.toEuler(_euler);
+        _q1.setFromEuler(0, _euler.y, 0);
+        this.body.quaternion.slerp(_q1, 0.6, this.body.quaternion);
+        this.body.quaternion.normalize();
+        // Kill spin so it doesn't keep tumbling
+        this.body.angularVelocity.scale(0.1, this.body.angularVelocity);
+        // Small upward pop to settle cleanly onto wheels
+        if (this.body.velocity.y < 2) {
+          this.body.velocity.y = 2;
+        }
+      }
     }
   }
 
@@ -588,10 +613,20 @@ export class Car {
 
     // Throttle
     if (input.throttle !== 0) {
-      const maxSpeed = (input.boost && this.boost > 0) ? CAR.BOOST_MAX_SPEED : CAR.MAX_SPEED;
+      const goingForward = input.throttle > 0;
+      const maxFwd = (input.boost && this.boost > 0) ? CAR.BOOST_MAX_SPEED : CAR.MAX_SPEED;
+      const maxSpeed = goingForward ? maxFwd : CAR.REVERSE_MAX_SPEED;
       // Use brake force when throttle opposes current velocity (counter-braking)
-      const opposing = (input.throttle > 0 && forwardSpeed < -0.5) || (input.throttle < 0 && forwardSpeed > 0.5);
-      const accel = opposing ? CAR.BRAKE_FORCE : (input.throttle > 0 ? CAR.ACCELERATION : CAR.BRAKE_FORCE);
+      const opposing = (goingForward && forwardSpeed < -0.5) || (!goingForward && forwardSpeed > 0.5);
+      let accel;
+      if (opposing) {
+        accel = CAR.BRAKE_FORCE;
+      } else {
+        // Non-linear acceleration: explosive at low speed, tapering near max
+        const speedRatio = Math.min(Math.abs(forwardSpeed) / maxSpeed, 1);
+        const taper = 1 - speedRatio * speedRatio; // quadratic falloff
+        accel = CAR.ACCELERATION * Math.max(taper, 0.05);
+      }
       let targetSpeed = forwardSpeed + input.throttle * accel * dt;
       targetSpeed = Math.max(-maxSpeed, Math.min(maxSpeed, targetSpeed));
 
@@ -648,9 +683,19 @@ export class Car {
     // Kill sideways velocity (grip) — reduced during handbrake to allow drifting
     const gripFactor = handbraking ? CAR.HANDBRAKE_GRIP : 0.92;
     const sideSpeed = vel.dot(right);
-    vel.x -= right.x * sideSpeed * gripFactor;
-    vel.y -= right.y * sideSpeed * gripFactor;
-    vel.z -= right.z * sideSpeed * gripFactor;
+    const sideRemoval = sideSpeed * gripFactor;
+    vel.x -= right.x * sideRemoval;
+    vel.y -= right.y * sideRemoval;
+    vel.z -= right.z * sideRemoval;
+
+    // During handbrake, redirect removed sideways energy into forward direction
+    // so the car maintains speed through the drift instead of bleeding momentum
+    if (handbraking && Math.abs(sideRemoval) > 0.1) {
+      const fwdSign = forwardSpeed >= 0 ? 1 : -1;
+      vel.x += forward.x * Math.abs(sideRemoval) * 0.7 * fwdSign;
+      vel.y += forward.y * Math.abs(sideRemoval) * 0.7 * fwdSign;
+      vel.z += forward.z * Math.abs(sideRemoval) * 0.7 * fwdSign;
+    }
 
     // Align car to surface normal
     this._alignToSurface(dt);
@@ -933,7 +978,7 @@ export class Car {
       this.body.quaternion.setFromEuler(0, 0, 0);
     }
 
-    this.boost = 33;
+    this.boost = 34;
     this.hasJumped = false;
     this.canDoubleJump = false;
     this.isDodging = false;

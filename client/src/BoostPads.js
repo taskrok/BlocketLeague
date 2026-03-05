@@ -35,54 +35,92 @@ export class BoostPads {
   }
 
   _createPad(position, isLarge) {
-    const radius = isLarge ? BOOST_PAD.LARGE_RADIUS : BOOST_PAD.SMALL_RADIUS;
-    const height = isLarge ? BOOST_PAD.LARGE_HEIGHT : BOOST_PAD.SMALL_HEIGHT;
+    const hitboxRadius = isLarge ? BOOST_PAD.LARGE_RADIUS : BOOST_PAD.SMALL_RADIUS;
+    // Visual radius is smaller than hitbox — hitbox radii are RL-accurate pickup zones
+    const visualRadius = isLarge ? 2.5 : 1.2;
     const color = isLarge ? COLORS.ORANGE : COLORS.YELLOW;
 
     const group = new THREE.Group();
     group.position.set(position.x, 0, position.z);
 
-    // Base glow circle on ground
-    const baseGeo = new THREE.CircleGeometry(radius, isLarge ? 6 : 16);
-    const baseMat = new THREE.MeshStandardMaterial({
-      color: color,
-      emissive: color,
-      emissiveIntensity: 1.0,
-      transparent: true,
-      opacity: 0.4,
-      side: THREE.DoubleSide,
-    });
-    const base = new THREE.Mesh(baseGeo, baseMat);
-    base.rotation.x = -Math.PI / 2;
-    base.position.y = 0.08;
-    group.add(base);
-
     if (isLarge) {
-      // Large pad: floating orb
-      const orbGeo = new THREE.OctahedronGeometry(0.8, 0);
+      // Large pad: prominent hexagonal base + large floating orb
+      const baseGeo = new THREE.CircleGeometry(visualRadius * 1.4, 6);
+      const baseMat = new THREE.MeshStandardMaterial({
+        color: color,
+        emissive: color,
+        emissiveIntensity: 1.2,
+        transparent: true,
+        opacity: 0.5,
+        side: THREE.DoubleSide,
+      });
+      const base = new THREE.Mesh(baseGeo, baseMat);
+      base.rotation.x = -Math.PI / 2;
+      base.position.y = 0.08;
+      group.add(base);
+
+      // Outer ring glow
+      const ringGeo = new THREE.RingGeometry(visualRadius * 1.2, visualRadius * 1.5, 6);
+      const ringMat = new THREE.MeshStandardMaterial({
+        color: color,
+        emissive: color,
+        emissiveIntensity: 0.8,
+        transparent: true,
+        opacity: 0.3,
+        side: THREE.DoubleSide,
+      });
+      const ring = new THREE.Mesh(ringGeo, ringMat);
+      ring.rotation.x = -Math.PI / 2;
+      ring.position.y = 0.06;
+      group.add(ring);
+
+      // Floating orb — bigger and brighter
+      const orbGeo = new THREE.OctahedronGeometry(1.2, 0);
       const orbMat = new THREE.MeshStandardMaterial({
         color: color,
         emissive: color,
-        emissiveIntensity: 2.0,
+        emissiveIntensity: 2.5,
         transparent: true,
-        opacity: 0.8,
+        opacity: 0.85,
       });
       const orb = new THREE.Mesh(orbGeo, orbMat);
-      orb.position.y = height;
+      orb.position.y = BOOST_PAD.LARGE_HEIGHT;
       group.add(orb);
+
+      // Point light so the pad glows on nearby surfaces
+      const light = new THREE.PointLight(color, 1.5, 8);
+      light.position.y = BOOST_PAD.LARGE_HEIGHT;
+      group.add(light);
     } else {
-      // Small pad: small glowing pill
-      const pillGeo = new THREE.CylinderGeometry(0.3, 0.3, 0.6, 6);
-      const pillMat = new THREE.MeshStandardMaterial({
+      // Small pad: flat glowing disc flush with the ground
+      const discGeo = new THREE.CircleGeometry(visualRadius, 16);
+      const discMat = new THREE.MeshStandardMaterial({
         color: color,
         emissive: color,
         emissiveIntensity: 1.5,
         transparent: true,
-        opacity: 0.7,
+        opacity: 0.6,
+        side: THREE.DoubleSide,
       });
-      const pill = new THREE.Mesh(pillGeo, pillMat);
-      pill.position.y = height;
-      group.add(pill);
+      const disc = new THREE.Mesh(discGeo, discMat);
+      disc.rotation.x = -Math.PI / 2;
+      disc.position.y = 0.05;
+      group.add(disc);
+
+      // Subtle outer glow ring
+      const glowGeo = new THREE.RingGeometry(visualRadius * 0.85, visualRadius * 1.1, 16);
+      const glowMat = new THREE.MeshStandardMaterial({
+        color: color,
+        emissive: color,
+        emissiveIntensity: 0.8,
+        transparent: true,
+        opacity: 0.25,
+        side: THREE.DoubleSide,
+      });
+      const glow = new THREE.Mesh(glowGeo, glowMat);
+      glow.rotation.x = -Math.PI / 2;
+      glow.position.y = 0.04;
+      group.add(glow);
     }
 
     this.scene.add(group);
@@ -91,7 +129,7 @@ export class BoostPads {
       mesh: group,
       position: new THREE.Vector3(position.x, 0, position.z),
       isLarge: isLarge,
-      radius: radius,
+      radius: hitboxRadius,
       amount: isLarge ? BOOST_PAD.LARGE_AMOUNT : BOOST_PAD.SMALL_AMOUNT,
       respawnTime: isLarge ? BOOST_PAD.LARGE_RESPAWN_TIME : BOOST_PAD.SMALL_RESPAWN_TIME,
       active: true,
@@ -116,11 +154,19 @@ export class BoostPads {
       }
 
       // Animate active pads
-      const floatingObj = pad.mesh.children[1]; // orb or pill
-      if (floatingObj) {
-        floatingObj.rotation.y = time * 2;
-        floatingObj.position.y = (pad.isLarge ? BOOST_PAD.LARGE_HEIGHT : BOOST_PAD.SMALL_HEIGHT) +
-          Math.sin(time * 3) * 0.2;
+      if (pad.isLarge) {
+        // Large: spin and bob the orb (child 2: base, ring, orb, light)
+        const orb = pad.mesh.children[2];
+        if (orb) {
+          orb.rotation.y = time * 2;
+          orb.position.y = BOOST_PAD.LARGE_HEIGHT + Math.sin(time * 3) * 0.3;
+        }
+      } else {
+        // Small: gentle pulse on the disc opacity
+        const disc = pad.mesh.children[0];
+        if (disc && disc.material) {
+          disc.material.emissiveIntensity = 1.2 + Math.sin(time * 4) * 0.4;
+        }
       }
 
       if (!this.isRemote) {
@@ -132,7 +178,7 @@ export class BoostPads {
           const dz = carPos.z - pad.position.z;
           const dist = Math.sqrt(dx * dx + dz * dz);
 
-          if (dist < pad.radius + 1.5) {
+          if (dist < pad.radius) {
             if (car.boost < 100 || pad.isLarge) {
               car.addBoost(pad.amount);
               pad.active = false;

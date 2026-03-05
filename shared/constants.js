@@ -21,13 +21,15 @@ export const ARENA = {
 
 // Car properties
 export const CAR = {
-  WIDTH: 2.2,
-  HEIGHT: 1.3,
-  LENGTH: 3.6,
+  WIDTH: 2.58,
+  HEIGHT: 1.11,
+  LENGTH: 3.61,
+  HITBOX_ANGLE: -0.55,          // degrees, nose tilted slightly down
   MASS: 32,
-  MAX_SPEED: 28,
+  MAX_SPEED: 44,
   BOOST_MAX_SPEED: 46,
-  ACCELERATION: 28,
+  REVERSE_MAX_SPEED: 34,
+  ACCELERATION: 36,
   BRAKE_FORCE: 70,
   TURN_SPEED: 2.8,
   JUMP_FORCE: 12,
@@ -43,18 +45,18 @@ export const CAR = {
   GROUND_OFFSET: 0.55,        // half height - how high car sits
   JUMP_COOLDOWN: 1250,        // ms for double jump window
   SIDEWAYS_GRIP: 0.05,        // 0 = full grip, 1 = ice
-  HANDBRAKE_TURN_MULTIPLIER: 2.5,  // steering multiplier while powersliding
-  HANDBRAKE_GRIP: 0.12,            // sideways grip during handbrake (lower = more slide)
+  HANDBRAKE_TURN_MULTIPLIER: 1.8,  // steering multiplier while powersliding
+  HANDBRAKE_GRIP: 0.06,            // sideways grip during handbrake (lower = more slide)
   LINEAR_DAMPING: 0.3,
   ANGULAR_DAMPING: 0.95,
   GROUND_RAY_LENGTH: 1.2,     // raycast distance for ground check
   WALL_STICK_FORCE: 30,       // force keeping car on walls
   MAX_ANGULAR_VELOCITY: 5.5,  // rad/s cap matching RL
-  COAST_DECEL: 10,            // linear coasting deceleration (u/s²)
+  COAST_DECEL: 4,             // linear coasting deceleration (u/s²) — slow decay preserves supersonic
   AIR_THROTTLE_ACCEL: 4.0,    // forward thrust in air for aerial control
   DODGE_DURATION: 400,        // ms, snappy flip window
   DODGE_SPIN_SPEED: 15.7,     // rad/s for one rotation in 400ms (2π/0.4)
-  SUPERSONIC_THRESHOLD: 39,   // ~85% of BOOST_MAX_SPEED — speed needed to demolish
+  SUPERSONIC_THRESHOLD: 44,   // matches throttle-only max — speed needed to demolish
 };
 
 // Ball properties
@@ -69,14 +71,14 @@ export const BALL = {
   MAX_ANGULAR_VELOCITY: 6,
 };
 
-// Boost pads
+// Boost pads (RL-accurate values, scaled to our arena)
 export const BOOST_PAD = {
   SMALL_AMOUNT: 12,
   LARGE_AMOUNT: 100,
-  SMALL_RESPAWN_TIME: 4,      // seconds
-  LARGE_RESPAWN_TIME: 10,
-  SMALL_RADIUS: 1.2,
-  LARGE_RADIUS: 2.0,
+  SMALL_RESPAWN_TIME: 4,      // seconds (RL: ~4s)
+  LARGE_RESPAWN_TIME: 10,     // seconds (RL: ~10s)
+  SMALL_RADIUS: 2.9,          // pickup hitbox (RL: 144uu scaled)
+  LARGE_RADIUS: 4.2,          // pickup hitbox (RL: 208uu scaled)
   SMALL_HEIGHT: 0.8,
   LARGE_HEIGHT: 1.5,
 };
@@ -117,48 +119,59 @@ export const NETWORK = {
 };
 
 // Boost pad positions (normalized -1 to 1 range, mapped to arena)
+// RL arena: half-width=4096uu, half-length=5120uu → normalized = rl_coord / half_dim
+// 6 large + 28 small = 34 pads total (matches Rocket League DFH Stadium)
 export const BOOST_PAD_LAYOUT = {
   large: [
-    { x: -0.45, z: 0 },       // mid-left
-    { x: 0.45, z: 0 },        // mid-right
-    { x: -0.45, z: -0.7 },    // back-left
-    { x: 0.45, z: -0.7 },     // back-right
-    { x: -0.45, z: 0.7 },     // front-left
-    { x: 0.45, z: 0.7 },      // front-right
-    { x: 0, z: -0.85 },       // deep back center
-    { x: 0, z: 0.85 },        // deep front center
+    // Back-left & back-right (RL: ±3072, ±4096)
+    { x: -0.75, z: -0.80 },
+    { x:  0.75, z: -0.80 },
+    // Mid-left & mid-right (RL: ±3584, 0)
+    { x: -0.875, z: 0 },
+    { x:  0.875, z: 0 },
+    // Front-left & front-right (RL: ±3072, ±4096)
+    { x: -0.75, z:  0.80 },
+    { x:  0.75, z:  0.80 },
   ],
   small: [
-    // Center line
+    // Center boost (RL: 0, 0)
     { x: 0, z: 0 },
-    { x: -0.2, z: 0 },
-    { x: 0.2, z: 0 },
-    { x: -0.35, z: 0 },       // wider midfield
-    { x: 0.35, z: 0 },        // wider midfield
-    // Quarter lines
-    { x: 0, z: -0.35 },
-    { x: -0.25, z: -0.35 },
-    { x: 0.25, z: -0.35 },
-    { x: 0, z: 0.35 },
-    { x: -0.25, z: 0.35 },
-    { x: 0.25, z: 0.35 },
-    // Near goals
-    { x: -0.15, z: -0.6 },
-    { x: 0.15, z: -0.6 },
-    { x: -0.15, z: 0.6 },
-    { x: 0.15, z: 0.6 },
-    { x: 0, z: -0.6 },        // goal center
-    { x: 0, z: 0.6 },         // goal center
-    // Wide positions
-    { x: -0.4, z: -0.35 },
-    { x: 0.4, z: -0.35 },
-    { x: -0.4, z: 0.35 },
-    { x: 0.4, z: 0.35 },
-    // Diagonal fill
-    { x: -0.3, z: -0.5 },
-    { x: 0.3, z: -0.5 },
-    { x: -0.3, z: 0.5 },
-    { x: 0.3, z: 0.5 },
+    // Near-center pair (RL: ±1024, 0) — "wing" pads on midfield
+    { x: -0.25, z: 0 },
+    { x:  0.25, z: 0 },
+    // Wide midfield (RL: ±1792, 0) — between center and large side pads
+    { x: -0.4375, z: 0 },
+    { x:  0.4375, z: 0 },
+
+    // Quarter-field rows (RL y≈±1536 → z≈±0.30)
+    { x: 0,     z: -0.30 },
+    { x: -0.25, z: -0.30 },
+    { x:  0.25, z: -0.30 },
+    { x: 0,     z:  0.30 },
+    { x: -0.25, z:  0.30 },
+    { x:  0.25, z:  0.30 },
+
+    // Wide quarter-field (RL: ±1792, ±1536 → ±0.4375, ±0.30)
+    { x: -0.4375, z: -0.30 },
+    { x:  0.4375, z: -0.30 },
+    { x: -0.4375, z:  0.30 },
+    { x:  0.4375, z:  0.30 },
+
+    // Diagonal / three-quarter rows (RL y≈±3072 → z≈±0.60)
+    { x: -0.25, z: -0.60 },
+    { x:  0.25, z: -0.60 },
+    { x: -0.25, z:  0.60 },
+    { x:  0.25, z:  0.60 },
+
+    // Near-goal center (RL: 0, ±3584 → 0, ±0.70)
+    { x: 0, z: -0.70 },
+    { x: 0, z:  0.70 },
+
+    // Goal-box corners (RL: ±1024, ±4096 → ±0.25, ±0.80)
+    { x: -0.25, z: -0.80 },
+    { x:  0.25, z: -0.80 },
+    { x: -0.25, z:  0.80 },
+    { x:  0.25, z:  0.80 },
   ],
 };
 
