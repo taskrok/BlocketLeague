@@ -59,16 +59,17 @@ export const CAR = {
   SUPERSONIC_THRESHOLD: 44,   // matches throttle-only max — speed needed to demolish
 };
 
-// Ball properties
+// Ball properties (RL-accurate, scaled to our arena)
+// RL: radius 91.25uu, mass 30kg, max 6000uu/s, gravity -650uu/s², CR 0.6, μ 0.285
 export const BALL = {
-  RADIUS: 2.8,
-  MASS: 2,
-  RESTITUTION: 0.6,
-  FRICTION: 0.3,
-  LINEAR_DAMPING: 0.1,
-  ANGULAR_DAMPING: 0.1,
-  MAX_SPEED: 100,
-  MAX_ANGULAR_VELOCITY: 6,
+  RADIUS: 1.83,                // 91.25uu scaled to arena (was 2.8)
+  MASS: 5.3,                   // RL ratio: ball/car ≈ 1/6 (30kg/180kg)
+  RESTITUTION: 0.6,            // RL coefficient of restitution
+  FRICTION: 0.285,             // RL Coulomb friction (tangential)
+  LINEAR_DAMPING: 0,           // RL: zero air drag, ball coasts indefinitely
+  ANGULAR_DAMPING: 0.01,       // spin decays via surface friction, not air
+  MAX_SPEED: 115,              // 6000uu/s scaled to our speed ratio
+  MAX_ANGULAR_VELOCITY: 6,     // RL: 6 rad/s
 };
 
 // Boost pads (RL-accurate values, scaled to our arena)
