@@ -6,7 +6,7 @@
 export const ARENA = {
   LENGTH: 237,      // Z-axis (goal to goal) — ×1.4 from 169
   WIDTH: 164,       // X-axis — ×1.4 from 117
-  HEIGHT: 35,       // Y-axis — ×1.4 from 25
+  HEIGHT: 41,       // Y-axis — RL-scaled (2044uu)
   WALL_THICKNESS: 2,
   GOAL_WIDTH: 34,   // ×1.4 from 24
   GOAL_HEIGHT: 18,  // ×1.4 from 13
