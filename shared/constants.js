@@ -108,13 +108,12 @@ export const COLLISION_GROUPS = {
 export const NETWORK = {
   TICK_RATE: 60,               // server physics ticks per second
   SEND_RATE: 30,               // network updates per second
-  INTERPOLATION_DELAY: 100,    // ms (base, adjusted adaptively)
-  MIN_INTERPOLATION_DELAY: 32, // ms minimum adaptive delay
+  INTERPOLATION_DELAY: 100,    // ms (initial, adjusted adaptively)
+  MIN_INTERPOLATION_DELAY: 66, // ms (~2 send intervals, safe minimum)
   MAX_INTERPOLATION_DELAY: 200,// ms maximum adaptive delay
-  SNAP_THRESHOLD: 4.0,         // position error above this = hard snap (units)
-  BLEND_RATE: 0.15,            // correction offset decay per frame
+  SNAP_THRESHOLD: 3.0,         // position error above this = hard snap (units)
+  BLEND_RATE: 0.08,            // correction offset decay per frame (gentler)
   PING_INTERVAL: 2000,         // ms between RTT measurements
-  INPUT_RESEND_INTERVAL: 3,    // resend unchanged input every N frames
 };
 
 // Boost pad positions (normalized -1 to 1 range, mapped to arena)

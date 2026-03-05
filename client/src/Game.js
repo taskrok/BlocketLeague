@@ -264,13 +264,21 @@ export class Game {
     this.network.on('countdown', (data) => {
       this.state = 'countdown';
       this.hud.showCountdown(data.count);
+      // Reset correction offset and pending inputs on countdown
+      this._correctionOffset.x = 0;
+      this._correctionOffset.y = 0;
+      this._correctionOffset.z = 0;
+      this.network.pendingInputs = [];
       if (data.count === 0) {
         this.state = 'playing';
       }
     });
 
     this.network.on('gameState', (snapshot) => {
-      this._reconcile(snapshot);
+      // Only reconcile player car during active gameplay
+      if (this.state === 'playing' || this.state === 'overtime') {
+        this._reconcile(snapshot);
+      }
     });
 
     this.network.on('demolition', (data) => {
@@ -293,6 +301,10 @@ export class Game {
       this.hud.updateScore(data.blueScore, data.orangeScore);
       this.hud.showGoalScored(data.team);
       this.state = 'goal';
+      // Reset correction offset on state transition
+      this._correctionOffset.x = 0;
+      this._correctionOffset.y = 0;
+      this._correctionOffset.z = 0;
     });
 
     this.network.on('overtime', () => {
@@ -749,10 +761,12 @@ export class Game {
     body.angularVelocity.set(myState.avx, myState.avy, myState.avz);
     this.playerCar.boost = myState.boost;
 
-    // Replay pending inputs on top of server state (exact prediction)
+    // Replay pending inputs on top of server state (prediction)
+    // Step physics world each iteration so gravity/collisions match server
     const pending = this.network.getPendingInputs();
     for (const input of pending) {
       this.playerCar.update(input, PHYSICS.TIMESTEP);
+      this.world.step(PHYSICS.TIMESTEP);
     }
 
     // Compute new correction offset = old visual pos - new predicted physics pos

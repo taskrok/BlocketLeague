@@ -24,10 +24,6 @@ export class NetworkManager {
     // Event callbacks
     this._callbacks = {};
 
-    // Input deduplication: only send when input changes (or every N frames)
-    this._lastEncodedBytes = null;
-    this._unchangedFrames = 0;
-
     // Adaptive interpolation
     this._packetIntervals = [];
     this._lastPacketTime = 0;
@@ -138,7 +134,7 @@ export class NetworkManager {
     }
   }
 
-  // ========== INPUT (binary + deduplication) ==========
+  // ========== INPUT (binary encoded, always sent reliably) ==========
 
   sendInput(inputState) {
     this.seq++;
@@ -157,33 +153,10 @@ export class NetworkManager {
       dodgeSteer: inputState.dodgeSteer,
     };
 
-    // Binary encode
-    const buffer = encodeInput(input);
-    const bytes = new Uint8Array(buffer);
-
-    // Deduplication: compare payload bytes (skip seq at offset 0-3)
-    let changed = !this._lastEncodedBytes;
-    if (!changed) {
-      for (let i = 4; i < bytes.length; i++) {
-        if (bytes[i] !== this._lastEncodedBytes[i]) {
-          changed = true;
-          break;
-        }
-      }
-    }
-
-    if (changed) {
-      this._unchangedFrames = 0;
-      this._lastEncodedBytes = new Uint8Array(bytes);
-    } else {
-      this._unchangedFrames++;
-    }
-
-    // Send if changed, or periodically for robustness (handles packet loss)
-    if (changed || this._unchangedFrames % NETWORK.INPUT_RESEND_INTERVAL === 0) {
-      if (this.socket) {
-        this.socket.volatile.emit('input', buffer);
-      }
+    // Binary encode and send reliably (never volatile — every input matters
+    // for server-side processing and reconciliation seq tracking)
+    if (this.socket) {
+      this.socket.emit('input', encodeInput(input));
     }
 
     return input;
@@ -285,21 +258,22 @@ export class NetworkManager {
         this._packetIntervals.shift();
       }
 
-      if (this._packetIntervals.length >= 5) {
+      if (this._packetIntervals.length >= 10) {
         const intervals = this._packetIntervals;
         const avg = intervals.reduce((s, v) => s + v, 0) / intervals.length;
         const variance = intervals.reduce((s, v) => s + (v - avg) * (v - avg), 0) / intervals.length;
         const jitter = Math.sqrt(variance);
 
-        // Target delay: average interval + 2x jitter margin
-        const target = avg + jitter * 2;
+        // Target delay: 2 packet intervals + 2x jitter margin for safety
+        const target = avg * 2 + jitter * 2;
         const clamped = Math.max(
           NETWORK.MIN_INTERPOLATION_DELAY,
           Math.min(NETWORK.MAX_INTERPOLATION_DELAY, target)
         );
 
-        // Smooth the transition (don't jump suddenly)
-        this._adaptiveDelay += (clamped - this._adaptiveDelay) * 0.1;
+        // Slow ramp-up (increase delay quickly), slow ramp-down (decrease cautiously)
+        const rate = clamped > this._adaptiveDelay ? 0.15 : 0.03;
+        this._adaptiveDelay += (clamped - this._adaptiveDelay) * rate;
       }
     }
     this._lastPacketTime = now;
@@ -374,7 +348,6 @@ export class NetworkManager {
     this._callbacks = {};
     this.snapshots = [];
     this.pendingInputs = [];
-    this._lastEncodedBytes = null;
     this._packetIntervals = [];
   }
 }
