@@ -279,7 +279,10 @@ window.addEventListener('DOMContentLoaded', async () => {
       return;
     }
 
-    // Multiplayer: connect, create/join room, show waiting room
+    // Multiplayer: show connecting state immediately, then connect
+    showWaitingRoom(isRoomCreator ? '...' : roomCode);
+    roomStatus.textContent = 'Connecting...';
+
     const network = new NetworkManager();
     networkManager = network;
 
@@ -295,7 +298,8 @@ window.addEventListener('DOMContentLoaded', async () => {
 
     network.on('roomCreated', (data) => {
       roomCode = data.code;
-      showWaitingRoom(data.code);
+      roomCodeDisplay.textContent = data.code;
+      roomStatus.textContent = 'Waiting for players...';
     });
 
     network.on('lobbyUpdate', (data) => {
@@ -332,11 +336,6 @@ window.addEventListener('DOMContentLoaded', async () => {
     });
 
     network.connect();
-
-    // For joiners, show waiting room with the code they entered
-    if (!isRoomCreator) {
-      showWaitingRoom(roomCode);
-    }
   }
 
   // --- Button handlers ---
