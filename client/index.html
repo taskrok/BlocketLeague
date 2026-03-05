@@ -11,7 +11,7 @@
   <title>Blocket League</title>
   <link rel="preconnect" href="https://fonts.googleapis.com" />
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
-  <link href="https://fonts.googleapis.com/css2?family=Orbitron:wght@800&display=swap" rel="stylesheet" />
+  <link href="https://fonts.googleapis.com/css2?family=Rock+Salt&family=Orbitron:wght@800&display=swap" rel="stylesheet" />
   <link rel="stylesheet" href="style.css" />
 </head>
 <body>
@@ -59,9 +59,19 @@
         <span class="lobby-title">BLOCKET LEAGUE</span>
         <span class="lobby-title lobby-title-reflect">BLOCKET LEAGUE</span>
       </div>
+      <div class="season-tag">Season One</div>
       <div class="lobby-buttons">
         <button id="btn-singleplayer" class="lobby-btn">Play vs AI</button>
         <button id="btn-multiplayer" class="lobby-btn lobby-btn-online">Play Online</button>
+      </div>
+      <div id="difficulty-selector" style="display:none;">
+        <span class="room-label">Choose Difficulty</span>
+        <div class="mode-buttons">
+          <button id="btn-diff-rookie" class="lobby-btn">Rookie</button>
+          <button id="btn-diff-pro" class="lobby-btn">Pro</button>
+          <button id="btn-diff-allstar" class="lobby-btn lobby-btn-online">All-Star</button>
+        </div>
+        <button id="btn-diff-back" class="lobby-btn lobby-btn-back">Back</button>
       </div>
       <div id="room-lobby" style="display:none;">
         <div class="room-lobby-options">

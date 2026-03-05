@@ -44,7 +44,15 @@ window.addEventListener('DOMContentLoaded', async () => {
   const orangeSlots = document.getElementById('orange-slots');
   const btnRoomBack = document.getElementById('btn-room-back');
 
+  // Difficulty selector elements
+  const difficultySelector = document.getElementById('difficulty-selector');
+  const btnDiffRookie = document.getElementById('btn-diff-rookie');
+  const btnDiffPro = document.getElementById('btn-diff-pro');
+  const btnDiffAllstar = document.getElementById('btn-diff-allstar');
+  const btnDiffBack = document.getElementById('btn-diff-back');
+
   let selectedMode = null;
+  let selectedDifficulty = 'pro';
   let chosenVariant = null;
   let currentModelIndex = 0;
   let availableModelIds = [];
@@ -235,6 +243,7 @@ window.addEventListener('DOMContentLoaded', async () => {
     lobbyButtons.style.display = '';
     roomLobby.style.display = 'none';
     carSelector.style.display = 'none';
+    difficultySelector.style.display = 'none';
     roomCode = null;
     selectedRoomMode = null;
     isRoomCreator = false;
@@ -318,7 +327,7 @@ window.addEventListener('DOMContentLoaded', async () => {
     if (selectedMode === 'singleplayer') {
       lobby.style.display = 'none';
       requestFullscreen();
-      const game = new Game(canvas, 'singleplayer', null, chosenVariant);
+      const game = new Game(canvas, 'singleplayer', null, chosenVariant, null, selectedDifficulty);
       activeGame = game;
       window.game = game;
       return;
@@ -392,7 +401,31 @@ window.addEventListener('DOMContentLoaded', async () => {
   // --- Button handlers ---
 
   btnSingle.addEventListener('click', () => {
+    lobbyButtons.style.display = 'none';
+    difficultySelector.style.display = 'flex';
+  });
+
+  btnDiffRookie.addEventListener('click', () => {
+    selectedDifficulty = 'rookie';
+    difficultySelector.style.display = 'none';
     showCarSelector('singleplayer');
+  });
+
+  btnDiffPro.addEventListener('click', () => {
+    selectedDifficulty = 'pro';
+    difficultySelector.style.display = 'none';
+    showCarSelector('singleplayer');
+  });
+
+  btnDiffAllstar.addEventListener('click', () => {
+    selectedDifficulty = 'allstar';
+    difficultySelector.style.display = 'none';
+    showCarSelector('singleplayer');
+  });
+
+  btnDiffBack.addEventListener('click', () => {
+    difficultySelector.style.display = 'none';
+    lobbyButtons.style.display = '';
   });
 
   // "Play Online" → show room lobby

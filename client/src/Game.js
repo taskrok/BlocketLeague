@@ -19,6 +19,8 @@ import { InputManager } from './InputManager.js';
 import { CameraController } from './Camera.js';
 import { CameraSettings } from './CameraSettings.js';
 import { HUD } from './HUD.js';
+import { ReplayBuffer } from './ReplayBuffer.js';
+import { ReplayPlayer } from './ReplayPlayer.js';
 import {
   PHYSICS, ARENA as ARENA_CONST, BALL as BALL_CONST,
   COLORS, SPAWNS, GAME, CAR as CAR_CONST, COLLISION_GROUPS,
@@ -30,12 +32,13 @@ import { computeBallHitImpulse } from '../../shared/BallHitImpulse.js';
 const _aiEuler = new CANNON.Vec3();
 
 export class Game {
-  constructor(canvas, mode = 'singleplayer', networkManager = null, playerVariant = null, joinedData = null) {
+  constructor(canvas, mode = 'singleplayer', networkManager = null, playerVariant = null, joinedData = null, aiDifficulty = 'pro') {
     this.canvas = canvas;
     this.mode = mode;
     this.network = networkManager;
     this.playerVariant = playerVariant;
     this._joinedData = joinedData;
+    this.aiDifficulty = aiDifficulty;
     this._destroyed = false;
     this._rafId = null;
 
@@ -69,6 +72,8 @@ export class Game {
 
     this.input = new InputManager();
     this.hud = new HUD();
+    this.replayBuffer = new ReplayBuffer();
+    this.replayPlayer = new ReplayPlayer();
 
     if (this.mode === 'singleplayer') {
       this._initScene();
@@ -300,11 +305,18 @@ export class Game {
       this.scores.orange = data.orangeScore;
       this.hud.updateScore(data.blueScore, data.orangeScore);
       this.hud.showGoalScored(data.team);
-      this.state = 'goal';
+
       // Reset correction offset on state transition
       this._correctionOffset.x = 0;
       this._correctionOffset.y = 0;
       this._correctionOffset.z = 0;
+
+      // Try to play replay before entering goal state
+      if (this.replayBuffer.frameCount >= 30) {
+        this._startReplay();
+      } else {
+        this.state = 'goal';
+      }
     });
 
     this.network.on('overtime', () => {
@@ -601,8 +613,8 @@ export class Game {
       this._loopMultiplayer(dt, inputState);
     }
 
-    // Camera always updates
-    if (this.cameraController) {
+    // Camera always updates (except during replay — replay player drives camera)
+    if (this.cameraController && this.state !== 'replay') {
       this.cameraController.update(dt, inputState.ballCam, inputState.lookX);
     }
 
@@ -623,6 +635,13 @@ export class Game {
   // ========== SINGLE-PLAYER LOOP ==========
 
   _loopSingleplayer(dt, inputState) {
+    // During replay, drive meshes from recorded frames (physics paused)
+    if (this.state === 'replay') {
+      this._updateReplay(dt);
+      this._updateExplosions(dt);
+      return;
+    }
+
     // Physics always runs
     this.accumulator += dt;
     while (this.accumulator >= PHYSICS.TIMESTEP) {
@@ -643,6 +662,10 @@ export class Game {
       this.opponentCar.updateDemolition(dt, SPAWNS.PLAYER2, -1);
       this.boostPads.update(dt, [this.playerCar, this.opponentCar]);
       this._updateTimer(dt);
+
+      // Record frame for replay
+      this.replayBuffer.record(this.ball, [this.playerCar, this.opponentCar], this.boostPads);
+
       this._checkGoal();
     } else if (this.state === 'goal') {
       this.goalResetTime -= dt;
@@ -660,6 +683,13 @@ export class Game {
     if (!this.playerCar) {
       // Cars not yet created (waiting for joined event)
       this.ball.update(dt);
+      return;
+    }
+
+    // During replay, drive meshes from recorded frames (physics paused)
+    if (this.state === 'replay') {
+      this._updateReplay(dt);
+      this._updateExplosions(dt);
       return;
     }
 
@@ -694,6 +724,17 @@ export class Game {
 
       // Sync boost pads
       this._syncBoostPads(interpState.boostPads);
+
+      // Record frame for replay (from interpolated state the player sees)
+      if (this.state === 'playing' || this.state === 'overtime') {
+        const ballData = interpState.ball;
+        const carsData = [];
+        for (let i = 0; i < this.maxPlayers; i++) {
+          const p = interpState.players[i];
+          carsData[i] = p || null;
+        }
+        this.replayBuffer.recordFromSnapshot(ballData, carsData, this.boostPads);
+      }
     }
 
     // Decay correction offset for smooth reconciliation
@@ -879,10 +920,23 @@ export class Game {
     }
 
     this.hud.updateScore(this.scores.blue, this.scores.orange);
+
+    // Save overtime flag for after replay
+    this._goalWasOvertime = this.isOvertime;
+
+    // Try to start replay; skip if not enough frames
+    if (this.replayBuffer.frameCount >= 30) {
+      this._startReplay();
+    } else {
+      this._enterGoalState();
+    }
+  }
+
+  _enterGoalState() {
     this.state = 'goal';
     this.goalResetTime = GAME.GOAL_RESET_TIME;
 
-    if (this.isOvertime) {
+    if (this._goalWasOvertime) {
       setTimeout(() => {
         this.state = 'ended';
         this.hud.showMatchEnd(this.scores.blue, this.scores.orange);
@@ -890,7 +944,78 @@ export class Game {
     }
   }
 
+  // ========== REPLAY SYSTEM ==========
+
+  _startReplay() {
+    const frames = this.replayBuffer.getRecentFrames(this.replayBuffer.frameCount);
+    this.replayPlayer.start(frames);
+    this.state = 'replay';
+    this.hud.showReplayIndicator(true);
+
+    // Skip on any key or click
+    this._replaySkipHandler = () => this._skipReplay();
+    window.addEventListener('keydown', this._replaySkipHandler);
+    window.addEventListener('pointerdown', this._replaySkipHandler);
+  }
+
+  _updateReplay(dt) {
+    const cars = this.mode === 'singleplayer'
+      ? [this.playerCar, this.opponentCar]
+      : this.allCars;
+
+    const stillPlaying = this.replayPlayer.update(
+      dt, this.ball, cars, this.boostPads, this.camera
+    );
+
+    if (!stillPlaying) {
+      this._onReplayFinished();
+    }
+  }
+
+  _skipReplay() {
+    if (this.state !== 'replay') return;
+    this.replayPlayer.skip();
+    this._onReplayFinished();
+  }
+
+  _onReplayFinished() {
+    // Remove skip listeners
+    if (this._replaySkipHandler) {
+      window.removeEventListener('keydown', this._replaySkipHandler);
+      window.removeEventListener('pointerdown', this._replaySkipHandler);
+      this._replaySkipHandler = null;
+    }
+
+    this.hud.showReplayIndicator(false);
+
+    // Reset camera smoothing so it doesn't lerp from the orbit position
+    if (this.cameraController) {
+      this.cameraController.resetSmoothing();
+    }
+
+    // Restore boost trail visibility
+    const cars = this.mode === 'singleplayer'
+      ? [this.playerCar, this.opponentCar]
+      : this.allCars;
+    for (const car of cars) {
+      if (car && car.boostFlame) {
+        car.boostFlame.visible = true;
+      }
+    }
+
+    // Restore demolished car visibility to match actual state
+    for (const car of cars) {
+      if (car) {
+        car.mesh.visible = !car.demolished;
+      }
+    }
+
+    this._enterGoalState();
+  }
+
   _resetAfterGoal() {
+    this.replayBuffer.clear();
+
     // Clear demolished state before reset
     for (const car of [this.playerCar, this.opponentCar]) {
       if (car.demolished) {
@@ -908,26 +1033,120 @@ export class Game {
 
   // ========== AI (single-player only) ==========
 
+  _getAIParams() {
+    switch (this.aiDifficulty) {
+      case 'rookie':
+        return {
+          approachOffset: 14,
+          attackAngle: 0.6,       // wider cone → less precise shots
+          defenseZ: 25,           // reacts later to defense
+          clearDist: 18,
+          steerDeadzone: 0.15,    // sloppier steering
+          maxThrottle: 0.75,      // slower overall
+          rotateSlowAngle: 0.8,
+          rotateThrottle: 0.4,
+          useBoost: false,        // never boosts
+          handbrakeAngle: 1.5,    // rarely handbrakes
+          handbrakeSpeed: 15,
+          jumpBall: false,        // never jumps for aerials
+          dodgeBall: false,       // never dodge-hits
+          reactionDelay: 0.15,    // 150ms delayed reads
+          aimJitter: 3.0,         // position error added to target
+        };
+      case 'allstar':
+        return {
+          approachOffset: 10,
+          attackAngle: 0.3,       // tight cone → precise shots
+          defenseZ: 35,           // reacts early
+          clearDist: 12,
+          steerDeadzone: 0.03,    // tight steering
+          maxThrottle: 1,
+          rotateSlowAngle: 1.2,
+          rotateThrottle: 0.6,
+          useBoost: true,
+          handbrakeAngle: 1.0,
+          handbrakeSpeed: 8,
+          jumpBall: true,
+          jumpHeight: 2.5,       // jumps for lower balls too
+          jumpDist: 10,
+          dodgeBall: true,        // dodge-hits the ball
+          dodgeDist: 5,
+          reactionDelay: 0,
+          aimJitter: 0,
+          leadBall: true,         // predicts ball position
+          leadTime: 0.4,          // seconds of prediction
+        };
+      default: // pro
+        return {
+          approachOffset: 12,
+          attackAngle: 0.4,
+          defenseZ: 30,
+          clearDist: 15,
+          steerDeadzone: 0.05,
+          maxThrottle: 1,
+          rotateSlowAngle: 1.0,
+          rotateThrottle: 0.5,
+          useBoost: true,
+          handbrakeAngle: 1.2,
+          handbrakeSpeed: 10,
+          jumpBall: true,
+          jumpHeight: 3,
+          jumpDist: 8,
+          dodgeBall: false,
+          reactionDelay: 0,
+          aimJitter: 0,
+          leadBall: false,
+        };
+    }
+  }
+
   _updateAI(dt) {
     if (this.opponentCar.demolished) return;
+
+    const p = this._getAIParams();
     const ENEMY_GOAL_Z = -ARENA_CONST.LENGTH / 2;
     const OWN_GOAL_Z = ARENA_CONST.LENGTH / 2;
-    const APPROACH_OFFSET = 12;
-    const ATTACK_ANGLE_THRESHOLD = 0.4;
-    const DEFENSE_Z_THRESHOLD = 30;
-    const CLEAR_DIST = 15;
 
     const car = this.opponentCar;
-    const ballPos = this.ball.getPosition();
+    let ballPos = this.ball.getPosition();
     const ballVel = this.ball.body.velocity;
     const carPos = car.getPosition();
+
+    // All-Star: lead the ball by predicting its future position
+    if (p.leadBall) {
+      const t = p.leadTime;
+      ballPos = {
+        x: ballPos.x + ballVel.x * t,
+        y: ballPos.y + ballVel.y * t,
+        z: ballPos.z + ballVel.z * t,
+      };
+    }
+
+    // Rookie: add jitter to ball position (simulates imprecise reads)
+    if (p.aimJitter > 0) {
+      // Stable jitter per ~200ms window so it's not jittery per frame
+      const jitterSeed = Math.floor(performance.now() / 200);
+      const jx = (Math.sin(jitterSeed * 1.7) * p.aimJitter);
+      const jz = (Math.cos(jitterSeed * 2.3) * p.aimJitter);
+      ballPos = { x: ballPos.x + jx, y: ballPos.y, z: ballPos.z + jz };
+    }
+
+    // Rookie: reaction delay — use slightly stale ball position
+    if (p.reactionDelay > 0) {
+      const t = -p.reactionDelay;
+      ballPos = {
+        x: ballPos.x + ballVel.x * t,
+        y: ballPos.y,
+        z: ballPos.z + ballVel.z * t,
+      };
+    }
 
     const toBallX = ballPos.x - carPos.x;
     const toBallZ = ballPos.z - carPos.z;
     const distToBall = Math.sqrt(toBallX * toBallX + toBallZ * toBallZ);
 
     // Ideal hit direction: ball → enemy goal
-    const goalDx = 0 - ballPos.x; // enemy goal center is at x=0
+    const goalDx = 0 - ballPos.x;
     const goalDz = ENEMY_GOAL_Z - ballPos.z;
     const goalDist = Math.sqrt(goalDx * goalDx + goalDz * goalDz) || 1;
     const idealDirX = goalDx / goalDist;
@@ -938,19 +1157,18 @@ export class Game {
     const toBallNX = toBallX / toBallDist;
     const toBallNZ = toBallZ / toBallDist;
 
-    // Dot product: how well aligned is car→ball with the ideal hit direction
     const approachDot = toBallNX * idealDirX + toBallNZ * idealDirZ;
 
     // Decide mode
-    let mode; // 'attack', 'defend', 'rotate'
+    let mode;
     let targetX, targetZ;
 
-    const inDefenseZone = ballPos.z > DEFENSE_Z_THRESHOLD;
+    const inDefenseZone = ballPos.z > p.defenseZ;
     const ballMovingToOwnGoal = ballVel.z > -5;
 
     if (inDefenseZone && ballMovingToOwnGoal) {
       mode = 'defend';
-    } else if (approachDot > Math.cos(ATTACK_ANGLE_THRESHOLD)) {
+    } else if (approachDot > Math.cos(p.attackAngle)) {
       mode = 'attack';
     } else {
       mode = 'rotate';
@@ -958,32 +1176,26 @@ export class Game {
 
     // Compute target position per mode
     if (mode === 'attack') {
-      // Drive through ball toward enemy goal
       targetX = ballPos.x;
       targetZ = ballPos.z;
     } else if (mode === 'defend') {
-      // Get between ball and own goal, offset to push ball toward nearest sideline
       const sideSign = ballPos.x > 0 ? 1 : -1;
-      if (distToBall < CLEAR_DIST) {
-        // Close enough: aim to push ball sideways toward nearest wall
+      if (distToBall < p.clearDist) {
         targetX = ballPos.x + sideSign * 5;
-        targetZ = ballPos.z - 3; // slightly toward enemy side
+        targetZ = ballPos.z - 3;
       } else {
-        // Position between ball and own goal
         targetX = ballPos.x;
         targetZ = (ballPos.z + OWN_GOAL_Z) / 2;
       }
     } else {
-      // ROTATE: drive to approach point behind ball
-      // Approach point = ball + normalized(ball - enemyGoal) * APPROACH_OFFSET
-      const fromGoalX = ballPos.x - 0;
+      const fromGoalX = ballPos.x;
       const fromGoalZ = ballPos.z - ENEMY_GOAL_Z;
       const fromGoalDist = Math.sqrt(fromGoalX * fromGoalX + fromGoalZ * fromGoalZ) || 1;
-      targetX = ballPos.x + (fromGoalX / fromGoalDist) * APPROACH_OFFSET;
-      targetZ = ballPos.z + (fromGoalZ / fromGoalDist) * APPROACH_OFFSET;
+      targetX = ballPos.x + (fromGoalX / fromGoalDist) * p.approachOffset;
+      targetZ = ballPos.z + (fromGoalZ / fromGoalDist) * p.approachOffset;
     }
 
-    // Steering: angle diff to target
+    // Steering
     const steerDx = targetX - carPos.x;
     const steerDz = targetZ - carPos.z;
     const targetAngle = Math.atan2(steerDx, steerDz);
@@ -994,32 +1206,48 @@ export class Game {
     const absAngle = Math.abs(angleDiff);
 
     // Throttle
-    let throttle = 1;
-    if (mode === 'rotate' && absAngle > 1.0) {
-      throttle = 0.5; // slow down for sharp turns while rotating
+    let throttle = p.maxThrottle;
+    if (mode === 'rotate' && absAngle > p.rotateSlowAngle) {
+      throttle = p.rotateThrottle;
     }
 
-    // Steer
-    const steer = angleDiff > 0.05 ? 1 : angleDiff < -0.05 ? -1 : 0;
+    // Steer (deadzone)
+    const dz = p.steerDeadzone;
+    const steer = angleDiff > dz ? 1 : angleDiff < -dz ? -1 : 0;
 
-    // Boost logic
+    // Boost
     let boost = false;
-    if (mode === 'attack' && absAngle < 0.3) {
-      boost = true;
-    } else if (mode === 'rotate' && distToBall > 30) {
-      boost = true;
-    } else if (mode === 'defend' && ballPos.z > OWN_GOAL_Z - 25) {
-      boost = true;
+    if (p.useBoost) {
+      if (mode === 'attack' && absAngle < 0.3) {
+        boost = true;
+      } else if (mode === 'rotate' && distToBall > 30) {
+        boost = true;
+      } else if (mode === 'defend' && ballPos.z > OWN_GOAL_Z - 25) {
+        boost = true;
+      }
     }
 
-    // Handbrake for sharp turns
+    // Handbrake
     const speed = car.body.velocity.length();
-    const handbrake = absAngle > 1.2 && speed > 10;
+    const handbrake = absAngle > p.handbrakeAngle && speed > p.handbrakeSpeed;
 
-    // Jump: only in attack mode, ball close and aerial
+    // Jump for aerial balls
     let jumpPressed = false;
-    if (mode === 'attack' && distToBall < 8 && ballPos.y > 3 && car.isGrounded) {
+    const jumpHeight = p.jumpHeight || 3;
+    const jumpDist = p.jumpDist || 8;
+    if (p.jumpBall && mode === 'attack' && distToBall < jumpDist && ballPos.y > jumpHeight && car.isGrounded) {
       jumpPressed = true;
+    }
+
+    // All-Star: dodge into ball for powerful hits
+    let dodgeForward = 0;
+    let dodgeSteer = 0;
+    if (p.dodgeBall && mode === 'attack' && distToBall < (p.dodgeDist || 5)
+        && !car.isGrounded && car.canDoubleJump && !car.isDodging
+        && ballPos.y < 5) {
+      jumpPressed = true;
+      dodgeForward = toBallNZ > 0 ? -1 : 1; // flip toward ball
+      dodgeSteer = toBallNX > 0.3 ? 1 : toBallNX < -0.3 ? -1 : 0;
     }
 
     const aiInput = {
@@ -1033,6 +1261,8 @@ export class Game {
       pitchUp: false,
       pitchDown: false,
       handbrake,
+      dodgeForward,
+      dodgeSteer,
     };
 
     car.update(aiInput, dt);
@@ -1053,6 +1283,13 @@ export class Game {
     if (this._countdownInterval) {
       clearInterval(this._countdownInterval);
       this._countdownInterval = null;
+    }
+
+    // Clean up replay listeners
+    if (this._replaySkipHandler) {
+      window.removeEventListener('keydown', this._replaySkipHandler);
+      window.removeEventListener('pointerdown', this._replaySkipHandler);
+      this._replaySkipHandler = null;
     }
 
     // Remove resize listener

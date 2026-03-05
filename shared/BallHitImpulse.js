@@ -56,11 +56,11 @@ export function computeBallHitImpulse(ballPos, ballVel, carPos, carVel, carForwa
   // Power curve: super-linear scaling
   const powerFactor = 1.0 + 0.5 * Math.min(relSpeed / 50, 1.0);
 
-  // Supersonic bonus: ramp from 1.0 to 1.35 as car approaches max speed
+  // Supersonic bonus: ramp from 1.0 to 1.35 near supersonic/max speed
   let speedBonus = 1.0;
   const spd = opts && opts.carSpeed || 0;
-  if (spd > 30) {
-    speedBonus = 1.0 + 0.35 * Math.min((spd - 30) / 16, 1.0);
+  if (spd > 38) {
+    speedBonus = 1.0 + 0.35 * Math.min((spd - 38) / 8, 1.0);
   }
 
   // Dodge flip bonus: hits during a flip feel punchier

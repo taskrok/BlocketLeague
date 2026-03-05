@@ -150,6 +150,46 @@ export class HUD {
     this.pingEl.textContent = `${ping}ms`;
   }
 
+  showReplayIndicator(show) {
+    if (show) {
+      if (this._replayEl) return; // already showing
+      const el = document.createElement('div');
+      Object.assign(el.style, {
+        position: 'fixed',
+        top: '60px',
+        left: '50%',
+        transform: 'translateX(-50%)',
+        textAlign: 'center',
+        zIndex: '200',
+        pointerEvents: 'none',
+      });
+      el.innerHTML = `
+        <div style="
+          font-family: 'Orbitron', sans-serif;
+          font-size: 28px;
+          font-weight: 700;
+          color: #fff;
+          text-shadow: 0 0 20px rgba(255,255,255,0.8), 0 0 40px rgba(255,255,255,0.4);
+          letter-spacing: 6px;
+        ">REPLAY</div>
+        <div style="
+          font-family: 'Orbitron', sans-serif;
+          font-size: 13px;
+          color: rgba(255,255,255,0.5);
+          margin-top: 8px;
+          letter-spacing: 2px;
+        ">Press any key to skip</div>
+      `;
+      document.body.appendChild(el);
+      this._replayEl = el;
+    } else {
+      if (this._replayEl) {
+        this._replayEl.remove();
+        this._replayEl = null;
+      }
+    }
+  }
+
   showStatus(msg) {
     if (!this.statusText) return;
     this.statusText.textContent = msg;
@@ -171,5 +211,6 @@ export class HUD {
       this.pingEl.remove();
       this.pingEl = null;
     }
+    this.showReplayIndicator(false);
   }
 }

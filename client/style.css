@@ -299,6 +299,21 @@ body {
   100%  { background-position: 0 -400px; }
 }
 
+.season-tag {
+  font-family: 'Rock Salt', cursive;
+  font-size: clamp(1rem, 3vw, 2rem);
+  color: #ff2266;
+  text-shadow:
+    0 0 8px rgba(255, 34, 102, 0.9),
+    0 0 24px rgba(255, 34, 102, 0.5),
+    0 0 48px rgba(255, 34, 102, 0.2);
+  margin-top: -30px;
+  margin-bottom: 40px;
+  letter-spacing: 3px;
+  transform: rotate(-3deg);
+  user-select: none;
+}
+
 .lobby-buttons {
   display: flex;
   gap: 24px;
@@ -507,7 +522,8 @@ body {
   color: rgba(255, 255, 255, 0.6);
 }
 
-#mode-selector {
+#mode-selector,
+#difficulty-selector {
   display: flex;
   flex-direction: column;
   align-items: center;

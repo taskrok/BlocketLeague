@@ -46,6 +46,10 @@ export class CameraController {
     this.ballTarget = ball;
   }
 
+  resetSmoothing() {
+    this.initialized = false;
+  }
+
   getSettings() {
     return {
       fov: this.camera.fov,
