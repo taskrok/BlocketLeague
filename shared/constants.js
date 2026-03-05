@@ -62,7 +62,7 @@ export const CAR = {
 // Ball properties (RL-accurate, scaled to our arena)
 // RL: radius 91.25uu, mass 30kg, max 6000uu/s, gravity -650uu/s², CR 0.6, μ 0.285
 export const BALL = {
-  RADIUS: 1.83,                // 91.25uu scaled to arena (was 2.8)
+  RADIUS: 2.3,                 // slightly larger than RL-scaled (1.83) for better feel
   MASS: 5.3,                   // RL ratio: ball/car ≈ 1/6 (30kg/180kg)
   RESTITUTION: 0.6,            // RL coefficient of restitution
   FRICTION: 0.285,             // RL Coulomb friction (tangential)
