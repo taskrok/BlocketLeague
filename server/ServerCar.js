@@ -84,7 +84,7 @@ export class ServerCar {
   }
 
   _checkGround() {
-    const lockoutDuration = this._jumpedFromWall ? 250 : 100;
+    const lockoutDuration = this._jumpedFromWall ? 450 : 100;
     if (this.hasJumped && (Date.now() - this.jumpLockout) < lockoutDuration) {
       this.isGrounded = false;
       return;
@@ -505,9 +505,9 @@ export class ServerCar {
 
     if (handbraking && Math.abs(sideRemoval) > 0.1) {
       const fwdSign = forwardSpeed >= 0 ? 1 : -1;
-      vel.x += forward.x * Math.abs(sideRemoval) * 0.7 * fwdSign;
-      vel.y += forward.y * Math.abs(sideRemoval) * 0.7 * fwdSign;
-      vel.z += forward.z * Math.abs(sideRemoval) * 0.7 * fwdSign;
+      vel.x += forward.x * Math.abs(sideRemoval) * 0.35 * fwdSign;
+      vel.y += forward.y * Math.abs(sideRemoval) * 0.35 * fwdSign;
+      vel.z += forward.z * Math.abs(sideRemoval) * 0.35 * fwdSign;
     }
 
     this._alignToSurface(dt);
@@ -577,9 +577,27 @@ export class ServerCar {
       const n = this.surfaceNormal;
       this._jumpedFromWall = this.onWall;
 
-      this.body.velocity.x += n.x * CAR.JUMP_FORCE;
-      this.body.velocity.y += n.y * CAR.JUMP_FORCE;
-      this.body.velocity.z += n.z * CAR.JUMP_FORCE;
+      if (this.onWall) {
+        // Wall jump: kill velocity into wall, push away + upward boost
+        const vDotN = this.body.velocity.dot(n);
+        if (vDotN < 0) {
+          this.body.velocity.x -= n.x * vDotN;
+          this.body.velocity.y -= n.y * vDotN;
+          this.body.velocity.z -= n.z * vDotN;
+        }
+        // Stronger push on flat vertical walls to escape detect range
+        const wallFactor = 1 - Math.abs(n.y);
+        const pushMult = 1.0 + wallFactor * 0.6;
+        this.body.velocity.x += n.x * CAR.JUMP_FORCE * pushMult;
+        this.body.velocity.y += n.y * CAR.JUMP_FORCE * pushMult;
+        this.body.velocity.z += n.z * CAR.JUMP_FORCE * pushMult;
+        // Detach upward so gravity pulls car to floor
+        this.body.velocity.y += CAR.JUMP_FORCE * 0.5;
+      } else {
+        this.body.velocity.x += n.x * CAR.JUMP_FORCE;
+        this.body.velocity.y += n.y * CAR.JUMP_FORCE;
+        this.body.velocity.z += n.z * CAR.JUMP_FORCE;
+      }
 
       this.hasJumped = true;
       this.jumpTime = now;
@@ -587,6 +605,7 @@ export class ServerCar {
       this.canDoubleJump = true;
       this.isGrounded = false;
       this.onWall = false;
+      this.onGoalSurface = false;
       return;
     }
 

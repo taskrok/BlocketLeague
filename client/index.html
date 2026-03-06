@@ -49,6 +49,7 @@
       <p>WASD - Drive | SPACE - Jump | SHIFT - Boost | C - Ball Cam | J/L - Look</p>
     </div>
     <div id="lobby">
+      <canvas id="lobby-particles"></canvas>
       <div id="loading-screen">
         <span class="loading-text">Loading models...</span>
         <div class="loading-bar">
@@ -56,13 +57,84 @@
         </div>
       </div>
       <div class="lobby-title-wrap">
-        <span class="lobby-title">BLOCKET LEAGUE</span>
-        <span class="lobby-title lobby-title-reflect">BLOCKET LEAGUE</span>
+        <span class="lobby-title"><span class="title-word">BLOCKET</span> <span class="title-word">LEAGUE</span></span>
+        <span class="lobby-title lobby-title-reflect"><span class="title-word">BLOCKET</span> <span class="title-word">LEAGUE</span></span>
       </div>
+      <div class="version-tag" style="text-align:center;color:rgba(255,255,255,0.3);font-size:11px;letter-spacing:2px;margin-top:-4px;margin-bottom:2px;">v38</div>
       <div class="season-tag">Season One</div>
       <div class="lobby-buttons">
-        <button id="btn-singleplayer" class="lobby-btn">Play vs AI</button>
-        <button id="btn-multiplayer" class="lobby-btn lobby-btn-online">Play Online</button>
+        <input id="player-name-input" type="text" maxlength="16" placeholder="Name (optional)"
+               class="player-name-input" autocomplete="off" spellcheck="false" />
+        <div class="lobby-btn-row">
+          <button id="btn-singleplayer" class="lobby-btn">Play vs AI</button>
+          <button id="btn-freeplay" class="lobby-btn lobby-btn-freeplay">Free Play</button>
+          <button id="btn-training" class="lobby-btn lobby-btn-training">Training</button>
+          <button id="btn-multiplayer" class="lobby-btn lobby-btn-online">Play Online</button>
+        </div>
+        <div class="lobby-link-row">
+          <button id="btn-howtoplay" class="lobby-link-btn">How to Play</button>
+          <span class="lobby-link-sep">|</span>
+          <button id="btn-lobby-settings" class="lobby-link-btn">Settings</button>
+        </div>
+      </div>
+      <div id="howtoplay-panel" class="howtoplay-panel" style="display:none;">
+        <h3 class="howtoplay-title">How to Play</h3>
+        <div class="howtoplay-content">
+          <div class="howtoplay-section">
+            <h4>Controls</h4>
+            <div class="howtoplay-grid">
+              <span class="htp-key">W / S</span><span>Drive Forward / Reverse</span>
+              <span class="htp-key">A / D</span><span>Steer Left / Right</span>
+              <span class="htp-key">Space</span><span>Jump (double-tap to flip)</span>
+              <span class="htp-key">Shift</span><span>Boost</span>
+              <span class="htp-key">C</span><span>Toggle Ball Cam</span>
+              <span class="htp-key">Q / E</span><span>Air Roll Left / Right</span>
+              <span class="htp-key">X</span><span>Handbrake / Powerslide</span>
+              <span class="htp-key">Tab</span><span>Scoreboard</span>
+            </div>
+          </div>
+          <div class="howtoplay-section">
+            <h4>Tips</h4>
+            <ul>
+              <li>Collect glowing pads on the field to refill boost.</li>
+              <li>Large corner pads give full boost (100), small pads give 12.</li>
+              <li>Use ball cam (C) to track the ball, toggle off for dribbling.</li>
+              <li>Flip into the ball for powerful shots — jump then tilt and jump again.</li>
+              <li>Supersonic speed (gold trail) lets you demolish opponents on contact.</li>
+            </ul>
+          </div>
+        </div>
+        <button id="btn-howtoplay-close" class="lobby-btn lobby-btn-back">Got it</button>
+      </div>
+      <div id="lobby-settings-panel" class="howtoplay-panel" style="display:none;">
+        <h3 class="howtoplay-title">Settings</h3>
+        <div class="howtoplay-content">
+          <div class="lobby-settings-list">
+            <label class="lobby-setting-row">
+              <input type="checkbox" id="setting-auto-fullscreen" />
+              <span>Auto-fullscreen when game starts</span>
+            </label>
+          </div>
+        </div>
+        <button id="btn-lobby-settings-close" class="lobby-btn lobby-btn-back">Done</button>
+      </div>
+      <div id="training-type-selector" style="display:none;">
+        <span class="room-label">Choose Training</span>
+        <div class="mode-buttons">
+          <!-- <button id="btn-train-striker" class="lobby-btn lobby-btn-training">Striker</button> -->
+          <button id="btn-train-goalie" class="lobby-btn lobby-btn-training">Goalie</button>
+          <button id="btn-train-aerial" class="lobby-btn lobby-btn-training">Aerial</button>
+        </div>
+        <button id="btn-train-type-back" class="lobby-btn lobby-btn-back">Back</button>
+      </div>
+      <div id="training-diff-selector" style="display:none;">
+        <span class="room-label">Choose Difficulty</span>
+        <div class="mode-buttons">
+          <button id="btn-train-diff-rookie" class="lobby-btn">Rookie</button>
+          <button id="btn-train-diff-pro" class="lobby-btn">Pro</button>
+          <button id="btn-train-diff-allstar" class="lobby-btn lobby-btn-online">All-Star</button>
+        </div>
+        <button id="btn-train-diff-back" class="lobby-btn lobby-btn-back">Back</button>
       </div>
       <div id="ai-mode-selector" style="display:none;">
         <span class="room-label">Choose Mode</span>
@@ -83,6 +155,8 @@
       </div>
       <div id="room-lobby" style="display:none;">
         <div class="room-lobby-options">
+          <button id="btn-quick-match" class="lobby-btn lobby-btn-quickmatch">Quick Match</button>
+          <div class="room-divider"><span>or</span></div>
           <button id="btn-create-room" class="lobby-btn lobby-btn-online">Create Room</button>
           <div class="room-join-row">
             <input id="room-code-input" type="text" maxlength="4" placeholder="CODE"
@@ -99,7 +173,12 @@
         </div>
         <div id="waiting-room" style="display:none;">
           <div class="team-lobby-header">
-            <div id="room-code-display" class="room-code-display">----</div>
+            <div class="room-code-row">
+              <div id="room-code-display" class="room-code-display">----</div>
+              <button id="btn-copy-code" class="copy-code-btn" title="Copy room code">
+                <svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="2"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg>
+              </button>
+            </div>
             <span id="room-mode-label" class="room-label">2v2</span>
           </div>
           <div id="team-lobby" class="team-lobby">
@@ -127,6 +206,12 @@
           <button id="btn-letsgo" class="lobby-btn">Let's Go</button>
         </div>
         <button id="btn-back" class="lobby-btn lobby-btn-back">Back</button>
+      </div>
+      <!-- Lobby music controls -->
+      <div id="lobby-music-controls">
+        <button id="lobby-skip-btn" class="lmc-btn" title="Next track">&#9197;</button>
+        <input id="lobby-volume-slider" type="range" min="0" max="1" step="0.01" value="0.5" class="lmc-slider" />
+        <span id="lobby-track-name" class="lmc-track"></span>
       </div>
     </div>
   </div>

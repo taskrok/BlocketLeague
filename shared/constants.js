@@ -6,7 +6,7 @@
 export const ARENA = {
   LENGTH: 237,      // Z-axis (goal to goal) — ×1.4 from 169
   WIDTH: 164,       // X-axis — ×1.4 from 117
-  HEIGHT: 41,       // Y-axis — RL-scaled (2044uu)
+  HEIGHT: 51,       // Y-axis — raised 25% from 41 for more aerial room
   WALL_THICKNESS: 2,
   GOAL_WIDTH: 34,   // ×1.4 from 24
   GOAL_HEIGHT: 18,  // ×1.4 from 13
@@ -47,7 +47,7 @@ export const CAR = {
   JUMP_COOLDOWN: 1250,        // ms for double jump window
   SIDEWAYS_GRIP: 0.05,        // 0 = full grip, 1 = ice
   HANDBRAKE_TURN_MULTIPLIER: 1.8,  // steering multiplier while powersliding
-  HANDBRAKE_GRIP: 0.06,            // sideways grip during handbrake (lower = more slide)
+  HANDBRAKE_GRIP: 0.12,            // sideways grip during handbrake (lower = more slide)
   LINEAR_DAMPING: 0.3,
   ANGULAR_DAMPING: 0.95,
   GROUND_RAY_LENGTH: 1.2,     // raycast distance for ground check

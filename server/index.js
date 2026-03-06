@@ -70,12 +70,13 @@ io.on('connection', (socket) => {
     const mode = data && data.mode === '2v2' ? '2v2' : '1v1';
     const maxPlayers = mode === '2v2' ? 4 : 2;
     const variantConfig = data && data.variantConfig ? data.variantConfig : {};
+    const playerName = (data && data.playerName) || '';
 
     const code = generateRoomCode();
     const room = new GameRoom(io, code, maxPlayers);
     rooms.set(code, room);
 
-    room.addPlayer(socket, variantConfig);
+    room.addPlayer(socket, variantConfig, playerName);
     playerRooms.set(socket.id, room);
 
     socket.emit('roomCreated', { code, mode });
@@ -98,6 +99,7 @@ io.on('connection', (socket) => {
   socket.on('joinRoom', (data) => {
     const code = (data && data.code || '').toUpperCase().trim();
     const variantConfig = data && data.variantConfig ? data.variantConfig : {};
+    const playerName = (data && data.playerName) || '';
 
     const room = rooms.get(code);
     if (!room) {
@@ -109,9 +111,53 @@ io.on('connection', (socket) => {
       return;
     }
 
-    room.addPlayer(socket, variantConfig);
+    room.addPlayer(socket, variantConfig, playerName);
     playerRooms.set(socket.id, room);
     console.log(`Player ${socket.id} joined room ${code}`);
+  });
+
+  socket.on('quickMatch', (data) => {
+    const variantConfig = data && data.variantConfig ? data.variantConfig : {};
+    const playerName = (data && data.playerName) || '';
+
+    // Find an existing waiting room (1v1) that isn't full
+    let found = null;
+    for (const [code, room] of rooms) {
+      if (!room.isFull() && room.maxPlayers === 2 && room.state === 'waiting') {
+        found = { code, room };
+        break;
+      }
+    }
+
+    if (found) {
+      found.room.addPlayer(socket, variantConfig, playerName);
+      playerRooms.set(socket.id, found.room);
+      console.log(`Quick match: ${socket.id} joined room ${found.code}`);
+    } else {
+      // Create a new room
+      const code = generateRoomCode();
+      const room = new GameRoom(io, code, 2);
+      rooms.set(code, room);
+
+      room.addPlayer(socket, variantConfig, playerName);
+      playerRooms.set(socket.id, room);
+
+      socket.emit('roomCreated', { code, mode: '1v1' });
+      console.log(`Quick match: ${socket.id} created room ${code}`);
+
+      // Expire unfilled rooms after 5 minutes
+      setTimeout(() => {
+        if (rooms.has(code) && !rooms.get(code).isFull()) {
+          const r = rooms.get(code);
+          r.players.filter(p => p).forEach(p => {
+            p.socket.emit('roomExpired', {});
+          });
+          r._stopLoops();
+          rooms.delete(code);
+          console.log(`Room ${code} expired`);
+        }
+      }, ROOM_EXPIRY_MS);
+    }
   });
 
   socket.on('switchTeam', () => {

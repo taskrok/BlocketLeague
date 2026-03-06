@@ -138,22 +138,30 @@ export class CameraController {
     } else if (this.ballCam && this.ballTarget) {
       _ballPos.copy(this.ballTarget.body.position);
 
-      // In ball cam, position camera so car is between camera and ball
+      // Ball cam: camera on the far side of the car from the ball,
+      // looking at the ball. Car stays visible between camera and ball.
       _carToBall.subVectors(_ballPos, _carPos);
       _carToBall.y = 0;
-      _carToBall.normalize();
+      const ballDist = _carToBall.length();
+      if (ballDist > 0.01) {
+        _carToBall.x /= ballDist;
+        _carToBall.z /= ballDist;
+      }
 
-      _ballCamPos.set(
+      // Position camera directly opposite the ball from the car
+      // (no blending with car-facing direction — that causes the car
+      //  to disappear under the camera when driving away from ball)
+      _desiredPos.set(
         _carPos.x - _carToBall.x * this.distance,
         _carPos.y + this.height,
         _carPos.z - _carToBall.z * this.distance
       );
 
-      _desiredPos.lerp(_ballCamPos, 0.7);
+      // Look at the ball — car naturally stays in the lower frame
       _desiredLookAt.set(
-        _ballPos.x * 0.4 + _carPos.x * 0.6,
-        _ballPos.y * 0.3 + this.lookHeight * 0.7,
-        _ballPos.z * 0.4 + _carPos.z * 0.6
+        _ballPos.x,
+        Math.max(_ballPos.y, 0) + 0.5,
+        _ballPos.z
       );
     } else {
       _desiredLookAt.set(

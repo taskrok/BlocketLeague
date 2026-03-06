@@ -128,15 +128,27 @@ export class NetworkManager {
     });
   }
 
-  createRoom(mode, variantConfig) {
+  createRoom(mode, variantConfig, playerName) {
     if (this.socket) {
-      this.socket.emit('createRoom', { mode, variantConfig });
+      this.socket.emit('createRoom', { mode, variantConfig, playerName });
     }
   }
 
-  joinRoom(code, variantConfig) {
+  joinRoom(code, variantConfig, playerName) {
     if (this.socket) {
-      this.socket.emit('joinRoom', { code, variantConfig });
+      this.socket.emit('joinRoom', { code, variantConfig, playerName });
+    }
+  }
+
+  quickMatch(variantConfig, playerName) {
+    if (this.socket) {
+      this.socket.emit('quickMatch', { variantConfig, playerName });
+    }
+  }
+
+  switchTeam() {
+    if (this.socket) {
+      this.socket.emit('switchTeam');
     }
   }
 

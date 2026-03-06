@@ -23,16 +23,27 @@ export function computeBallHitImpulse(ballPos, ballVel, carPos, carVel, carForwa
   let dy = (ballPos.y - carPos.y) * 0.35;
   let dz = ballPos.z - carPos.z;
 
-  // Bias toward car forward
-  dx -= 0.35 * carForward.x;
-  dy -= 0.35 * carForward.y;
-  dz -= 0.35 * carForward.z;
+  const spd = opts && opts.carSpeed || 0;
 
-  // Suppress upward impulse when both car and ball are on the ground
-  // (prevents ball popping up during normal dribbling)
+  // Bias toward car forward — stronger at low speed to keep ball in front
+  // when pushing/dribbling, weaker at high speed to allow natural deflection
+  const fwdBias = spd < 20 ? 0.75 : 0.35;
+  dx -= fwdBias * carForward.x;
+  dy -= fwdBias * carForward.y;
+  dz -= fwdBias * carForward.z;
+
+  // Ground hit handling: suppress upward impulse at low speed (dribbling),
+  // but allow a chip effect at high speed (ball pops up on hard ground hits)
   const bothLow = ballPos.y < 3.5 && carPos.y < 2.0;
   if (bothLow && dy > 0) {
-    dy *= 0.15;
+    if (spd > 30) {
+      // High speed: chip the ball upward — scale from 0.55 to 1.3
+      const chipFactor = 0.55 + 0.75 * Math.min((spd - 30) / 16, 1.0);
+      dy *= chipFactor;
+    } else {
+      // Low speed: keep ball flat (dribbling)
+      dy *= 0.15;
+    }
   }
 
   const len = Math.sqrt(dx * dx + dy * dy + dz * dz);
@@ -56,17 +67,16 @@ export function computeBallHitImpulse(ballPos, ballVel, carPos, carVel, carForwa
   // Power curve: super-linear scaling
   const powerFactor = 1.0 + 0.5 * Math.min(relSpeed / 50, 1.0);
 
-  // Supersonic bonus: ramp from 1.0 to 1.35 near supersonic/max speed
+  // Supersonic bonus: ramp from 1.0 to 1.45 near supersonic/max speed
   let speedBonus = 1.0;
-  const spd = opts && opts.carSpeed || 0;
   if (spd > 38) {
-    speedBonus = 1.0 + 0.35 * Math.min((spd - 38) / 8, 1.0);
+    speedBonus = 1.0 + 0.45 * Math.min((spd - 38) / 8, 1.0);
   }
 
   // Dodge flip bonus: hits during a flip feel punchier
   let dodgeBonus = 1.0;
   if (opts && (opts.isDodging || opts.dodgeDecaying)) {
-    dodgeBonus = 1.3;
+    dodgeBonus = 1.1;
   }
 
   const mag = relSpeed * powerFactor * speedBonus * dodgeBonus;

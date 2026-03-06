@@ -241,6 +241,24 @@ body {
   justify-content: center;
   background: radial-gradient(ellipse at center, #0a0a2e 0%, #050510 70%);
   z-index: 100;
+  overflow-y: auto;
+  -webkit-overflow-scrolling: touch;
+}
+
+/* Particle background */
+#lobby-particles {
+  position: absolute;
+  top: 0;
+  left: 0;
+  width: 100%;
+  height: 100%;
+  pointer-events: none;
+  z-index: 0;
+}
+
+#lobby > *:not(#lobby-particles) {
+  position: relative;
+  z-index: 1;
 }
 
 .lobby-title-wrap {
@@ -259,6 +277,7 @@ body {
   letter-spacing: 0.05em;
   position: absolute;
   white-space: nowrap;
+  text-align: center;
   z-index: 99;
   background: linear-gradient(
     180deg,
@@ -317,7 +336,159 @@ body {
 
 .lobby-buttons {
   display: flex;
-  gap: 24px;
+  flex-direction: column;
+  align-items: center;
+  gap: 16px;
+}
+
+.lobby-btn-row {
+  display: flex;
+  flex-direction: column;
+  align-items: stretch;
+  gap: 12px;
+  width: 260px;
+}
+
+.lobby-btn-row .lobby-btn {
+  text-align: center;
+}
+
+/* Player Name Input */
+.player-name-input {
+  width: 220px;
+  padding: 10px 16px;
+  font-size: 14px;
+  font-weight: 600;
+  letter-spacing: 1px;
+  text-align: center;
+  background: rgba(255, 255, 255, 0.04);
+  border: 1px solid rgba(255, 255, 255, 0.15);
+  border-radius: 6px;
+  color: #fff;
+  font-family: 'Orbitron', sans-serif;
+  outline: none;
+  transition: border-color 0.2s, box-shadow 0.2s;
+}
+
+.player-name-input::placeholder {
+  color: rgba(255, 255, 255, 0.25);
+  font-family: inherit;
+}
+
+.player-name-input:focus {
+  border-color: rgba(0, 255, 255, 0.5);
+  box-shadow: 0 0 12px rgba(0, 255, 255, 0.15);
+}
+
+/* Lobby link row */
+.lobby-link-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.lobby-link-sep {
+  color: rgba(255, 255, 255, 0.15);
+  font-size: 13px;
+  user-select: none;
+}
+
+/* Lobby settings */
+.lobby-settings-list {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.lobby-setting-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  cursor: pointer;
+  font-size: 14px;
+  color: rgba(255, 255, 255, 0.7);
+}
+
+.lobby-setting-row input[type="checkbox"] {
+  accent-color: #00ffff;
+  width: 16px;
+  height: 16px;
+  cursor: pointer;
+}
+
+/* How to Play link button */
+.lobby-link-btn {
+  background: none;
+  border: none;
+  color: rgba(255, 255, 255, 0.35);
+  font-size: 13px;
+  font-weight: 600;
+  letter-spacing: 1px;
+  cursor: pointer;
+  transition: color 0.2s;
+  font-family: inherit;
+  padding: 4px 8px;
+}
+
+.lobby-link-btn:hover {
+  color: rgba(0, 255, 255, 0.7);
+}
+
+/* Training button */
+.lobby-btn-training {
+  border-color: #aa66ff;
+  color: #aa66ff;
+  background: rgba(170, 102, 255, 0.1);
+}
+
+.lobby-btn-training:hover {
+  background: rgba(170, 102, 255, 0.25);
+  box-shadow: 0 0 20px rgba(170, 102, 255, 0.4);
+}
+
+/* Free Play button */
+.lobby-btn-freeplay {
+  border-color: #00ff88;
+  color: #00ff88;
+  background: rgba(0, 255, 136, 0.1);
+}
+
+.lobby-btn-freeplay:hover {
+  background: rgba(0, 255, 136, 0.25);
+  box-shadow: 0 0 20px rgba(0, 255, 136, 0.4);
+}
+
+/* Quick Match button */
+.lobby-btn-quickmatch {
+  border-color: #ffcc00;
+  color: #ffcc00;
+  background: rgba(255, 204, 0, 0.08);
+  width: 100%;
+}
+
+.lobby-btn-quickmatch:hover {
+  background: rgba(255, 204, 0, 0.22);
+  box-shadow: 0 0 20px rgba(255, 204, 0, 0.4);
+}
+
+/* Room divider */
+.room-divider {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  width: 100%;
+  color: rgba(255, 255, 255, 0.2);
+  font-size: 12px;
+  letter-spacing: 2px;
+  text-transform: uppercase;
+}
+
+.room-divider::before,
+.room-divider::after {
+  content: '';
+  flex: 1;
+  height: 1px;
+  background: rgba(255, 255, 255, 0.1);
 }
 
 .lobby-btn {
@@ -388,6 +559,211 @@ body {
   border-radius: 3px;
   transition: width 0.15s ease;
   box-shadow: 0 0 10px rgba(0, 255, 255, 0.6);
+}
+
+/* ===== How to Play Panel ===== */
+
+.howtoplay-panel {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 20px;
+  max-width: 520px;
+  width: 90vw;
+  background: rgba(5, 5, 20, 0.92);
+  border: 1px solid rgba(0, 255, 255, 0.15);
+  border-radius: 12px;
+  padding: 28px 32px;
+  backdrop-filter: blur(12px);
+  -webkit-backdrop-filter: blur(12px);
+}
+
+.howtoplay-title {
+  font-family: 'Orbitron', sans-serif;
+  font-size: 20px;
+  font-weight: 800;
+  letter-spacing: 3px;
+  color: #00ffff;
+  text-shadow: 0 0 16px rgba(0, 255, 255, 0.4);
+  text-transform: uppercase;
+  margin: 0;
+}
+
+.howtoplay-content {
+  display: flex;
+  flex-direction: column;
+  gap: 20px;
+  width: 100%;
+}
+
+.howtoplay-section h4 {
+  font-size: 13px;
+  font-weight: 700;
+  letter-spacing: 2px;
+  text-transform: uppercase;
+  color: rgba(255, 255, 255, 0.5);
+  margin: 0 0 10px;
+}
+
+.howtoplay-grid {
+  display: grid;
+  grid-template-columns: auto 1fr;
+  gap: 6px 16px;
+  font-size: 13px;
+  color: rgba(255, 255, 255, 0.7);
+}
+
+.htp-key {
+  font-family: 'Orbitron', sans-serif;
+  font-size: 11px;
+  font-weight: 700;
+  color: #00ffff;
+  background: rgba(0, 255, 255, 0.08);
+  border: 1px solid rgba(0, 255, 255, 0.2);
+  border-radius: 4px;
+  padding: 2px 8px;
+  text-align: center;
+  min-width: 60px;
+}
+
+.howtoplay-section ul {
+  list-style: none;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.howtoplay-section li {
+  font-size: 13px;
+  color: rgba(255, 255, 255, 0.6);
+  padding-left: 16px;
+  position: relative;
+}
+
+.howtoplay-section li::before {
+  content: '\25B8';
+  position: absolute;
+  left: 0;
+  color: #00ff88;
+}
+
+/* ===== Copy Room Code Button ===== */
+
+.room-code-row {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.copy-code-btn {
+  background: rgba(255, 136, 0, 0.1);
+  border: 1px solid rgba(255, 136, 0, 0.3);
+  border-radius: 6px;
+  color: rgba(255, 136, 0, 0.7);
+  cursor: pointer;
+  padding: 6px 8px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transition: all 0.2s;
+}
+
+.copy-code-btn:hover {
+  background: rgba(255, 136, 0, 0.2);
+  border-color: #ff8800;
+  color: #ff8800;
+}
+
+.copy-code-btn.copied {
+  border-color: #00ff88;
+  color: #00ff88;
+  background: rgba(0, 255, 136, 0.1);
+}
+
+/* ===== Lobby Music Controls ===== */
+
+#lobby-music-controls {
+  position: absolute;
+  top: 16px;
+  left: 16px;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  z-index: 10;
+  transition: opacity 0.2s;
+}
+
+#lobby-music-controls.hidden {
+  opacity: 0;
+  pointer-events: none;
+}
+
+.lmc-btn {
+  background: none;
+  border: 1px solid rgba(255, 255, 255, 0.15);
+  border-radius: 4px;
+  color: rgba(255, 255, 255, 0.5);
+  cursor: pointer;
+  font-size: 14px;
+  padding: 4px 8px;
+  transition: all 0.2s;
+  line-height: 1;
+}
+
+.lmc-btn:hover {
+  border-color: rgba(0, 255, 255, 0.4);
+  color: #0ff;
+}
+
+.lmc-slider {
+  -webkit-appearance: none;
+  appearance: none;
+  width: 80px;
+  height: 3px;
+  border-radius: 2px;
+  background: rgba(255, 255, 255, 0.1);
+  outline: none;
+}
+
+.lmc-slider::-webkit-slider-thumb {
+  -webkit-appearance: none;
+  appearance: none;
+  width: 12px;
+  height: 12px;
+  border-radius: 50%;
+  background: rgba(0, 255, 255, 0.7);
+  cursor: pointer;
+}
+
+.lmc-slider::-moz-range-thumb {
+  width: 12px;
+  height: 12px;
+  border-radius: 50%;
+  background: rgba(0, 255, 255, 0.7);
+  cursor: pointer;
+  border: none;
+}
+
+.lmc-track {
+  font-size: 11px;
+  color: rgba(255, 255, 255, 0.3);
+  letter-spacing: 0.5px;
+  max-width: 180px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* ===== Lobby Screen Transitions ===== */
+
+@keyframes lobbyFadeIn {
+  from { opacity: 0; transform: translateY(14px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+
+.lobby-enter {
+  animation: lobbyFadeIn 0.3s ease forwards;
 }
 
 /* Car Model Nav */
@@ -525,7 +901,9 @@ body {
 
 #mode-selector,
 #ai-mode-selector,
-#difficulty-selector {
+#difficulty-selector,
+#training-type-selector,
+#training-diff-selector {
   display: flex;
   flex-direction: column;
   align-items: center;
@@ -534,7 +912,14 @@ body {
 
 .mode-buttons {
   display: flex;
-  gap: 16px;
+  flex-direction: column;
+  align-items: stretch;
+  gap: 12px;
+  width: 260px;
+}
+
+.mode-buttons .lobby-btn {
+  text-align: center;
 }
 
 #waiting-room {
@@ -797,7 +1182,7 @@ body {
 /* ===== Camera Settings Panel ===== */
 
 #camera-settings-gear {
-  display: none;
+  display: flex;
   position: absolute;
   top: 16px;
   right: 16px;
@@ -818,12 +1203,6 @@ body {
 #camera-settings-gear.active {
   border-color: rgba(0, 255, 255, 0.8);
   background: rgba(0, 255, 255, 0.15);
-}
-
-@media (pointer: coarse) {
-  #camera-settings-gear {
-    display: flex;
-  }
 }
 
 #camera-settings-panel {
@@ -951,8 +1330,372 @@ body {
   margin-top: auto;
 }
 
-/* Adjust HUD on mobile to avoid overlapping touch controls */
-@media (max-width: 768px) and (pointer: coarse) {
+/* ===== Game Settings Tabs ===== */
+
+.gs-tabs {
+  display: flex;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.1);
+  gap: 0;
+}
+
+.gs-tab {
+  flex: 1;
+  padding: 8px 4px;
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 1px;
+  text-transform: uppercase;
+  background: none;
+  border: none;
+  border-bottom: 2px solid transparent;
+  color: rgba(255, 255, 255, 0.4);
+  cursor: pointer;
+  transition: color 0.2s, border-color 0.2s;
+  font-family: inherit;
+}
+
+.gs-tab:hover {
+  color: rgba(255, 255, 255, 0.7);
+}
+
+.gs-tab.active {
+  color: #00ffff;
+  border-bottom-color: #00ffff;
+}
+
+.gs-tab-content {
+  flex: 1;
+  overflow-y: auto;
+  min-height: 0;
+}
+
+.gs-pane {
+  display: none;
+}
+
+.gs-pane.active {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+
+.gs-bind-list {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.gs-bind-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.gs-bind-label {
+  flex: 1;
+  font-size: 12px;
+  font-weight: 600;
+  letter-spacing: 0.5px;
+  color: rgba(255, 255, 255, 0.7);
+}
+
+.gs-bind-key {
+  min-width: 72px;
+  padding: 5px 10px;
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 1px;
+  text-align: center;
+  border: 1px solid rgba(0, 255, 255, 0.3);
+  border-radius: 4px;
+  background: rgba(0, 255, 255, 0.05);
+  color: #00ffff;
+  cursor: pointer;
+  transition: all 0.15s;
+  font-family: inherit;
+}
+
+.gs-bind-key:hover {
+  background: rgba(0, 255, 255, 0.12);
+  border-color: rgba(0, 255, 255, 0.6);
+}
+
+.gs-bind-key.listening {
+  border-color: #ff8800;
+  color: #ff8800;
+  background: rgba(255, 136, 0, 0.1);
+  animation: gs-pulse 1s ease-in-out infinite;
+}
+
+@keyframes gs-pulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.5; }
+}
+
+/* ===== Responsive: Tablets & small screens ===== */
+
+@media (max-width: 900px) {
+  #lobby {
+    padding: 24px 16px;
+    padding-top: max(24px, env(safe-area-inset-top, 0px));
+    padding-bottom: max(24px, env(safe-area-inset-bottom, 0px));
+  }
+
+  .lobby-title {
+    white-space: normal;
+    line-height: 1.1;
+  }
+
+  .title-word {
+    display: block;
+  }
+
+  .lobby-title-wrap {
+    margin-bottom: 24px;
+    height: auto;
+    min-height: clamp(4rem, 16vw, 10rem);
+  }
+
+  .season-tag {
+    margin-top: -16px;
+    margin-bottom: 24px;
+    font-size: clamp(0.8rem, 2.5vw, 1.4rem);
+  }
+
+  .lobby-btn {
+    padding: 14px 28px;
+    font-size: 16px;
+  }
+
+  .lobby-btn-back {
+    padding: 8px 24px;
+    font-size: 13px;
+  }
+
+  #car-preview {
+    width: min(400px, 80vw);
+    height: min(280px, 50vw);
+  }
+
+  .room-code-display {
+    font-size: 40px;
+    letter-spacing: 8px;
+  }
+
+}
+
+/* ===== Responsive: Phones ===== */
+
+@media (max-width: 560px) {
+  .lobby-title-wrap {
+    margin-bottom: 16px;
+    min-height: clamp(3rem, 14vw, 7rem);
+  }
+
+  .season-tag {
+    margin-top: -10px;
+    margin-bottom: 20px;
+    font-size: clamp(0.7rem, 2.5vw, 1rem);
+  }
+
+  .lobby-buttons {
+    flex-direction: column;
+    gap: 12px;
+    width: 80%;
+    max-width: 280px;
+  }
+
+  .lobby-btn-row {
+    width: 100%;
+  }
+
+  .lobby-btn {
+    padding: 12px 20px;
+    font-size: 15px;
+    width: 100%;
+    text-align: center;
+  }
+
+  .player-name-input {
+    width: 100%;
+  }
+
+  .howtoplay-panel {
+    padding: 20px 16px;
+  }
+
+  #lobby-music-controls {
+    top: 10px;
+    left: 10px;
+  }
+
+  .lmc-track {
+    display: none;
+  }
+
+  .lobby-btn-nav {
+    padding: 8px 14px;
+    font-size: 18px;
+    min-width: 40px;
+    width: auto;
+  }
+
+  .lobby-btn-back {
+    padding: 8px 20px;
+    font-size: 12px;
+    width: auto;
+  }
+
+  #car-selector {
+    gap: 16px;
+  }
+
+  #car-preview {
+    width: min(300px, 85vw);
+    height: min(210px, 55vw);
+  }
+
+  .car-model-nav {
+    gap: 10px;
+  }
+
+  .car-model-label {
+    font-size: 13px;
+    min-width: 120px;
+  }
+
+  .car-selector-buttons {
+    gap: 12px;
+  }
+
+  .room-code-display {
+    font-size: 32px;
+    letter-spacing: 6px;
+  }
+
+  .room-code-input {
+    width: 110px;
+    padding: 10px 12px;
+    font-size: 20px;
+    letter-spacing: 6px;
+  }
+
+  .room-status {
+    font-size: 13px;
+  }
+
+  .room-label {
+    font-size: 12px;
+  }
+
+  .mode-buttons {
+    width: 100%;
+  }
+
+  .team-lobby {
+    gap: 20px;
+  }
+
+  .team-slot {
+    width: 100px;
+    height: 48px;
+    font-size: 12px;
+  }
+
+  .team-header {
+    font-size: 15px;
+  }
+
+  #room-lobby {
+    gap: 16px;
+  }
+}
+
+/* ===== Landscape phones (short height) ===== */
+
+@media (max-height: 500px) {
+  #lobby {
+    justify-content: flex-start;
+    padding-top: 8px;
+    overflow-y: auto;
+  }
+
+  .lobby-title-wrap {
+    margin-bottom: 8px;
+    min-height: clamp(1.5rem, 6vh, 3rem);
+  }
+
+  .season-tag {
+    margin-top: -6px;
+    margin-bottom: 10px;
+    font-size: clamp(0.6rem, 2vh, 0.9rem);
+  }
+
+  .lobby-buttons {
+    gap: 8px;
+  }
+
+  .lobby-btn-row {
+    gap: 8px;
+  }
+
+  .lobby-btn {
+    padding: 8px 24px;
+    font-size: 14px;
+  }
+
+  .player-name-input {
+    padding: 6px 12px;
+    font-size: 12px;
+  }
+
+  #lobby-music-controls {
+    top: 6px;
+    left: 6px;
+  }
+
+  #car-selector {
+    gap: 10px;
+  }
+
+  #car-preview {
+    width: min(240px, 40vw);
+    height: min(168px, 28vw);
+  }
+
+  .car-model-label {
+    font-size: 12px;
+    min-width: 100px;
+  }
+
+  .mode-buttons {
+    width: 100%;
+  }
+
+  .lobby-btn-back {
+    padding: 6px 16px;
+    font-size: 11px;
+  }
+
+  .room-code-display {
+    font-size: 28px;
+    letter-spacing: 6px;
+  }
+
+  #room-lobby {
+    gap: 10px;
+  }
+
+  .team-slot {
+    width: 90px;
+    height: 40px;
+    font-size: 11px;
+  }
+}
+
+/* ===== Touch HUD adjustments ===== */
+
+@media (pointer: coarse) {
   #hud-bottom {
     bottom: 200px;
     right: 20px;
@@ -970,26 +1713,6 @@ body {
 
   .score {
     font-size: 36px;
-  }
-
-  .lobby-title-wrap {
-    margin-bottom: 30px;
-    height: clamp(2.5rem, 10vw, 5rem);
-  }
-
-  .lobby-buttons {
-    flex-direction: column;
-    gap: 16px;
-  }
-
-  .lobby-btn {
-    padding: 14px 32px;
-    font-size: 16px;
-  }
-
-  #car-preview {
-    width: 300px;
-    height: 210px;
   }
 }
 

@@ -255,9 +255,9 @@ export class Car {
 
   _checkGround() {
     // After jumping, suppress ground detection so the car can clear the surface.
-    // Wall jumps need longer (250ms) because the car moves horizontally and the
-    // detect range (~3.9 units) takes longer to escape than a floor jump.
-    const lockoutDuration = this._jumpedFromWall ? 250 : 100;
+    // Wall jumps need longer (450ms) because the car moves horizontally and
+    // flat vertical walls take longer to escape than curved surfaces.
+    const lockoutDuration = this._jumpedFromWall ? 450 : 100;
     if (this.hasJumped && (performance.now() - this.jumpLockout) < lockoutDuration) {
       this.isGrounded = false;
       return;
@@ -728,13 +728,13 @@ export class Car {
     vel.y -= right.y * sideRemoval;
     vel.z -= right.z * sideRemoval;
 
-    // During handbrake, redirect removed sideways energy into forward direction
-    // so the car maintains speed through the drift instead of bleeding momentum
+    // During handbrake, redirect a small portion of removed sideways energy forward
+    // so the car doesn't bleed all speed, but mostly slides sideways (drift feel)
     if (handbraking && Math.abs(sideRemoval) > 0.1) {
       const fwdSign = forwardSpeed >= 0 ? 1 : -1;
-      vel.x += forward.x * Math.abs(sideRemoval) * 0.7 * fwdSign;
-      vel.y += forward.y * Math.abs(sideRemoval) * 0.7 * fwdSign;
-      vel.z += forward.z * Math.abs(sideRemoval) * 0.7 * fwdSign;
+      vel.x += forward.x * Math.abs(sideRemoval) * 0.35 * fwdSign;
+      vel.y += forward.y * Math.abs(sideRemoval) * 0.35 * fwdSign;
+      vel.z += forward.z * Math.abs(sideRemoval) * 0.35 * fwdSign;
     }
 
     // Align car to surface normal
@@ -817,9 +817,28 @@ export class Car {
       const n = this.surfaceNormal;
       this._jumpedFromWall = this.onWall;
 
-      this.body.velocity.x += n.x * CAR.JUMP_FORCE;
-      this.body.velocity.y += n.y * CAR.JUMP_FORCE;
-      this.body.velocity.z += n.z * CAR.JUMP_FORCE;
+      if (this.onWall) {
+        // Wall jump: kill velocity into wall, push away from wall + give upward boost
+        const vDotN = this.body.velocity.dot(n);
+        if (vDotN < 0) {
+          this.body.velocity.x -= n.x * vDotN;
+          this.body.velocity.y -= n.y * vDotN;
+          this.body.velocity.z -= n.z * vDotN;
+        }
+        // Stronger push on flat vertical walls (wallFactor near 1) to escape detect range
+        const wallFactor = 1 - Math.abs(n.y);
+        const pushMult = 1.0 + wallFactor * 0.6;
+        // Push away from wall surface
+        this.body.velocity.x += n.x * CAR.JUMP_FORCE * pushMult;
+        this.body.velocity.y += n.y * CAR.JUMP_FORCE * pushMult;
+        this.body.velocity.z += n.z * CAR.JUMP_FORCE * pushMult;
+        // Detach upward so gravity pulls car to floor
+        this.body.velocity.y += CAR.JUMP_FORCE * 0.5;
+      } else {
+        this.body.velocity.x += n.x * CAR.JUMP_FORCE;
+        this.body.velocity.y += n.y * CAR.JUMP_FORCE;
+        this.body.velocity.z += n.z * CAR.JUMP_FORCE;
+      }
 
       this.hasJumped = true;
       this.jumpTime = now;
@@ -827,6 +846,7 @@ export class Car {
       this.canDoubleJump = true;
       this.isGrounded = false;
       this.onWall = false;
+      this.onGoalSurface = false;
       return;
     }
 

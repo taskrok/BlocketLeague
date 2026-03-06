@@ -17,7 +17,7 @@ import { Ball } from './Ball.js';
 import { BoostPads } from './BoostPads.js';
 import { InputManager } from './InputManager.js';
 import { CameraController } from './Camera.js';
-import { CameraSettings } from './CameraSettings.js';
+import { GameSettings } from './GameSettings.js';
 import { HUD } from './HUD.js';
 import { ReplayBuffer } from './ReplayBuffer.js';
 import { ReplayPlayer } from './ReplayPlayer.js';
@@ -28,13 +28,14 @@ import {
 } from '../../shared/constants.js';
 import { computeBallHitImpulse } from '../../shared/BallHitImpulse.js';
 import { PerformanceTracker } from '../../shared/PerformanceTracker.js';
+import { TRAINING_PACKS } from './TrainingPacks.js';
 
 // Reusable temp vectors
 const _aiEuler = new CANNON.Vec3();
 const _aimEuler = new CANNON.Vec3();
 
 export class Game {
-  constructor(canvas, mode = 'singleplayer', networkManager = null, playerVariant = null, joinedData = null, aiDifficulty = 'pro', aiMode = '1v1') {
+  constructor(canvas, mode = 'singleplayer', networkManager = null, playerVariant = null, joinedData = null, aiDifficulty = 'pro', aiMode = '1v1', trainingOpts = null) {
     this.canvas = canvas;
     this.mode = mode;
     this.network = networkManager;
@@ -42,6 +43,7 @@ export class Game {
     this._joinedData = joinedData;
     this.aiDifficulty = aiDifficulty;
     this.aiMode = aiMode;
+    this.trainingOpts = trainingOpts; // { type, difficulty }
     this._destroyed = false;
     this._rafId = null;
 
@@ -81,13 +83,24 @@ export class Game {
     this.replayBuffer = new ReplayBuffer();
     this.replayPlayer = new ReplayPlayer();
 
-    if (this.mode === 'singleplayer') {
+    if (this.mode === 'training') {
+      this._initTraining();
+    } else if (this.mode === 'singleplayer' || this.mode === 'freeplay') {
       this._initScene();
       this.cameraController = new CameraController(this.camera);
       this.cameraController.setTarget(this.playerCar);
       this.cameraController.setBallTarget(this.ball);
       this._initPostProcessing();
-      this._startCountdown();
+      if (this.mode === 'freeplay') {
+        this.state = 'playing';
+        this.matchTime = Infinity;
+        this.hud.updateTimer(0);
+        this.hud.timerEl.textContent = 'FREE PLAY';
+        this.hud.timerEl.style.color = '#00ff88';
+        this.hud.timerEl.style.textShadow = '0 0 16px rgba(0, 255, 136, 0.6)';
+      } else {
+        this._startCountdown();
+      }
     } else {
       // Multiplayer: init scene partially, wait for 'joined' to create cars
       this._initSceneMultiplayer();
@@ -97,7 +110,10 @@ export class Game {
       this._initMultiplayer();
     }
 
-    this.cameraSettings = new CameraSettings(this.cameraController);
+    this.gameSettings = new GameSettings(this.cameraController, this.input);
+    this.gameSettings.onReturnToLobby = () => {
+      if (this.hud.onBackToLobby) this.hud.onBackToLobby();
+    };
 
     this.clock = new THREE.Clock();
     this.accumulator = 0;
@@ -206,7 +222,17 @@ export class Game {
     const playerVariant = this.playerVariant || generateCarVariant(COLORS.CYAN, modelIds);
     playerVariant.bodyColor = COLORS.TEAM_BLUE_BODY;
 
-    if (this.aiMode === '2v2') {
+    if (this.mode === 'freeplay' || this.mode === 'training') {
+      // Freeplay/Training: only the player car, no opponents
+      this.playerCar = new Car(
+        this.scene, this.world,
+        SPAWNS.PLAYER1, COLORS.CYAN, 1,
+        this.arena.trimeshBody, playerVariant
+      );
+      this.playerCar.body.material = this.carMaterial;
+      this.allCars = [this.playerCar];
+      this.aiCars = [];
+    } else if (this.aiMode === '2v2') {
       // 2v2: 4 cars — player + AI teammate (blue) vs 2 AI opponents (orange)
       const allyVariant = generateCarVariant(COLORS.CYAN, modelIds);
       allyVariant.bodyColor = COLORS.TEAM_BLUE_BODY;
@@ -274,6 +300,38 @@ export class Game {
 
     this.boostPads = new BoostPads(this.scene);
     this.perfTracker = new PerformanceTracker(this.allCars.length);
+
+    // Assign names for scoreboard
+    this._assignPlayerNames();
+  }
+
+  _assignPlayerNames() {
+    const RANDOM_NAMES = [
+      'Donut','Penguin','Stumpy','Whicker','Shadow','Howard','Wilshire','Darling',
+      'Disco','Jack','The Bear','Sneak','The Big L','Whisp','Wheezy','Crazy',
+      'Goat','Pirate','Saucy','Hambone','Butcher','Walla Walla','Snake','Caboose',
+      'Sleepy','Killer','Stompy','Mopey','Dopey','Weasel','Ghost','Dasher',
+      'Grumpy','Hollywood','Tooth','Noodle','King','Cupid','Prancer',
+    ];
+
+    // Shuffle and pick unique names for AI
+    const shuffled = [...RANDOM_NAMES].sort(() => Math.random() - 0.5);
+
+    // Get human player name from localStorage
+    let humanName = '';
+    try { humanName = localStorage.getItem('blocket-player-name') || ''; } catch {}
+    if (!humanName) humanName = shuffled.pop() || 'Player';
+
+    const names = [];
+    for (let i = 0; i < this.allCars.length; i++) {
+      if (i === 0) {
+        // Player is always slot 0 in singleplayer/freeplay
+        names.push(humanName);
+      } else {
+        names.push(shuffled.pop() || `Bot ${i}`);
+      }
+    }
+    this.hud.setPlayerNames(names);
   }
 
   // ========== MULTIPLAYER SCENE INIT ==========
@@ -831,7 +889,9 @@ export class Game {
     this.input.update();
     const inputState = this.input.getState();
 
-    if (this.mode === 'singleplayer') {
+    if (this.mode === 'training') {
+      this._loopTraining(dt, inputState);
+    } else if (this.mode === 'singleplayer' || this.mode === 'freeplay') {
       this._loopSingleplayer(dt, inputState);
     } else {
       this._loopMultiplayer(dt, inputState);
@@ -892,10 +952,15 @@ export class Game {
         const assisted = this._applyAimAssist(inputState);
         this.playerCar.update(assisted, dt);
       }
-      this._updateAI(dt);
+
+      if (this.mode !== 'freeplay') {
+        this._updateAI(dt);
+      }
 
       // Update demolition respawns for all cars
-      if (this.aiMode === '2v2') {
+      if (this.mode === 'freeplay') {
+        this.playerCar.updateDemolition(dt, SPAWNS.PLAYER1, 1);
+      } else if (this.aiMode === '2v2') {
         this.allCars[0].updateDemolition(dt, SPAWNS.TEAM_BLUE[0], 1);
         this.allCars[1].updateDemolition(dt, SPAWNS.TEAM_BLUE[1], 1);
         this.allCars[2].updateDemolition(dt, SPAWNS.TEAM_ORANGE[0], -1);
@@ -909,12 +974,19 @@ export class Game {
       if (this.perfTracker) {
         this.perfTracker.setMatchTime(GAME.MATCH_DURATION - this.matchTime);
       }
-      this._updateTimer(dt);
+
+      if (this.mode !== 'freeplay') {
+        this._updateTimer(dt);
+      }
 
       // Record frame for replay
       this.replayBuffer.record(this.ball, this.allCars, this.boostPads);
 
-      this._checkGoal();
+      if (this.mode === 'freeplay') {
+        this._checkGoalFreeplay();
+      } else {
+        this._checkGoal();
+      }
     } else if (this.state === 'goal_celebration') {
       this._celebrationTimer -= dt;
       if (this._celebrationTimer <= 0) {
@@ -1228,6 +1300,30 @@ export class Game {
     // Let the goal explosion play out before starting replay
     this.state = 'goal_celebration';
     this._celebrationTimer = 1.5; // seconds to watch the explosion
+  }
+
+  _checkGoalFreeplay() {
+    const goalSide = this.arena.isInGoal(this.ball.body.position);
+    if (goalSide === 0) return;
+
+    // Quick explosion
+    const ballPos = this.ball.body.position;
+    const goalColor = goalSide === 1 ? COLORS.GOAL_ORANGE : COLORS.GOAL_BLUE;
+    this._spawnGoalExplosion({ x: ballPos.x, y: ballPos.y, z: ballPos.z }, goalColor);
+
+    if (goalSide === 1) {
+      this.scores.orange++;
+      this.hud.showGoalScored('orange');
+    } else {
+      this.scores.blue++;
+      this.hud.showGoalScored('blue');
+    }
+    this.hud.updateScore(this.scores.blue, this.scores.orange);
+
+    // Quick reset — just reposition ball and car
+    this.ball.reset();
+    this.playerCar.reset(SPAWNS.PLAYER1, 1);
+    this.replayBuffer.clear();
   }
 
   _enterGoalState() {
@@ -1788,6 +1884,502 @@ export class Game {
     car.update(aiInput, dt);
   }
 
+  // ========== TRAINING MODE ==========
+
+  _initTraining() {
+    const opts = this.trainingOpts;
+    const pack = TRAINING_PACKS[opts.type]?.[opts.difficulty];
+    if (!pack || pack.length === 0) {
+      console.error('Invalid training pack:', opts);
+      return;
+    }
+
+    this._trainingPack = pack;
+    this._trainingShotIndex = 0;
+    this._trainingScore = { hit: 0, total: pack.length };
+    this._trainingShotTimer = 0;
+    this._trainingShotActive = false;
+    this._trainingShotResult = null; // 'success' | 'fail' | null
+    this._trainingResultTimer = 0;
+    this._trainingType = opts.type;
+    this._trainingBallTouched = false;
+    this._trainingBallFrozen = false; // aerial rookie: ball frozen until touched
+    this._trainingResults = new Array(pack.length).fill(null);
+    this._trainingComplete = false;
+
+    // For goalie: track if ball entered blue goal
+    this._trainingGoalieFailed = false;
+
+    // Init scene like freeplay — single car, no opponents
+    this._initScene();
+    this.cameraController = new CameraController(this.camera);
+    this.cameraController.setTarget(this.playerCar);
+    this.cameraController.setBallTarget(this.ball);
+    this._initPostProcessing();
+
+    this.state = 'playing';
+    this.matchTime = Infinity;
+
+    // Build training HUD
+    this._buildTrainingHUD();
+
+    // Load first shot
+    this._loadTrainingShot(0);
+  }
+
+  _buildTrainingHUD() {
+    const type = this._trainingType;
+    const diff = this.trainingOpts.difficulty;
+    const labels = { striker: 'STRIKER', goalie: 'GOALIE', aerial: 'AERIAL' };
+    const diffLabels = { rookie: 'ROOKIE', pro: 'PRO', allstar: 'ALL-STAR' };
+
+    // Title bar
+    this.hud.timerEl.textContent = `${labels[type] || type} — ${diffLabels[diff] || diff}`;
+    this.hud.timerEl.style.color = '#00ffff';
+    this.hud.timerEl.style.textShadow = '0 0 16px rgba(0, 255, 255, 0.6)';
+
+    // Shot counter (replaces scoreboard)
+    this.hud.scoreBlueEl.parentElement.style.display = 'none';
+
+    // Training overlay
+    this._trainingOverlay = document.createElement('div');
+    this._trainingOverlay.id = 'training-overlay';
+    Object.assign(this._trainingOverlay.style, {
+      position: 'absolute',
+      top: '50px',
+      left: '50%',
+      transform: 'translateX(-50%)',
+      textAlign: 'center',
+      zIndex: '200',
+      pointerEvents: 'none',
+      fontFamily: "'Orbitron', sans-serif",
+    });
+
+    // Shot counter
+    this._trainingShotLabel = document.createElement('div');
+    Object.assign(this._trainingShotLabel.style, {
+      fontSize: '16px',
+      fontWeight: '700',
+      color: 'rgba(255,255,255,0.6)',
+      letterSpacing: '2px',
+      marginBottom: '4px',
+    });
+
+    // Score display
+    this._trainingScoreLabel = document.createElement('div');
+    Object.assign(this._trainingScoreLabel.style, {
+      fontSize: '14px',
+      fontWeight: '600',
+      color: '#00ffff',
+      letterSpacing: '1px',
+    });
+
+    // Timer display
+    this._trainingTimerLabel = document.createElement('div');
+    Object.assign(this._trainingTimerLabel.style, {
+      fontSize: '22px',
+      fontWeight: '800',
+      color: '#fff',
+      letterSpacing: '2px',
+      marginTop: '4px',
+    });
+
+    // Result flash
+    this._trainingResultLabel = document.createElement('div');
+    Object.assign(this._trainingResultLabel.style, {
+      fontSize: '48px',
+      fontWeight: '900',
+      letterSpacing: '6px',
+      opacity: '0',
+      transition: 'opacity 0.3s',
+      position: 'fixed',
+      top: '40%',
+      left: '50%',
+      transform: 'translate(-50%, -50%)',
+      zIndex: '210',
+      pointerEvents: 'none',
+      textShadow: '0 0 30px currentColor',
+    });
+    document.body.appendChild(this._trainingResultLabel);
+
+    // Controls hint
+    this._trainingHint = document.createElement('div');
+    Object.assign(this._trainingHint.style, {
+      fontSize: '11px',
+      color: 'rgba(255,255,255,0.3)',
+      letterSpacing: '1px',
+      marginTop: '6px',
+    });
+    this._trainingHint.textContent = 'R — Reset Shot | [ ] — Prev/Next';
+
+    this._trainingOverlay.appendChild(this._trainingShotLabel);
+    this._trainingOverlay.appendChild(this._trainingScoreLabel);
+    this._trainingOverlay.appendChild(this._trainingTimerLabel);
+    this._trainingOverlay.appendChild(this._trainingHint);
+
+    document.getElementById('game-container').appendChild(this._trainingOverlay);
+
+    this._updateTrainingHUD();
+
+    // Key listeners for training controls
+    this._trainingKeyHandler = (e) => {
+      if (e.code === 'KeyR') {
+        this._resetTrainingShot();
+      } else if (e.code === 'BracketRight') {
+        this._nextTrainingShot();
+      } else if (e.code === 'BracketLeft') {
+        this._prevTrainingShot();
+      }
+    };
+    window.addEventListener('keydown', this._trainingKeyHandler);
+  }
+
+  _updateTrainingHUD() {
+    const idx = this._trainingShotIndex;
+    const total = this._trainingPack.length;
+    this._trainingShotLabel.textContent = `SHOT ${idx + 1} / ${total}`;
+    this._trainingScoreLabel.textContent = `${this._trainingScore.hit} / ${this._trainingScore.total}`;
+
+    const t = Math.ceil(this._trainingShotTimer);
+    this._trainingTimerLabel.textContent = this._trainingShotActive ? `${t}s` : '';
+  }
+
+  _loadTrainingShot(index) {
+    if (index < 0 || index >= this._trainingPack.length) return;
+
+    this._trainingShotIndex = index;
+    const shot = this._trainingPack[index];
+
+    // Reset car
+    this.playerCar.reset(shot.carPos, shot.carDir);
+    this.playerCar.boost = 100; // full boost in training
+
+    // Position ball — aerial allstar delays launch by 1s so player can orient
+    this.ball.body.position.set(shot.ballPos.x, shot.ballPos.y, shot.ballPos.z);
+    this.ball.body.angularVelocity.set(0, 0, 0);
+    this.ball._spinQuat.identity();
+
+    const useLaunchDelay = (this._trainingType === 'aerial' && this.trainingOpts.difficulty === 'allstar')
+      || this._trainingType === 'goalie';
+    if (useLaunchDelay) {
+      // Hold ball still so player can orient, then launch
+      this.ball.body.velocity.set(0, 0, 0);
+      this._trainingLaunchDelay = this._trainingType === 'goalie' ? 1.5 : 1.0;
+      this._trainingPendingVel = { x: shot.ballVel.x, y: shot.ballVel.y, z: shot.ballVel.z };
+    } else {
+      this.ball.body.velocity.set(shot.ballVel.x, shot.ballVel.y, shot.ballVel.z);
+      this._trainingLaunchDelay = 0;
+      this._trainingPendingVel = null;
+    }
+
+    // Reset shot state
+    this._trainingShotTimer = 11; // 10s play + 1s delay for allstar
+    this._trainingShotActive = true;
+    this._trainingShotResult = null;
+    this._trainingResultTimer = 0;
+    this._trainingBallTouched = false;
+    this._trainingGoalieFailed = false;
+
+    // Aerial rookie/pro: freeze ball in air until player touches it
+    this._trainingBallFrozen = (this._trainingType === 'aerial' && (this.trainingOpts.difficulty === 'rookie' || this.trainingOpts.difficulty === 'pro'));
+
+    this._updateTrainingHUD();
+  }
+
+  _resetTrainingShot() {
+    this._loadTrainingShot(this._trainingShotIndex);
+  }
+
+  _nextTrainingShot() {
+    const next = (this._trainingShotIndex + 1) % this._trainingPack.length;
+    this._loadTrainingShot(next);
+  }
+
+  _prevTrainingShot() {
+    const prev = (this._trainingShotIndex - 1 + this._trainingPack.length) % this._trainingPack.length;
+    this._loadTrainingShot(prev);
+  }
+
+  _showTrainingResult(result) {
+    this._trainingShotResult = result;
+    this._trainingResultTimer = 1.5;
+    this._trainingShotActive = false;
+    this._trainingResults[this._trainingShotIndex] = result;
+
+    if (result === 'success') {
+      this._trainingScore.hit++;
+      this._trainingResultLabel.textContent = this._trainingType === 'goalie' ? 'SAVE!' : 'NICE SHOT!';
+      this._trainingResultLabel.style.color = '#00ff88';
+    } else {
+      this._trainingResultLabel.textContent = this._trainingType === 'goalie' ? 'GOAL' : 'MISS';
+      this._trainingResultLabel.style.color = '#ff4444';
+    }
+    this._trainingResultLabel.style.opacity = '1';
+    this._updateTrainingHUD();
+  }
+
+  _showTrainingComplete() {
+    this._trainingComplete = true;
+    this._trainingShotActive = false;
+
+    const hits = this._trainingResults.filter(r => r === 'success').length;
+    const total = this._trainingResults.length;
+    const pct = Math.round((hits / total) * 100);
+
+    const labels = { striker: 'STRIKER', goalie: 'GOALIE', aerial: 'AERIAL' };
+    const diffLabels = { rookie: 'ROOKIE', pro: 'PRO', allstar: 'ALL-STAR' };
+    const typeName = labels[this._trainingType] || this._trainingType;
+    const diffName = diffLabels[this.trainingOpts.difficulty] || this.trainingOpts.difficulty;
+
+    // Grade
+    let grade, gradeColor;
+    if (pct === 100) { grade = 'PERFECT!'; gradeColor = '#ffd700'; }
+    else if (pct >= 80) { grade = 'GREAT!'; gradeColor = '#00ff88'; }
+    else if (pct >= 50) { grade = 'GOOD'; gradeColor = '#00ccff'; }
+    else { grade = 'KEEP PRACTICING'; gradeColor = '#ff8844'; }
+
+    // Build completion overlay
+    this._trainingCompleteOverlay = document.createElement('div');
+    Object.assign(this._trainingCompleteOverlay.style, {
+      position: 'absolute',
+      top: '0', left: '0', width: '100%', height: '100%',
+      display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center',
+      background: 'radial-gradient(ellipse at center, rgba(0,0,0,0.85) 0%, rgba(0,0,0,0.95) 100%)',
+      zIndex: '500',
+      fontFamily: "'Orbitron', sans-serif",
+      animation: 'fadeIn 0.4s ease',
+    });
+
+    // Title
+    const title = document.createElement('div');
+    Object.assign(title.style, {
+      fontSize: '20px', color: '#00ffff', letterSpacing: '3px', marginBottom: '8px',
+      textShadow: '0 0 20px rgba(0,255,255,0.5)',
+    });
+    title.textContent = `${typeName} — ${diffName}`;
+
+    // "TRAINING COMPLETE"
+    const heading = document.createElement('div');
+    Object.assign(heading.style, {
+      fontSize: '36px', fontWeight: '800', color: '#fff', letterSpacing: '4px',
+      marginBottom: '24px', textShadow: '0 0 30px rgba(255,255,255,0.3)',
+    });
+    heading.textContent = 'TRAINING COMPLETE';
+
+    // Score
+    const scoreEl = document.createElement('div');
+    Object.assign(scoreEl.style, {
+      fontSize: '48px', fontWeight: '800', color: gradeColor, marginBottom: '8px',
+      textShadow: `0 0 30px ${gradeColor}80`,
+    });
+    scoreEl.textContent = `${hits} / ${total}`;
+
+    // Grade label
+    const gradeEl = document.createElement('div');
+    Object.assign(gradeEl.style, {
+      fontSize: '24px', fontWeight: '700', color: gradeColor, letterSpacing: '3px',
+      marginBottom: '24px', textShadow: `0 0 20px ${gradeColor}60`,
+    });
+    gradeEl.textContent = grade;
+
+    // Shot results grid
+    const grid = document.createElement('div');
+    Object.assign(grid.style, {
+      display: 'flex', gap: '8px', marginBottom: '32px', flexWrap: 'wrap', justifyContent: 'center',
+    });
+    this._trainingResults.forEach((r, i) => {
+      const dot = document.createElement('div');
+      const isHit = r === 'success';
+      Object.assign(dot.style, {
+        width: '36px', height: '36px', borderRadius: '6px',
+        display: 'flex', alignItems: 'center', justifyContent: 'center',
+        fontSize: '14px', fontWeight: '700', fontFamily: "'Orbitron', sans-serif",
+        background: isHit ? 'rgba(0,255,136,0.2)' : 'rgba(255,68,68,0.2)',
+        border: `2px solid ${isHit ? '#00ff88' : '#ff4444'}`,
+        color: isHit ? '#00ff88' : '#ff4444',
+      });
+      dot.textContent = i + 1;
+      grid.appendChild(dot);
+    });
+
+    // Continue button
+    const btn = document.createElement('button');
+    Object.assign(btn.style, {
+      padding: '12px 40px', fontSize: '16px', fontWeight: '700',
+      fontFamily: "'Orbitron', sans-serif", letterSpacing: '2px',
+      background: 'linear-gradient(135deg, #00ccff, #0088ff)',
+      color: '#fff', border: 'none', borderRadius: '8px', cursor: 'pointer',
+      boxShadow: '0 0 20px rgba(0,136,255,0.4)',
+      transition: 'transform 0.15s, box-shadow 0.15s',
+    });
+    btn.textContent = 'BACK TO MENU';
+    btn.onmouseenter = () => { btn.style.transform = 'scale(1.05)'; btn.style.boxShadow = '0 0 30px rgba(0,136,255,0.6)'; };
+    btn.onmouseleave = () => { btn.style.transform = 'scale(1)'; btn.style.boxShadow = '0 0 20px rgba(0,136,255,0.4)'; };
+    btn.onclick = () => {
+      if (this.hud.onBackToLobby) this.hud.onBackToLobby();
+    };
+
+    this._trainingCompleteOverlay.appendChild(title);
+    this._trainingCompleteOverlay.appendChild(heading);
+    this._trainingCompleteOverlay.appendChild(scoreEl);
+    this._trainingCompleteOverlay.appendChild(gradeEl);
+    this._trainingCompleteOverlay.appendChild(grid);
+    this._trainingCompleteOverlay.appendChild(btn);
+
+    document.getElementById('game-container').appendChild(this._trainingCompleteOverlay);
+
+    // Also allow Escape to return
+    this._trainingCompleteKeyHandler = (e) => {
+      if (e.key === 'Escape' || e.key === 'Enter') {
+        if (this.hud.onBackToLobby) this.hud.onBackToLobby();
+      }
+    };
+    window.addEventListener('keydown', this._trainingCompleteKeyHandler);
+  }
+
+  _loopTraining(dt, inputState) {
+    // Physics
+    this.accumulator += dt;
+    while (this.accumulator >= PHYSICS.TIMESTEP) {
+      this.world.step(PHYSICS.TIMESTEP);
+      this.accumulator -= PHYSICS.TIMESTEP;
+    }
+
+    for (const car of this.allCars) car._syncMesh();
+    this.ball.update(dt);
+
+    // Update explosions
+    this._updateExplosions(dt);
+
+    // Player car input
+    if (!this.playerCar.demolished) {
+      const assisted = this._applyAimAssist(inputState);
+      this.playerCar.update(assisted, dt);
+    }
+
+    // Boost pads
+    this.boostPads.update(dt, this.allCars);
+
+    // Aerial allstar: hold ball at spawn for 1s delay then launch
+    if (this._trainingLaunchDelay > 0) {
+      this._trainingLaunchDelay -= dt;
+      const shot = this._trainingPack[this._trainingShotIndex];
+      this.ball.body.position.set(shot.ballPos.x, shot.ballPos.y, shot.ballPos.z);
+      this.ball.body.velocity.set(0, 0, 0);
+      this.ball.body.angularVelocity.set(0, 0, 0);
+      if (this._trainingLaunchDelay <= 0 && this._trainingPendingVel) {
+        this.ball.body.velocity.set(this._trainingPendingVel.x, this._trainingPendingVel.y, this._trainingPendingVel.z);
+        this._trainingPendingVel = null;
+      }
+    }
+
+    // Aerial rookie/pro: hold ball in place until player touches it
+    if (this._trainingBallFrozen) {
+      const shot = this._trainingPack[this._trainingShotIndex];
+      this.ball.body.position.set(shot.ballPos.x, shot.ballPos.y, shot.ballPos.z);
+      this.ball.body.velocity.set(0, 0, 0);
+      this.ball.body.angularVelocity.set(0, 0, 0);
+
+      // Check if player touched the frozen ball
+      const cp = this.playerCar.body.position;
+      const bp = this.ball.body.position;
+      const ddx = bp.x - cp.x, ddy = bp.y - cp.y, ddz = bp.z - cp.z;
+      if (Math.sqrt(ddx * ddx + ddy * ddy + ddz * ddz) < BALL_CONST.RADIUS + 3.5) {
+        this._trainingBallFrozen = false;
+      }
+    }
+
+    // Result display timer
+    if (this._trainingShotResult) {
+      this._trainingResultTimer -= dt;
+      if (this._trainingResultTimer <= 0) {
+        this._trainingResultLabel.style.opacity = '0';
+        this._trainingShotResult = null;
+        // Check if all shots attempted
+        if (this._trainingResults.every(r => r !== null)) {
+          this._showTrainingComplete();
+          return;
+        }
+        // Auto-advance to next shot
+        this._nextTrainingShot();
+      }
+      return;
+    }
+
+    if (this._trainingComplete) return;
+
+    if (!this._trainingShotActive) return;
+
+    // Shot timer countdown
+    this._trainingShotTimer -= dt;
+    this._updateTrainingHUD();
+
+    // Detect ball-car contact for goalie mode
+    if (this._trainingType === 'goalie') {
+      // Check if ball touched car (simple distance check)
+      const carPos = this.playerCar.body.position;
+      const ballPos = this.ball.body.position;
+      const dx = ballPos.x - carPos.x;
+      const dy = ballPos.y - carPos.y;
+      const dz = ballPos.z - carPos.z;
+      const dist = Math.sqrt(dx * dx + dy * dy + dz * dz);
+      if (dist < BALL_CONST.RADIUS + 3.5) {
+        this._trainingBallTouched = true;
+      }
+    }
+
+    // Check success/failure based on training type
+    if (this._trainingType === 'striker' || this._trainingType === 'aerial') {
+      // Success: ball enters orange goal (goalSide === 2 means z > +HL → scored on orange side?
+      // Actually looking at arena.isInGoal: goalSide 1 = z < -HL (blue goal back), 2 = z > +HL (orange goal back)
+      // Wait — we need to check carefully. The orange goal is at z > LENGTH/2.
+      const goalSide = this.arena.isInGoal(this.ball.body.position);
+      if (goalSide === 2) {
+        // Scored in orange goal
+        const ballPos = this.ball.body.position;
+        this._spawnGoalExplosion({ x: ballPos.x, y: ballPos.y, z: ballPos.z }, COLORS.GOAL_ORANGE);
+        this._showTrainingResult('success');
+        return;
+      }
+      // Fail: timer expired
+      if (this._trainingShotTimer <= 0) {
+        this._showTrainingResult('fail');
+        return;
+      }
+    } else if (this._trainingType === 'goalie') {
+      // Check if ball entered blue goal
+      const goalSide = this.arena.isInGoal(this.ball.body.position);
+      if (goalSide === 1) {
+        // Ball entered blue goal — player failed to save
+        const ballPos = this.ball.body.position;
+        this._spawnGoalExplosion({ x: ballPos.x, y: ballPos.y, z: ballPos.z }, COLORS.GOAL_BLUE);
+        this._showTrainingResult('fail');
+        return;
+      }
+
+      // Success: ball touched and now heading away from goal (positive z velocity)
+      if (this._trainingBallTouched) {
+        const vz = this.ball.body.velocity.z;
+        if (vz > 2) {
+          // Ball deflected away from goal — save!
+          this._showTrainingResult('success');
+          return;
+        }
+      }
+
+      // Timer expired without goal — saved
+      if (this._trainingShotTimer <= 0) {
+        this._showTrainingResult('success');
+        return;
+      }
+    }
+
+    // Ball out of bounds reset (fell through floor, etc)
+    if (this.ball.body.position.y < -20) {
+      this._resetTrainingShot();
+    }
+  }
+
   // ========== CLEANUP ==========
 
   destroy() {
@@ -1817,9 +2409,26 @@ export class Game {
       window.removeEventListener('resize', this._onResize);
     }
 
+    // Clean up training HUD
+    if (this._trainingOverlay) {
+      this._trainingOverlay.remove();
+    }
+    if (this._trainingResultLabel) {
+      this._trainingResultLabel.remove();
+    }
+    if (this._trainingKeyHandler) {
+      window.removeEventListener('keydown', this._trainingKeyHandler);
+    }
+    if (this._trainingCompleteOverlay) {
+      this._trainingCompleteOverlay.remove();
+    }
+    if (this._trainingCompleteKeyHandler) {
+      window.removeEventListener('keydown', this._trainingCompleteKeyHandler);
+    }
+
     // Destroy subsystems
-    if (this.cameraSettings) {
-      this.cameraSettings.destroy();
+    if (this.gameSettings) {
+      this.gameSettings.destroy();
     }
     if (this.input) {
       this.input.destroy();

@@ -4,6 +4,14 @@
 
 import { CAR, GAME } from '../../shared/constants.js';
 
+const RANDOM_NAMES = [
+  'Donut','Penguin','Stumpy','Whicker','Shadow','Howard','Wilshire','Darling',
+  'Disco','Jack','The Bear','Sneak','The Big L','Whisp','Wheezy','Crazy',
+  'Goat','Pirate','Saucy','Hambone','Butcher','Walla Walla','Snake','Caboose',
+  'Sleepy','Killer','Stompy','Mopey','Dopey','Weasel','Ghost','Dasher',
+  'Grumpy','Hollywood','Tooth','Noodle','King','Cupid','Prancer',
+];
+
 export class HUD {
   constructor() {
     this.timerEl = document.getElementById('timer');
@@ -22,6 +30,9 @@ export class HUD {
     // Boost meter constants
     this.boostCircumference = 2 * Math.PI * 52; // r=52 from SVG
     this.boostArc.style.strokeDasharray = this.boostCircumference;
+
+    // Player names for scoreboard
+    this._playerNames = [];
 
     // Ping display (created dynamically for multiplayer)
     this.pingEl = null;
@@ -165,7 +176,7 @@ export class HUD {
       const el = document.createElement('div');
       Object.assign(el.style, {
         position: 'fixed',
-        top: '60px',
+        top: '120px',
         left: '50%',
         transform: 'translateX(-50%)',
         textAlign: 'center',
@@ -374,7 +385,12 @@ export class HUD {
     return tr;
   }
 
+  setPlayerNames(names) {
+    this._playerNames = names || [];
+  }
+
   _getPlayerLabel(idx, maxPlayers) {
+    if (this._playerNames[idx]) return this._playerNames[idx];
     if (maxPlayers === 2) {
       return idx === 0 ? 'Player' : 'AI';
     }

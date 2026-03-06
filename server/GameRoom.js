@@ -55,29 +55,16 @@ export class GameRoom {
 
   // ========== PLAYER MANAGEMENT ==========
 
-  addPlayer(socket, variantConfig, preferredTeam) {
-    let slot = -1;
-
-    // If preferredTeam specified, try that team first
-    if (preferredTeam) {
-      const half = this.maxPlayers / 2;
-      const start = preferredTeam === 'blue' ? 0 : half;
-      const end = preferredTeam === 'blue' ? half : this.maxPlayers;
-      for (let i = start; i < end; i++) {
-        if (this.players[i] === null) { slot = i; break; }
-      }
-    }
-
-    // Fallback to first available slot
-    if (slot === -1) {
-      slot = this.players.findIndex(p => p === null);
-    }
+  addPlayer(socket, variantConfig, playerName) {
+    // Find first available slot
+    const slot = this.players.findIndex(p => p === null);
     if (slot === -1) return -1;
 
     this.players[slot] = {
       socket,
       socketId: socket.id,
       variantConfig: variantConfig || {},
+      playerName: playerName || '',
       latestInput: this._emptyInput(),
       lastProcessedInput: 0,
     };
@@ -158,6 +145,7 @@ export class GameRoom {
       slot: i,
       team: this._getTeam(i),
       filled: p !== null,
+      name: p ? p.playerName : '',
     }));
 
     for (const p of this.players) {

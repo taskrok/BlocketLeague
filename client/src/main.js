@@ -9,6 +9,7 @@ import { generateCarVariant } from './CarVariants.js';
 import { buildCarMesh } from './CarMeshBuilder.js';
 import { modelLoader } from './ModelLoader.js';
 import { COLORS } from '../../shared/constants.js';
+import { getGeneralSettings } from './GameSettings.js';
 
 window.addEventListener('DOMContentLoaded', async () => {
   const canvas = document.getElementById('game-canvas');
@@ -18,6 +19,8 @@ window.addEventListener('DOMContentLoaded', async () => {
   const carSelector = document.getElementById('car-selector');
   const previewCanvas = document.getElementById('car-preview');
   const btnSingle = document.getElementById('btn-singleplayer');
+  const btnFreeplay = document.getElementById('btn-freeplay');
+  const btnTraining = document.getElementById('btn-training');
   const btnMulti = document.getElementById('btn-multiplayer');
   const btnLetsGo = document.getElementById('btn-letsgo');
   const btnBack = document.getElementById('btn-back');
@@ -27,11 +30,53 @@ window.addEventListener('DOMContentLoaded', async () => {
   const loadingScreen = document.getElementById('loading-screen');
   const loadingFill = document.getElementById('loading-fill');
 
+  // Random name pool
+  const RANDOM_NAMES = [
+    'Donut','Penguin','Stumpy','Whicker','Shadow','Howard','Wilshire','Darling',
+    'Disco','Jack','The Bear','Sneak','The Big L','Whisp','Wheezy','Crazy',
+    'Goat','Pirate','Saucy','Hambone','Butcher','Walla Walla','Snake','Caboose',
+    'Sleepy','Killer','Stompy','Mopey','Dopey','Weasel','Ghost','Dasher',
+    'Grumpy','Hollywood','Tooth','Noodle','King','Cupid','Prancer',
+  ];
+
+  function pickRandomName() {
+    return RANDOM_NAMES[Math.floor(Math.random() * RANDOM_NAMES.length)];
+  }
+
+  // Player name
+  const playerNameInput = document.getElementById('player-name-input');
+  const PLAYER_NAME_KEY = 'blocket-player-name';
+  let savedName = localStorage.getItem(PLAYER_NAME_KEY) || '';
+  if (!savedName) {
+    savedName = pickRandomName();
+    localStorage.setItem(PLAYER_NAME_KEY, savedName);
+  }
+  playerNameInput.value = savedName;
+  playerNameInput.addEventListener('input', () => {
+    localStorage.setItem(PLAYER_NAME_KEY, playerNameInput.value.trim());
+  });
+
+  // How to Play
+  const btnHowToPlay = document.getElementById('btn-howtoplay');
+  const howtoplayPanel = document.getElementById('howtoplay-panel');
+  const btnHowToPlayClose = document.getElementById('btn-howtoplay-close');
+
+  // Lobby Settings
+  const btnLobbySettings = document.getElementById('btn-lobby-settings');
+  const lobbySettingsPanel = document.getElementById('lobby-settings-panel');
+  const btnLobbySettingsClose = document.getElementById('btn-lobby-settings-close');
+  const settingAutoFullscreen = document.getElementById('setting-auto-fullscreen');
+
+  // Init lobby settings from stored values
+  const initGeneralSettings = getGeneralSettings();
+  settingAutoFullscreen.checked = initGeneralSettings.autoFullscreen;
+
   // Room lobby elements
   const roomLobby = document.getElementById('room-lobby');
   const roomLobbyOptions = roomLobby.querySelector('.room-lobby-options');
   const btnCreateRoom = document.getElementById('btn-create-room');
   const btnJoinRoom = document.getElementById('btn-join-room');
+  const btnQuickMatch = document.getElementById('btn-quick-match');
   const roomCodeInput = document.getElementById('room-code-input');
   const modeSelector = document.getElementById('mode-selector');
   const btnMode1v1 = document.getElementById('btn-mode-1v1');
@@ -43,6 +88,19 @@ window.addEventListener('DOMContentLoaded', async () => {
   const blueSlots = document.getElementById('blue-slots');
   const orangeSlots = document.getElementById('orange-slots');
   const btnRoomBack = document.getElementById('btn-room-back');
+  const btnCopyCode = document.getElementById('btn-copy-code');
+
+  // Training selector elements
+  const trainingTypeSelector = document.getElementById('training-type-selector');
+  const btnTrainStriker = document.getElementById('btn-train-striker');
+  const btnTrainGoalie = document.getElementById('btn-train-goalie');
+  const btnTrainAerial = document.getElementById('btn-train-aerial');
+  const btnTrainTypeBack = document.getElementById('btn-train-type-back');
+  const trainingDiffSelector = document.getElementById('training-diff-selector');
+  const btnTrainDiffRookie = document.getElementById('btn-train-diff-rookie');
+  const btnTrainDiffPro = document.getElementById('btn-train-diff-pro');
+  const btnTrainDiffAllstar = document.getElementById('btn-train-diff-allstar');
+  const btnTrainDiffBack = document.getElementById('btn-train-diff-back');
 
   // AI mode selector elements
   const aiModeSelector = document.getElementById('ai-mode-selector');
@@ -57,13 +115,27 @@ window.addEventListener('DOMContentLoaded', async () => {
   const btnDiffAllstar = document.getElementById('btn-diff-allstar');
   const btnDiffBack = document.getElementById('btn-diff-back');
 
+  // Lobby music controls
+  const lobbySkipBtn = document.getElementById('lobby-skip-btn');
+  const lobbyVolumeSlider = document.getElementById('lobby-volume-slider');
+  const lobbyTrackName = document.getElementById('lobby-track-name');
+
   let selectedMode = null;
   let selectedDifficulty = 'pro';
   let selectedAIMode = '1v1';
+  let selectedTrainingType = 'striker';
+  let selectedTrainingDifficulty = 'pro';
   let chosenVariant = null;
   let currentModelIndex = 0;
   let availableModelIds = [];
   let activeGame = null;
+
+  // Persist car selection
+  const CAR_MODEL_KEY = 'blocket-car-model';
+  try {
+    const savedIdx = localStorage.getItem(CAR_MODEL_KEY);
+    if (savedIdx !== null) currentModelIndex = parseInt(savedIdx, 10) || 0;
+  } catch {}
 
   // --- Title music (shuffle playlist) ---
   const musicTracks = [
@@ -79,7 +151,18 @@ window.addEventListener('DOMContentLoaded', async () => {
   }
   let musicIndex = 0;
   const titleMusic = new Audio(musicTracks[0].src);
-  titleMusic.volume = 0.5;
+  window.__blocketTitleMusic = titleMusic;
+  // Load stored volume
+  let storedVolume = 0.5;
+  try {
+    const audioSettings = localStorage.getItem('blocket-audio-settings');
+    if (audioSettings) {
+      const parsed = JSON.parse(audioSettings);
+      if (typeof parsed.musicVolume === 'number') storedVolume = parsed.musicVolume;
+    }
+  } catch {}
+  titleMusic.volume = storedVolume;
+  lobbyVolumeSlider.value = storedVolume;
 
   // --- Now Playing toast (bottom right) ---
   const toast = document.createElement('div');
@@ -106,7 +189,9 @@ window.addEventListener('DOMContentLoaded', async () => {
 
   let toastTimer = null;
   function showNowPlaying() {
-    toastText.textContent = '\u266A ' + musicTracks[musicIndex].name;
+    const name = musicTracks[musicIndex].name;
+    toastText.textContent = '\u266A ' + name;
+    lobbyTrackName.textContent = '\u266A ' + name;
     toast.style.opacity = '1';
     toast.style.pointerEvents = 'auto';
     clearTimeout(toastTimer);
@@ -146,6 +231,21 @@ window.addEventListener('DOMContentLoaded', async () => {
   };
   document.addEventListener('click', startMusic);
 
+  // Lobby music controls
+  lobbySkipBtn.addEventListener('click', (e) => {
+    e.stopPropagation();
+    if (!musicStarted) startMusic();
+    skipTrack();
+  });
+
+  lobbyVolumeSlider.addEventListener('input', () => {
+    const v = parseFloat(lobbyVolumeSlider.value);
+    titleMusic.volume = v;
+    try {
+      localStorage.setItem('blocket-audio-settings', JSON.stringify({ musicVolume: v }));
+    } catch {}
+  });
+
   // Room lobby state
   let selectedRoomMode = null; // '1v1' | '2v2'
   let roomCode = null;
@@ -163,6 +263,53 @@ window.addEventListener('DOMContentLoaded', async () => {
     canvas.focus();
   });
 
+  // --- Particle Background ---
+  const particleCanvas = document.getElementById('lobby-particles');
+  const pCtx = particleCanvas.getContext('2d');
+  const particles = [];
+  const PARTICLE_COUNT = 60;
+
+  function resizeParticleCanvas() {
+    particleCanvas.width = lobby.clientWidth;
+    particleCanvas.height = lobby.clientHeight;
+  }
+  resizeParticleCanvas();
+  window.addEventListener('resize', resizeParticleCanvas);
+
+  function initParticles() {
+    particles.length = 0;
+    for (let i = 0; i < PARTICLE_COUNT; i++) {
+      particles.push({
+        x: Math.random() * particleCanvas.width,
+        y: Math.random() * particleCanvas.height,
+        vx: (Math.random() - 0.5) * 0.3,
+        vy: -Math.random() * 0.4 - 0.1,
+        r: Math.random() * 2 + 0.5,
+        alpha: Math.random() * 0.4 + 0.1,
+        color: Math.random() > 0.5 ? '0,255,255' : '255,136,0',
+      });
+    }
+  }
+  initParticles();
+
+  let particleRafId = null;
+  function animateParticles() {
+    particleRafId = requestAnimationFrame(animateParticles);
+    pCtx.clearRect(0, 0, particleCanvas.width, particleCanvas.height);
+    for (const p of particles) {
+      p.x += p.vx;
+      p.y += p.vy;
+      if (p.y < -10) { p.y = particleCanvas.height + 10; p.x = Math.random() * particleCanvas.width; }
+      if (p.x < -10) p.x = particleCanvas.width + 10;
+      if (p.x > particleCanvas.width + 10) p.x = -10;
+      pCtx.beginPath();
+      pCtx.arc(p.x, p.y, p.r, 0, Math.PI * 2);
+      pCtx.fillStyle = `rgba(${p.color},${p.alpha})`;
+      pCtx.fill();
+    }
+  }
+  animateParticles();
+
   // --- Preload models ---
   // Hide lobby content while loading
   lobbyButtons.style.display = 'none';
@@ -174,11 +321,22 @@ window.addEventListener('DOMContentLoaded', async () => {
   });
 
   availableModelIds = modelLoader.getModelIds();
+  // Clamp saved model index
+  if (currentModelIndex >= availableModelIds.length) currentModelIndex = 0;
 
   // Hide loading, show lobby
   loadingScreen.classList.add('hidden');
   lobbyButtons.style.display = '';
   lobbyTitle.style.display = '';
+
+  // --- Screen transition helper ---
+  function showScreen(el, displayType = 'flex') {
+    el.style.display = displayType;
+    el.classList.remove('lobby-enter');
+    // Force reflow to restart animation
+    void el.offsetWidth;
+    el.classList.add('lobby-enter');
+  }
 
   // --- Preview setup / teardown ---
 
@@ -283,16 +441,20 @@ window.addEventListener('DOMContentLoaded', async () => {
 
   // --- UI transitions ---
 
+  function getPlayerName() {
+    return playerNameInput.value.trim() || '';
+  }
+
   function showCarSelector(mode) {
     selectedMode = mode;
     lobbyButtons.style.display = 'none';
     roomLobby.style.display = 'none';
-    carSelector.style.display = 'flex';
+    showScreen(carSelector);
 
     initPreview();
 
-    // Default to first model if available
-    if (availableModelIds.length > 0) {
+    // Use saved model index
+    if (availableModelIds.length > 0 && currentModelIndex >= availableModelIds.length) {
       currentModelIndex = 0;
     }
     chosenVariant = generateCarVariant(COLORS.CYAN, availableModelIds);
@@ -308,7 +470,7 @@ window.addEventListener('DOMContentLoaded', async () => {
     stopPreview();
     disposePreview();
     carSelector.style.display = 'none';
-    lobbyButtons.style.display = '';
+    showScreen(lobbyButtons);
     selectedMode = null;
     chosenVariant = null;
   }
@@ -329,17 +491,27 @@ window.addEventListener('DOMContentLoaded', async () => {
     }
     lobby.style.display = '';
     if (musicStarted) titleMusic.play().catch(() => {});
-    lobbyButtons.style.display = '';
+    showScreen(lobbyButtons);
     roomLobby.style.display = 'none';
     carSelector.style.display = 'none';
     aiModeSelector.style.display = 'none';
     difficultySelector.style.display = 'none';
+    trainingTypeSelector.style.display = 'none';
+    trainingDiffSelector.style.display = 'none';
+    howtoplayPanel.style.display = 'none';
+    lobbySettingsPanel.style.display = 'none';
     roomCode = null;
     selectedRoomMode = null;
     isRoomCreator = false;
+
+    // Restart particle animation if stopped
+    if (!particleRafId) animateParticles();
+    resizeParticleCanvas();
   }
 
   function requestFullscreen() {
+    const settings = getGeneralSettings();
+    if (!settings.autoFullscreen) return;
     try {
       const el = document.documentElement;
       const rfs = el.requestFullscreen || el.webkitRequestFullscreen || el.msRequestFullscreen;
@@ -352,13 +524,14 @@ window.addEventListener('DOMContentLoaded', async () => {
     }
   }
 
-  function showWaitingRoom(code) {
+  function showWaitingRoom(code, hideCode = false) {
     lobbyButtons.style.display = 'none';
-    roomLobby.style.display = 'flex';
+    showScreen(roomLobby);
     roomLobbyOptions.style.display = 'none';
     modeSelector.style.display = 'none';
-    waitingRoom.style.display = 'flex';
+    showScreen(waitingRoom);
     roomCodeDisplay.textContent = code;
+    btnCopyCode.style.display = hideCode ? 'none' : '';
     roomModeLabel.textContent = selectedRoomMode || '';
     roomStatus.textContent = 'Waiting for players...';
     blueSlots.innerHTML = '';
@@ -380,10 +553,10 @@ window.addEventListener('DOMContentLoaded', async () => {
       if (s.filled) {
         if (s.isYou) {
           div.classList.add('filled', 'you');
-          div.textContent = 'You';
+          div.textContent = getPlayerName() || 'You';
         } else {
           div.classList.add('filled');
-          div.textContent = 'Player';
+          div.textContent = s.name || 'Player';
         }
       } else {
         div.classList.add('open');
@@ -406,7 +579,21 @@ window.addEventListener('DOMContentLoaded', async () => {
     }
   }
 
-  // --- Start game (singleplayer or multiplayer after room is ready) ---
+  // --- Copy room code ---
+  btnCopyCode.addEventListener('click', () => {
+    const code = roomCodeDisplay.textContent;
+    if (!code || code === '----') return;
+    navigator.clipboard.writeText(code).then(() => {
+      btnCopyCode.classList.add('copied');
+      btnCopyCode.innerHTML = '<svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="2"><polyline points="20 6 9 17 4 12"/></svg>';
+      setTimeout(() => {
+        btnCopyCode.classList.remove('copied');
+        btnCopyCode.innerHTML = '<svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="2"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg>';
+      }, 2000);
+    }).catch(() => {});
+  });
+
+  // --- Start game (singleplayer, freeplay, or multiplayer after room is ready) ---
 
   function startGame() {
     destroyActiveGame();
@@ -418,6 +605,17 @@ window.addEventListener('DOMContentLoaded', async () => {
     toast.style.pointerEvents = 'none';
     clearTimeout(toastTimer);
 
+    // Stop particle animation during game
+    if (particleRafId) {
+      cancelAnimationFrame(particleRafId);
+      particleRafId = null;
+    }
+
+    // Save car selection
+    if (availableModelIds.length > 0) {
+      localStorage.setItem(CAR_MODEL_KEY, String(currentModelIndex));
+    }
+
     if (selectedMode === 'singleplayer') {
       lobby.style.display = 'none';
       requestFullscreen();
@@ -428,20 +626,47 @@ window.addEventListener('DOMContentLoaded', async () => {
       return;
     }
 
+    if (selectedMode === 'freeplay') {
+      lobby.style.display = 'none';
+      requestFullscreen();
+      const game = new Game(canvas, 'freeplay', null, chosenVariant);
+      game.hud.onBackToLobby = () => returnToLobby();
+      activeGame = game;
+      window.game = game;
+      return;
+    }
+
+    if (selectedMode === 'training') {
+      lobby.style.display = 'none';
+      requestFullscreen();
+      const game = new Game(canvas, 'training', null, chosenVariant, null, 'pro', '1v1', {
+        type: selectedTrainingType,
+        difficulty: selectedTrainingDifficulty,
+      });
+      game.hud.onBackToLobby = () => returnToLobby();
+      activeGame = game;
+      window.game = game;
+      return;
+    }
+
     // Multiplayer: show connecting state immediately, then connect
-    showWaitingRoom(isRoomCreator ? '...' : roomCode);
-    roomStatus.textContent = 'Connecting...';
+    const isQuickMatch = roomCode === '__quickmatch__';
+    showWaitingRoom(isQuickMatch ? 'Searching...' : (isRoomCreator ? '...' : roomCode), isQuickMatch);
+    roomStatus.textContent = isQuickMatch ? 'Finding a match...' : 'Connecting...';
 
     const network = new NetworkManager();
     networkManager = network;
 
     network.on('connected', () => {
       const variant = chosenVariant || generateCarVariant(COLORS.CYAN, availableModelIds);
+      const name = getPlayerName();
 
-      if (isRoomCreator) {
-        network.createRoom(selectedRoomMode, variant);
+      if (roomCode === '__quickmatch__') {
+        network.quickMatch(variant, name);
+      } else if (isRoomCreator) {
+        network.createRoom(selectedRoomMode, variant, name);
       } else {
-        network.joinRoom(roomCode, variant);
+        network.joinRoom(roomCode, variant, name);
       }
     });
 
@@ -499,24 +724,83 @@ window.addEventListener('DOMContentLoaded', async () => {
   // "Play vs AI" → show AI mode selector (1v1 / 2v2)
   btnSingle.addEventListener('click', () => {
     lobbyButtons.style.display = 'none';
-    aiModeSelector.style.display = 'flex';
+    showScreen(aiModeSelector);
+  });
+
+  // "Free Play" → car selector → freeplay
+  btnFreeplay.addEventListener('click', () => {
+    showCarSelector('freeplay');
+  });
+
+  // "Training" → show training type selector
+  btnTraining.addEventListener('click', () => {
+    lobbyButtons.style.display = 'none';
+    showScreen(trainingTypeSelector);
+  });
+
+  if (btnTrainStriker) {
+    btnTrainStriker.addEventListener('click', () => {
+      selectedTrainingType = 'striker';
+      trainingTypeSelector.style.display = 'none';
+      showScreen(trainingDiffSelector);
+    });
+  }
+
+  btnTrainGoalie.addEventListener('click', () => {
+    selectedTrainingType = 'goalie';
+    trainingTypeSelector.style.display = 'none';
+    showScreen(trainingDiffSelector);
+  });
+
+  btnTrainAerial.addEventListener('click', () => {
+    selectedTrainingType = 'aerial';
+    trainingTypeSelector.style.display = 'none';
+    showScreen(trainingDiffSelector);
+  });
+
+  btnTrainTypeBack.addEventListener('click', () => {
+    trainingTypeSelector.style.display = 'none';
+    showScreen(lobbyButtons);
+  });
+
+  btnTrainDiffRookie.addEventListener('click', () => {
+    selectedTrainingDifficulty = 'rookie';
+    trainingDiffSelector.style.display = 'none';
+    showCarSelector('training');
+  });
+
+  btnTrainDiffPro.addEventListener('click', () => {
+    selectedTrainingDifficulty = 'pro';
+    trainingDiffSelector.style.display = 'none';
+    showCarSelector('training');
+  });
+
+  btnTrainDiffAllstar.addEventListener('click', () => {
+    selectedTrainingDifficulty = 'allstar';
+    trainingDiffSelector.style.display = 'none';
+    showCarSelector('training');
+  });
+
+  btnTrainDiffBack.addEventListener('click', () => {
+    trainingDiffSelector.style.display = 'none';
+    showScreen(trainingTypeSelector);
   });
 
   btnAI1v1.addEventListener('click', () => {
     selectedAIMode = '1v1';
     aiModeSelector.style.display = 'none';
-    difficultySelector.style.display = 'flex';
+    showScreen(difficultySelector);
   });
 
   btnAI2v2.addEventListener('click', () => {
     selectedAIMode = '2v2';
     aiModeSelector.style.display = 'none';
-    difficultySelector.style.display = 'flex';
+    showScreen(difficultySelector);
   });
 
   btnAIModeBack.addEventListener('click', () => {
     aiModeSelector.style.display = 'none';
-    lobbyButtons.style.display = '';
+    showScreen(lobbyButtons);
   });
 
   btnDiffRookie.addEventListener('click', () => {
@@ -539,24 +823,33 @@ window.addEventListener('DOMContentLoaded', async () => {
 
   btnDiffBack.addEventListener('click', () => {
     difficultySelector.style.display = 'none';
-    aiModeSelector.style.display = 'flex';
+    showScreen(aiModeSelector);
   });
 
   // "Play Online" → show room lobby
   btnMulti.addEventListener('click', () => {
     lobbyButtons.style.display = 'none';
-    roomLobby.style.display = 'flex';
+    showScreen(roomLobby);
     roomLobbyOptions.style.display = 'flex';
     modeSelector.style.display = 'none';
     waitingRoom.style.display = 'none';
     roomCodeInput.value = '';
   });
 
+  // "Quick Match" → connect and auto-find a room
+  btnQuickMatch.addEventListener('click', () => {
+    isRoomCreator = false;
+    selectedRoomMode = '1v1';
+    showCarSelector('multiplayer');
+    // Will emit quickMatch on connect instead of joinRoom
+    roomCode = '__quickmatch__';
+  });
+
   // "Create Room" → show mode selector
   btnCreateRoom.addEventListener('click', () => {
     isRoomCreator = true;
     roomLobbyOptions.style.display = 'none';
-    modeSelector.style.display = 'flex';
+    showScreen(modeSelector);
   });
 
   // Mode selection → car selector
@@ -591,9 +884,43 @@ window.addEventListener('DOMContentLoaded', async () => {
       networkManager = null;
     }
     roomLobby.style.display = 'none';
-    lobbyButtons.style.display = '';
+    showScreen(lobbyButtons);
     roomCode = null;
     selectedRoomMode = null;
+  });
+
+  // How to Play
+  const lobbyMusicControls = document.getElementById('lobby-music-controls');
+
+  btnHowToPlay.addEventListener('click', () => {
+    lobbyButtons.style.display = 'none';
+    lobbyMusicControls.classList.add('hidden');
+    showScreen(howtoplayPanel);
+  });
+
+  btnHowToPlayClose.addEventListener('click', () => {
+    howtoplayPanel.style.display = 'none';
+    lobbyMusicControls.classList.remove('hidden');
+    showScreen(lobbyButtons);
+  });
+
+  // Lobby Settings
+  btnLobbySettings.addEventListener('click', () => {
+    lobbyButtons.style.display = 'none';
+    lobbyMusicControls.classList.add('hidden');
+    showScreen(lobbySettingsPanel);
+  });
+
+  btnLobbySettingsClose.addEventListener('click', () => {
+    lobbySettingsPanel.style.display = 'none';
+    lobbyMusicControls.classList.remove('hidden');
+    showScreen(lobbyButtons);
+  });
+
+  settingAutoFullscreen.addEventListener('change', () => {
+    const settings = getGeneralSettings();
+    settings.autoFullscreen = settingAutoFullscreen.checked;
+    localStorage.setItem('blocket-general-settings', JSON.stringify(settings));
   });
 
   // Prev/Next model buttons
