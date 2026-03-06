@@ -67,10 +67,10 @@ window.addEventListener('DOMContentLoaded', async () => {
 
   // --- Title music (shuffle playlist) ---
   const musicTracks = [
-    '/Blocket%20League!.mp3',
-    '/Jackson%20is%20good%20at%20Rocket%20League.mp3',
-    '/On%20the%20back%20of%20my%20car.mp3',
-    '/That%20was%20such%20a%20lucky%20hit.mp3',
+    { src: '/Blocket%20League!.mp3', name: 'Blocket League!' },
+    { src: '/Jackson%20is%20good%20at%20Rocket%20League.mp3', name: 'Jackson is good at Rocket League' },
+    { src: '/On%20the%20back%20of%20my%20car.mp3', name: 'On the back of my car' },
+    { src: '/That%20was%20such%20a%20lucky%20hit.mp3', name: 'That was such a lucky hit' },
   ];
   // Shuffle using Fisher-Yates
   for (let i = musicTracks.length - 1; i > 0; i--) {
@@ -78,13 +78,64 @@ window.addEventListener('DOMContentLoaded', async () => {
     [musicTracks[i], musicTracks[j]] = [musicTracks[j], musicTracks[i]];
   }
   let musicIndex = 0;
-  const titleMusic = new Audio(musicTracks[0]);
+  const titleMusic = new Audio(musicTracks[0].src);
   titleMusic.volume = 0.5;
-  titleMusic.addEventListener('ended', () => {
-    musicIndex = (musicIndex + 1) % musicTracks.length;
-    titleMusic.src = musicTracks[musicIndex];
-    titleMusic.play().catch(() => {});
+
+  // --- Now Playing toast (bottom right) ---
+  const toast = document.createElement('div');
+  Object.assign(toast.style, {
+    position: 'fixed', bottom: '20px', right: '20px', zIndex: '500',
+    background: 'rgba(10,10,30,0.85)', border: '1px solid rgba(0,255,255,0.3)',
+    borderRadius: '8px', padding: '10px 14px', display: 'flex', alignItems: 'center',
+    gap: '10px', fontFamily: "'Orbitron', sans-serif", fontSize: '12px', color: '#ccc',
+    opacity: '0', transition: 'opacity 0.4s', pointerEvents: 'none',
+    backdropFilter: 'blur(6px)', maxWidth: '320px',
   });
+  const toastText = document.createElement('span');
+  toastText.style.flex = '1';
+  toast.appendChild(toastText);
+  const skipBtn = document.createElement('button');
+  skipBtn.textContent = '\u23ED'; // next track symbol
+  Object.assign(skipBtn.style, {
+    background: 'none', border: '1px solid rgba(0,255,255,0.4)', borderRadius: '4px',
+    color: '#0ff', cursor: 'pointer', fontSize: '14px', padding: '2px 8px',
+    pointerEvents: 'auto',
+  });
+  toast.appendChild(skipBtn);
+  document.body.appendChild(toast);
+
+  let toastTimer = null;
+  function showNowPlaying() {
+    toastText.textContent = '\u266A ' + musicTracks[musicIndex].name;
+    toast.style.opacity = '1';
+    toast.style.pointerEvents = 'auto';
+    clearTimeout(toastTimer);
+    toastTimer = setTimeout(() => {
+      toast.style.opacity = '0';
+      toast.style.pointerEvents = 'none';
+    }, 4000);
+  }
+
+  function skipTrack() {
+    musicIndex = (musicIndex + 1) % musicTracks.length;
+    titleMusic.src = musicTracks[musicIndex].src;
+    titleMusic.play().catch(() => {});
+    showNowPlaying();
+  }
+
+  skipBtn.addEventListener('click', (e) => {
+    e.stopPropagation();
+    skipTrack();
+  });
+
+  titleMusic.addEventListener('ended', () => {
+    skipTrack();
+  });
+
+  titleMusic.addEventListener('play', () => {
+    showNowPlaying();
+  });
+
   let musicStarted = false;
   const startMusic = () => {
     if (!musicStarted) {
@@ -363,6 +414,9 @@ window.addEventListener('DOMContentLoaded', async () => {
     disposePreview();
     carSelector.style.display = 'none';
     titleMusic.pause();
+    toast.style.opacity = '0';
+    toast.style.pointerEvents = 'none';
+    clearTimeout(toastTimer);
 
     if (selectedMode === 'singleplayer') {
       lobby.style.display = 'none';
