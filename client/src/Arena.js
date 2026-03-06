@@ -422,20 +422,31 @@ export class Arena {
 
       // --- Visual overlays (decoration only, no physics) ---
 
-      // Transparent back wall indicator
-      const backGeo = new THREE.BoxGeometry(GW * 2, GH, 0.5);
-      const backMesh = new THREE.Mesh(backGeo, goalMaterials[idx]);
-      backMesh.position.set(0, GH / 2, zBack);
-      this.scene.add(backMesh);
+      // Goal frame — neon posts + crossbar outline at the goal mouth
+      const gc = idx === 0 ? COLORS.GOAL_BLUE : COLORS.GOAL_ORANGE;
+      const frameMat = new THREE.MeshStandardMaterial({
+        color: gc, emissive: gc, emissiveIntensity: 2,
+      });
+      const postW = 0.3;
+
+      // Left post
+      const lPost = new THREE.Mesh(new THREE.BoxGeometry(postW, GH, postW), frameMat);
+      lPost.position.set(-GW, GH / 2, zMouth);
+      this.scene.add(lPost);
+
+      // Right post
+      const rPost = new THREE.Mesh(new THREE.BoxGeometry(postW, GH, postW), frameMat);
+      rPost.position.set(GW, GH / 2, zMouth);
+      this.scene.add(rPost);
+
+      // Crossbar
+      const crossbar = new THREE.Mesh(new THREE.BoxGeometry(GW * 2 + postW, postW, postW), frameMat);
+      crossbar.position.set(0, GH, zMouth);
+      this.scene.add(crossbar);
 
       // Goal line glow on floor
       const lineGeo = new THREE.BoxGeometry(GW * 2, 0.05, 0.3);
-      const lineMat = new THREE.MeshStandardMaterial({
-        color: idx === 0 ? COLORS.GOAL_BLUE : COLORS.GOAL_ORANGE,
-        emissive: idx === 0 ? COLORS.GOAL_BLUE : COLORS.GOAL_ORANGE,
-        emissiveIntensity: 2,
-      });
-      const line = new THREE.Mesh(lineGeo, lineMat);
+      const line = new THREE.Mesh(lineGeo, frameMat);
       line.position.set(0, 0.06, zMouth);
       this.scene.add(line);
     });

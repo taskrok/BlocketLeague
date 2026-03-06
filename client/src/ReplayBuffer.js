@@ -11,6 +11,15 @@ export class ReplayBuffer {
     this._frames = new Array(MAX_FRAMES);
     this._head = 0;   // next write position
     this._count = 0;  // how many frames stored
+    this._pendingEvents = []; // events to attach to the next recorded frame
+  }
+
+  /**
+   * Queue an event (explosion, etc.) to be stored with the next frame.
+   * @param {object} event - { type: 'demolish'|'goal', x, y, z, color }
+   */
+  addEvent(event) {
+    this._pendingEvents.push(event);
   }
 
   /**
@@ -55,6 +64,9 @@ export class ReplayBuffer {
     // Boost pads bitmask
     frame.boostPadMask = this._packBoostPads(boostPads);
 
+    // Attach any pending events
+    frame.events = this._pendingEvents.length > 0 ? this._pendingEvents.splice(0) : null;
+
     this._head = (this._head + 1) % MAX_FRAMES;
     if (this._count < MAX_FRAMES) this._count++;
   }
@@ -76,6 +88,9 @@ export class ReplayBuffer {
     }
 
     frame.boostPadMask = this._packBoostPads(boostPads);
+
+    // Attach any pending events
+    frame.events = this._pendingEvents.length > 0 ? this._pendingEvents.splice(0) : null;
 
     this._head = (this._head + 1) % MAX_FRAMES;
     if (this._count < MAX_FRAMES) this._count++;

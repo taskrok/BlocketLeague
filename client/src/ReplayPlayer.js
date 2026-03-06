@@ -43,6 +43,7 @@ export class ReplayPlayer {
   start(frames) {
     this._frames = frames;
     this._cursor = 0;
+    this._prevFrame = -1;
     this._orbitAngle = 0;
     this._playing = true;
     this._done = false;
@@ -61,6 +62,7 @@ export class ReplayPlayer {
     const lastIdx = totalFrames - 1;
 
     // Advance cursor at playback speed (each frame = 1/60s of game time)
+    this._prevFrame = Math.floor(this._cursor);
     this._cursor += dt * 60 * PLAYBACK_SPEED;
 
     if (this._cursor >= lastIdx) {
@@ -96,6 +98,10 @@ export class ReplayPlayer {
     this._playing = false;
     this._done = true;
   }
+
+  get frames() { return this._frames; }
+  get lastFrameIndex() { return Math.floor(this._cursor); }
+  get prevFrameIndex() { return this._prevFrame; }
 
   _interpolateBall(fA, fB, t, ball, dt) {
     const a = fA.ball;

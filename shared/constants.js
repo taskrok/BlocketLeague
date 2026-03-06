@@ -65,7 +65,7 @@ export const BALL = {
   RADIUS: 2.3,                 // slightly larger than RL-scaled (1.83) for better feel
   MASS: 5.3,                   // RL ratio: ball/car ≈ 1/6 (30kg/180kg)
   RESTITUTION: 0.6,            // RL coefficient of restitution
-  FRICTION: 0.285,             // RL Coulomb friction (tangential)
+  FRICTION: 0.14,              // RL: 0.285, halved for 60Hz (friction over-applies at lower tick rate)
   LINEAR_DAMPING: 0,           // RL: zero air drag, ball coasts indefinitely
   ANGULAR_DAMPING: 0.01,       // spin decays via surface friction, not air
   MAX_SPEED: 115,              // 6000uu/s scaled to our speed ratio

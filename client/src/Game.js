@@ -510,6 +510,7 @@ export class Game {
     const color = car === this.playerCar ? COLORS.CYAN : COLORS.ORANGE;
     car.demolish();
     this._spawnExplosion(pos, color);
+    this.replayBuffer.addEvent({ type: 'demolish', x: pos.x, y: pos.y, z: pos.z, color });
     this.hud.showDemolished();
   }
 
@@ -568,34 +569,144 @@ export class Game {
       const ex = this._activeExplosions[i];
       ex.elapsed += dt;
 
+      const duration = ex.isGoal ? 1.0 : DEMOLITION.EXPLOSION_DURATION;
+      const lifetime = ex.isGoal ? 1.4 : DEMOLITION.PARTICLE_LIFETIME;
+
       // Flash: scale up and fade out
-      const flashT = Math.min(ex.elapsed / DEMOLITION.EXPLOSION_DURATION, 1);
-      const flashScale = 1 + flashT * 8;
+      const flashT = Math.min(ex.elapsed / duration, 1);
+      const flashScale = ex.isGoal ? 2 + flashT * 18 : 1 + flashT * 8;
       ex.flash.scale.setScalar(flashScale);
       ex.flash.material.opacity = Math.max(0, 1 - flashT);
-      ex.light.intensity = Math.max(0, 5 * (1 - flashT));
+      ex.light.intensity = Math.max(0, (ex.isGoal ? 10 : 5) * (1 - flashT));
+
+      // Goal: expanding shockwave rings
+      if (ex.isGoal && ex.ring) {
+        const ringScale = 2 + flashT * 40;
+        ex.ring.scale.setScalar(ringScale);
+        ex.ring.material.opacity = Math.max(0, 0.9 * (1 - flashT));
+        ex.ring2.scale.setScalar(ringScale * 0.8);
+        ex.ring2.material.opacity = Math.max(0, 0.7 * (1 - flashT * 1.2));
+      }
 
       // Particles: move + gravity + fade
-      const particleT = Math.min(ex.elapsed / DEMOLITION.PARTICLE_LIFETIME, 1);
+      const particleT = Math.min(ex.elapsed / lifetime, 1);
       for (const p of ex.particles) {
         p.mesh.position.x += p.vx * dt;
         p.mesh.position.y += p.vy * dt;
         p.mesh.position.z += p.vz * dt;
-        p.vy -= 30 * dt; // gravity
-        p.mesh.material.opacity = Math.max(0, 1 - particleT);
+        p.vy -= 30 * dt;
+
+        // Sparks: drag slows them, fade faster
+        if (p.isSpark) {
+          p.vx *= 0.97;
+          p.vy *= 0.97;
+          p.vz *= 0.97;
+          p.mesh.material.opacity = Math.max(0, 1 - particleT * 1.3);
+        } else {
+          // Debris: tumble
+          if (p.spin) p.mesh.rotation.x += p.spin * dt;
+          p.mesh.material.opacity = Math.max(0, 1 - particleT);
+        }
       }
 
       // Cleanup when done (shared geometry is NOT disposed — reused across explosions)
-      if (ex.elapsed >= DEMOLITION.PARTICLE_LIFETIME) {
+      if (ex.elapsed >= lifetime) {
         this.scene.remove(ex.group);
         ex.flash.material.dispose();
         for (const p of ex.particles) {
           p.mesh.material.dispose();
         }
+        if (ex.ring) {
+          ex.ring.material.dispose();
+          ex.ring2.material.dispose();
+        }
         ex.light.dispose();
         this._activeExplosions.splice(i, 1);
       }
     }
+  }
+
+  _spawnGoalExplosion(pos, color) {
+    const group = new THREE.Group();
+    group.position.set(pos.x, pos.y, pos.z);
+    const c = new THREE.Color(color);
+
+    // --- Core flash sphere ---
+    if (!this._sharedFlashGeo) {
+      this._sharedFlashGeo = new THREE.SphereGeometry(1, 12, 12);
+    }
+    const flashMat = new THREE.MeshBasicMaterial({
+      color, transparent: true, opacity: 1,
+    });
+    const flash = new THREE.Mesh(this._sharedFlashGeo, flashMat);
+    group.add(flash);
+
+    // --- Bright point light ---
+    const light = new THREE.PointLight(color, 10, 80);
+    group.add(light);
+
+    // --- Expanding shockwave ring ---
+    const ringGeo = new THREE.RingGeometry(0.5, 1.0, 32);
+    const ringMat = new THREE.MeshBasicMaterial({
+      color, transparent: true, opacity: 0.9, side: THREE.DoubleSide,
+    });
+    const ring = new THREE.Mesh(ringGeo, ringMat);
+    ring.rotation.x = -Math.PI / 2;
+    group.add(ring);
+
+    // --- Second ring (vertical) ---
+    const ring2 = new THREE.Mesh(ringGeo, ringMat.clone());
+    group.add(ring2);
+
+    // --- Spark particles (small, bright, fast) ---
+    if (!this._sharedSparkGeo) {
+      this._sharedSparkGeo = new THREE.BoxGeometry(0.15, 0.15, 0.6);
+    }
+    if (!this._sharedDebrisGeo) {
+      this._sharedDebrisGeo = new THREE.BoxGeometry(0.3, 0.3, 0.3);
+    }
+
+    const particles = [];
+
+    // Outer sparks — fast, small, elongated
+    for (let i = 0; i < 50; i++) {
+      const bright = c.clone().lerp(new THREE.Color(0xffffff), 0.4 + Math.random() * 0.4);
+      const mat = new THREE.MeshBasicMaterial({
+        color: bright, transparent: true, opacity: 1,
+      });
+      const p = new THREE.Mesh(this._sharedSparkGeo, mat);
+      const theta = Math.random() * Math.PI * 2;
+      const phi = (Math.random() - 0.5) * Math.PI;
+      const spd = 20 + Math.random() * 25;
+      const vx = Math.cos(theta) * Math.cos(phi) * spd;
+      const vy = Math.sin(phi) * spd * 0.6 + Math.random() * 8;
+      const vz = Math.sin(theta) * Math.cos(phi) * spd;
+      // Orient spark along velocity
+      p.lookAt(vx, vy, vz);
+      group.add(p);
+      particles.push({ mesh: p, vx, vy, vz, isSpark: true });
+    }
+
+    // Chunky debris — slower, heavier
+    for (let i = 0; i < 20; i++) {
+      const mat = new THREE.MeshBasicMaterial({
+        color, transparent: true, opacity: 1,
+      });
+      const p = new THREE.Mesh(this._sharedDebrisGeo, mat);
+      const scale = 0.5 + Math.random() * 1.5;
+      p.scale.setScalar(scale);
+      const vx = (Math.random() - 0.5) * 20;
+      const vy = 5 + Math.random() * 15;
+      const vz = (Math.random() - 0.5) * 20;
+      group.add(p);
+      particles.push({ mesh: p, vx, vy, vz, spin: (Math.random() - 0.5) * 10 });
+    }
+
+    this.scene.add(group);
+    this._activeExplosions.push({
+      group, flash, light, particles, elapsed: 0,
+      isGoal: true, ring, ring2,
+    });
   }
 
   // ========== SINGLE-PLAYER COUNTDOWN ==========
@@ -704,6 +815,15 @@ export class Game {
       this.replayBuffer.record(this.ball, [this.playerCar, this.opponentCar], this.boostPads);
 
       this._checkGoal();
+    } else if (this.state === 'goal_celebration') {
+      this._celebrationTimer -= dt;
+      if (this._celebrationTimer <= 0) {
+        if (this.replayBuffer.frameCount >= 30) {
+          this._startReplay();
+        } else {
+          this._enterGoalState();
+        }
+      }
     } else if (this.state === 'goal') {
       this.goalResetTime -= dt;
       if (this.goalResetTime <= 0) {
@@ -953,6 +1073,15 @@ export class Game {
       this.perfTracker.recordGoal(goalSide);
     }
 
+    // Goal explosion at ball position
+    const ballPos = this.ball.body.position;
+    const goalColor = goalSide === 1 ? COLORS.GOAL_ORANGE : COLORS.GOAL_BLUE;
+    const goalPos = { x: ballPos.x, y: ballPos.y, z: ballPos.z };
+    this._spawnGoalExplosion(goalPos, goalColor);
+    this.replayBuffer.addEvent({ type: 'goal', x: goalPos.x, y: goalPos.y, z: goalPos.z, color: goalColor });
+    // Flush the event into the buffer — no more frames are recorded after this
+    this.replayBuffer.record(this.ball, [this.playerCar, this.opponentCar], this.boostPads);
+
     if (goalSide === 1) {
       this.scores.orange++;
       this.hud.showGoalScored('orange');
@@ -966,12 +1095,17 @@ export class Game {
     // Save overtime flag for after replay
     this._goalWasOvertime = this.isOvertime;
 
-    // Try to start replay; skip if not enough frames
-    if (this.replayBuffer.frameCount >= 30) {
-      this._startReplay();
-    } else {
-      this._enterGoalState();
+    // Kill boost flames on all cars
+    const allCars = this.mode === 'singleplayer'
+      ? [this.playerCar, this.opponentCar]
+      : this.allCars;
+    for (const car of allCars) {
+      if (car && car.boostFlame) car.boostFlame.visible = false;
     }
+
+    // Let the goal explosion play out before starting replay
+    this.state = 'goal_celebration';
+    this._celebrationTimer = 1.5; // seconds to watch the explosion
   }
 
   _enterGoalState() {
@@ -1003,9 +1137,29 @@ export class Game {
       ? [this.playerCar, this.opponentCar]
       : this.allCars;
 
+    const prevIdx = this.replayPlayer.prevFrameIndex;
     const stillPlaying = this.replayPlayer.update(
       dt, this.ball, cars, this.boostPads, this.camera
     );
+    const curIdx = this.replayPlayer.lastFrameIndex;
+
+    // Fire any events on frames we just crossed
+    const frames = this.replayPlayer.frames;
+    if (frames) {
+      const start = Math.max(0, prevIdx + 1);
+      const end = Math.min(curIdx, frames.length - 1);
+      for (let f = start; f <= end; f++) {
+        const evts = frames[f] && frames[f].events;
+        if (!evts) continue;
+        for (const e of evts) {
+          if (e.type === 'goal') {
+            this._spawnGoalExplosion(e, e.color);
+          } else if (e.type === 'demolish') {
+            this._spawnExplosion(e, e.color);
+          }
+        }
+      }
+    }
 
     if (!stillPlaying) {
       this._onReplayFinished();
