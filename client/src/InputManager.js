@@ -143,6 +143,12 @@ export class InputManager {
     };
     window.addEventListener('gamepadconnected', this._onGamepadConnected);
 
+    // Check for already-connected gamepads (event may have fired before this constructor)
+    const existingGamepads = navigator.getGamepads ? navigator.getGamepads() : [];
+    for (const g of existingGamepads) {
+      if (g) { this._gamepadIndex = g.index; break; }
+    }
+
     this._onGamepadDisconnected = (e) => {
       if (this._gamepadIndex === e.gamepad.index) {
         this._gamepadIndex = null;
