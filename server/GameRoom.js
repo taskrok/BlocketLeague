@@ -226,6 +226,7 @@ export class GameRoom {
     });
 
     this.ball = new ServerBall(this.world);
+    this.ball.body.material = ballMaterial; // Must use same instance as contact materials
 
     // Create cars for all players
     const spawns = this._getSpawns();
