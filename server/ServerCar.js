@@ -152,22 +152,6 @@ export class ServerCar {
       this.isDodging = false;
       this._dodgeDecaying = false;
       this._jumpedFromWall = false;
-
-      // Landing recovery: if tilted on nose/tail/side, snap toward upright
-      const up = this.body.quaternion.vmult(new CANNON.Vec3(0, 1, 0));
-      const upDot = up.dot(this.surfaceNormal);
-      if (upDot < 0.85) {
-        const euler = new CANNON.Vec3();
-        this.body.quaternion.toEuler(euler);
-        const target = new CANNON.Quaternion();
-        target.setFromEuler(0, euler.y, 0);
-        this.body.quaternion.slerp(target, 0.6, this.body.quaternion);
-        this.body.quaternion.normalize();
-        this.body.angularVelocity.scale(0.1, this.body.angularVelocity);
-        if (this.body.velocity.y < 2) {
-          this.body.velocity.y = 2;
-        }
-      }
     }
   }
 
@@ -185,8 +169,9 @@ export class ServerCar {
     if (Math.abs(pos.x) > GW + detectRange || pos.y > GH + detectRange) return null;
 
     for (const side of [-1, 1]) {
-      if (side * pos.z < side * (HL - detectRange)) continue;
-      if (side * pos.z > side * (HL + GD + detectRange)) continue;
+      const depthInGoal = side * (pos.z - side * HL);
+      if (depthInGoal < -detectRange) continue;
+      if (depthInGoal > GD + detectRange) continue;
 
       const zMouth = side * HL;
       const zBack = side * (HL + GD);
@@ -363,11 +348,12 @@ export class ServerCar {
 
   _handleSelfRight(input, dt) {
     if (this.onWall) return;
+    if (this.isDodging || this._dodgeDecaying) return;
 
     const up = this.body.quaternion.vmult(new CANNON.Vec3(0, 1, 0));
-    const onFloor = this.body.position.y < CAR.HEIGHT * 3;
+    const nearFloor = this.body.position.y < CAR.HEIGHT * 3;
 
-    if (!onFloor) {
+    if (!nearFloor) {
       this._stuckTimer = 0;
       return;
     }
@@ -382,27 +368,29 @@ export class ServerCar {
 
     this._stuckTimer = (this._stuckTimer || 0) + dt;
 
-    const hasInput = input.throttle !== 0 || input.jumpPressed || input.steer !== 0;
-    if (isFlipped && hasInput) {
-      this._doSelfRight(0.2);
-      return;
-    }
-
-    if (this._stuckTimer > 0.4) {
-      this._doSelfRight(0.25);
-    }
-  }
-
-  _doSelfRight(slerpFactor) {
-    if (this.body.velocity.y < 3) {
-      this.body.velocity.y = 8;
-    }
+    // Immediate correction: snap upright to prevent skip-bouncing
     const euler = new CANNON.Vec3();
     this.body.quaternion.toEuler(euler);
     const target = new CANNON.Quaternion();
     target.setFromEuler(0, euler.y, 0);
-    this.body.quaternion.slerp(target, slerpFactor, this.body.quaternion);
-    this.body.angularVelocity.scale(0.3, this.body.angularVelocity);
+    this.body.quaternion.slerp(target, 0.5, this.body.quaternion);
+    this.body.quaternion.normalize();
+    this.body.angularVelocity.set(0, this.body.angularVelocity.y * 0.3, 0);
+
+    if (this.body.velocity.y < 2) {
+      this.body.velocity.y = 3;
+    }
+
+    // If stuck or fully flipped, be even more aggressive
+    const hasInput = input.throttle !== 0 || input.jumpPressed || input.steer !== 0;
+    if ((isFlipped && hasInput) || this._stuckTimer > 0.4) {
+      this.body.quaternion.slerp(target, 0.8, this.body.quaternion);
+      this.body.quaternion.normalize();
+      this.body.angularVelocity.set(0, 0, 0);
+      if (this.body.velocity.y < 5) {
+        this.body.velocity.y = 8;
+      }
+    }
   }
 
   _handleMovement(input, dt) {

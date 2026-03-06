@@ -317,25 +317,6 @@ export class Car {
       this.isDodging = false;
       this._dodgeDecaying = false;
       this._jumpedFromWall = false;
-
-      // Landing recovery: if tilted on nose/tail/side, snap toward upright
-      // to prevent edge-bouncing/skipping across the field
-      _v4.set(0, 1, 0);
-      this.body.quaternion.vmult(_v4, _v4);
-      const upDot = _v4.dot(this.surfaceNormal);
-      if (upDot < 0.85) {
-        // Aggressively correct orientation on landing
-        this.body.quaternion.toEuler(_euler);
-        _q1.setFromEuler(0, _euler.y, 0);
-        this.body.quaternion.slerp(_q1, 0.6, this.body.quaternion);
-        this.body.quaternion.normalize();
-        // Kill spin so it doesn't keep tumbling
-        this.body.angularVelocity.scale(0.1, this.body.angularVelocity);
-        // Small upward pop to settle cleanly onto wheels
-        if (this.body.velocity.y < 2) {
-          this.body.velocity.y = 2;
-        }
-      }
     }
   }
 
@@ -358,10 +339,12 @@ export class Car {
     if (Math.abs(pos.x) > GW + detectRange || pos.y > GH + detectRange) return null;
 
     for (const side of [-1, 1]) {
-      // Car must be beyond the goal mouth (in goal direction)
-      if (side * pos.z < side * (HL - detectRange)) continue;
+      // Signed distance into the goal (positive = deeper inside)
+      const depthInGoal = side * (pos.z - side * HL);
+      // Car must be near/past the goal mouth
+      if (depthInGoal < -detectRange) continue;
       // Car must be before the back wall + detect range
-      if (side * pos.z > side * (HL + GD + detectRange)) continue;
+      if (depthInGoal > GD + detectRange) continue;
 
       const zMouth = side * HL;
       const zBack = side * (HL + GD);
@@ -558,12 +541,13 @@ export class Car {
 
   _handleSelfRight(input, dt) {
     if (this.onWall) return; // don't self-right when on a wall
+    if (this.isDodging || this._dodgeDecaying) return; // let flips complete
 
     _v1.set(0, 1, 0);
     const up = this.body.quaternion.vmult(_v1);
-    const onFloor = this.body.position.y < CAR.HEIGHT * 3;
+    const nearFloor = this.body.position.y < CAR.HEIGHT * 3;
 
-    if (!onFloor) {
+    if (!nearFloor) {
       this._stuckTimer = 0;
       return;
     }
@@ -576,32 +560,31 @@ export class Car {
       return;
     }
 
-    // Track how long car has been tilted near the floor
     this._stuckTimer = (this._stuckTimer || 0) + dt;
 
-    // Immediate self-right when fully flipped + any input
-    const hasInput = input.throttle !== 0 || input.jumpPressed || input.steer !== 0;
-    if (isFlipped && hasInput) {
-      this._doSelfRight(0.2);
-      return;
-    }
-
-    // Auto self-right after being stuck tilted for 0.4s (no input required)
-    if (this._stuckTimer > 0.4) {
-      this._doSelfRight(0.25);
-    }
-  }
-
-  _doSelfRight(slerpFactor) {
-    // Pop the car up if it isn't already rising
-    if (this.body.velocity.y < 3) {
-      this.body.velocity.y = 8;
-    }
-    // Rotate towards upright, preserving yaw
+    // Immediate correction: car is tilted and near/on the floor.
+    // Snap upright aggressively to prevent skip-bouncing.
     this.body.quaternion.toEuler(_euler);
     _q1.setFromEuler(0, _euler.y, 0);
-    this.body.quaternion.slerp(_q1, slerpFactor, this.body.quaternion);
-    this.body.angularVelocity.scale(0.3, this.body.angularVelocity);
+    this.body.quaternion.slerp(_q1, 0.5, this.body.quaternion);
+    this.body.quaternion.normalize();
+    this.body.angularVelocity.set(0, this.body.angularVelocity.y * 0.3, 0);
+
+    // Pop up to settle onto wheels (once, not every frame)
+    if (this.body.velocity.y < 2) {
+      this.body.velocity.y = 3;
+    }
+
+    // If stuck tilted for a while or fully flipped, be even more aggressive
+    const hasInput = input.throttle !== 0 || input.jumpPressed || input.steer !== 0;
+    if ((isFlipped && hasInput) || this._stuckTimer > 0.4) {
+      this.body.quaternion.slerp(_q1, 0.8, this.body.quaternion);
+      this.body.quaternion.normalize();
+      this.body.angularVelocity.set(0, 0, 0);
+      if (this.body.velocity.y < 5) {
+        this.body.velocity.y = 8;
+      }
+    }
   }
 
   _handleMovement(input, dt) {
