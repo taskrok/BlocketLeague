@@ -112,7 +112,7 @@ export const NETWORK = {
   TICK_RATE: 60,               // server physics ticks per second
   SEND_RATE: 30,               // network updates per second
   INTERPOLATION_DELAY: 100,    // ms (initial, adjusted adaptively)
-  MIN_INTERPOLATION_DELAY: 66, // ms (~2 send intervals, safe minimum)
+  MIN_INTERPOLATION_DELAY: 50, // ms (~1.5 send intervals, tighter visual sync)
   MAX_INTERPOLATION_DELAY: 200,// ms maximum adaptive delay
   SNAP_THRESHOLD: 3.0,         // position error above this = hard snap (units)
   BLEND_RATE: 0.08,            // correction offset decay per frame (gentler)

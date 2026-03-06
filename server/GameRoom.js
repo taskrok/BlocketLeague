@@ -216,6 +216,15 @@ export class GameRoom {
 
     // Create arena, ball
     this.arena = new ServerArena(this.world);
+
+    // Assign wall material to all static arena bodies so ball-wall
+    // contact material (restitution 0.6, friction 0.14) is used
+    this.world.bodies.forEach(b => {
+      if (b.type === CANNON.Body.STATIC && !b.material) {
+        b.material = wallMaterial;
+      }
+    });
+
     this.ball = new ServerBall(this.world);
 
     // Create cars for all players
@@ -447,16 +456,19 @@ export class GameRoom {
 
     const team = goalSide === 1 ? 'orange' : 'blue';
     const { scorerIdx, assistIdx } = this.perfTracker.recordGoal(goalSide);
+    const bp = this.ball.body.position;
     this.io.to(this.roomId).emit('goalScored', {
       team,
       blueScore: this.scores.blue,
       orangeScore: this.scores.orange,
       scorerIdx,
       assistIdx,
+      ballPos: { x: bp.x, y: bp.y, z: bp.z },
     });
 
     this.state = 'goal';
-    this.goalResetTime = GAME.GOAL_RESET_TIME;
+    // Allow time for client-side celebration (1.5s) + replay (~6.7s) + buffer
+    this.goalResetTime = 9;
 
     if (this.isOvertime) {
       setTimeout(() => {
@@ -470,7 +482,7 @@ export class GameRoom {
           mvpIdx,
         });
         this._stopLoops();
-      }, GAME.GOAL_RESET_TIME * 1000);
+      }, 9 * 1000); // match goal reset time for replay
     }
   }
 

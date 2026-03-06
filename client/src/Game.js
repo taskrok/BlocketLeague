@@ -65,6 +65,9 @@ export class Game {
     // Smooth reconciliation: visual correction offset decays over time
     this._correctionOffset = { x: 0, y: 0, z: 0 };
 
+    // Deferred countdown events (buffered during replay/celebration)
+    this._deferredCountdown = null;
+
     // Explosion VFX
     this._activeExplosions = [];
 
@@ -269,16 +272,12 @@ export class Game {
     });
 
     this.network.on('countdown', (data) => {
-      this.state = 'countdown';
-      this.hud.showCountdown(data.count);
-      // Reset correction offset and pending inputs on countdown
-      this._correctionOffset.x = 0;
-      this._correctionOffset.y = 0;
-      this._correctionOffset.z = 0;
-      this.network.pendingInputs = [];
-      if (data.count === 0) {
-        this.state = 'playing';
+      // Defer countdown events during replay/celebration — apply after replay finishes
+      if (this.state === 'replay' || this.state === 'goal_celebration') {
+        this._deferredCountdown = data;
+        return;
       }
+      this._applyCountdown(data);
     });
 
     this.network.on('gameState', (snapshot) => {
@@ -312,13 +311,41 @@ export class Game {
       this._correctionOffset.x = 0;
       this._correctionOffset.y = 0;
       this._correctionOffset.z = 0;
+      this._deferredCountdown = null;
 
-      // Try to play replay before entering goal state
-      if (this.replayBuffer.frameCount >= 30) {
-        this._startReplay();
+      // Spawn goal explosion at ball position
+      const goalColor = data.team === 'orange' ? COLORS.GOAL_ORANGE : COLORS.GOAL_BLUE;
+      if (data.ballPos) {
+        this._spawnGoalExplosion(data.ballPos, goalColor);
+        this.replayBuffer.addEvent({ type: 'goal', x: data.ballPos.x, y: data.ballPos.y, z: data.ballPos.z, color: goalColor });
       } else {
-        this.state = 'goal';
+        // Fallback: use current ball position
+        const bp = this.ball.body.position;
+        this._spawnGoalExplosion({ x: bp.x, y: bp.y, z: bp.z }, goalColor);
+        this.replayBuffer.addEvent({ type: 'goal', x: bp.x, y: bp.y, z: bp.z, color: goalColor });
       }
+
+      // Flush the event into the replay buffer
+      if (this.replayBuffer.frameCount > 0) {
+        const interpState = this.network.getInterpolatedState();
+        if (interpState) {
+          const ballData = interpState.ball;
+          const carsData = [];
+          for (let i = 0; i < this.maxPlayers; i++) {
+            carsData[i] = interpState.players[i] || null;
+          }
+          this.replayBuffer.recordFromSnapshot(ballData, carsData, this.boostPads);
+        }
+      }
+
+      // Kill boost flames on all cars
+      for (const car of this.allCars) {
+        if (car && car.boostFlame) car.boostFlame.visible = false;
+      }
+
+      // Enter celebration state before replay
+      this.state = 'goal_celebration';
+      this._celebrationTimer = 1.5;
     });
 
     this.network.on('overtime', () => {
@@ -851,6 +878,20 @@ export class Game {
       return;
     }
 
+    // Goal celebration: let explosion play, then start replay
+    if (this.state === 'goal_celebration') {
+      this._celebrationTimer -= dt;
+      this._updateExplosions(dt);
+      if (this._celebrationTimer <= 0) {
+        if (this.replayBuffer.frameCount >= 30) {
+          this._startReplay();
+        } else {
+          this._onReplayFinished();
+        }
+      }
+      return;
+    }
+
     if (this.state === 'playing' || this.state === 'overtime') {
       // Send input to server
       const input = this.network.sendInput(inputState);
@@ -1225,7 +1266,27 @@ export class Game {
       }
     }
 
-    this._enterGoalState();
+    // In multiplayer, apply deferred countdown from server
+    if (this.mode !== 'singleplayer' && this._deferredCountdown) {
+      const data = this._deferredCountdown;
+      this._deferredCountdown = null;
+      this._applyCountdown(data);
+    } else {
+      this._enterGoalState();
+    }
+  }
+
+  _applyCountdown(data) {
+    this.state = 'countdown';
+    this.hud.showCountdown(data.count);
+    this._correctionOffset.x = 0;
+    this._correctionOffset.y = 0;
+    this._correctionOffset.z = 0;
+    this.network.pendingInputs = [];
+    this.replayBuffer.clear();
+    if (data.count === 0) {
+      this.state = 'playing';
+    }
   }
 
   _resetAfterGoal() {
