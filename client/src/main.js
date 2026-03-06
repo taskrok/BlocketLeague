@@ -10,6 +10,7 @@ import { buildCarMesh } from './CarMeshBuilder.js';
 import { modelLoader } from './ModelLoader.js';
 import { COLORS } from '../../shared/constants.js';
 import { getGeneralSettings } from './GameSettings.js';
+import { ARENA_THEMES } from './ArenaThemes.js';
 
 window.addEventListener('DOMContentLoaded', async () => {
   const canvas = document.getElementById('game-canvas');
@@ -29,6 +30,13 @@ window.addEventListener('DOMContentLoaded', async () => {
   const carModelName = document.getElementById('car-model-name');
   const loadingScreen = document.getElementById('loading-screen');
   const loadingFill = document.getElementById('loading-fill');
+
+  // Arena selector
+  const btnPrevArena = document.getElementById('btn-prev-arena');
+  const btnNextArena = document.getElementById('btn-next-arena');
+  const arenaNameEl = document.getElementById('arena-name');
+  let currentArenaIndex = 0;
+  arenaNameEl.textContent = ARENA_THEMES[0].name;
 
   // Random name pool
   const RANDOM_NAMES = [
@@ -65,6 +73,11 @@ window.addEventListener('DOMContentLoaded', async () => {
   const btnLobbySettings = document.getElementById('btn-lobby-settings');
   const lobbySettingsPanel = document.getElementById('lobby-settings-panel');
   const btnLobbySettingsClose = document.getElementById('btn-lobby-settings-close');
+
+  // Changelog
+  const btnChangelog = document.getElementById('btn-changelog');
+  const changelogPanel = document.getElementById('changelog-panel');
+  const btnChangelogClose = document.getElementById('btn-changelog-close');
   const settingAutoFullscreen = document.getElementById('setting-auto-fullscreen');
 
   // Init lobby settings from stored values
@@ -500,6 +513,7 @@ window.addEventListener('DOMContentLoaded', async () => {
     trainingDiffSelector.style.display = 'none';
     howtoplayPanel.style.display = 'none';
     lobbySettingsPanel.style.display = 'none';
+    changelogPanel.style.display = 'none';
     roomCode = null;
     selectedRoomMode = null;
     isRoomCreator = false;
@@ -616,10 +630,12 @@ window.addEventListener('DOMContentLoaded', async () => {
       localStorage.setItem(CAR_MODEL_KEY, String(currentModelIndex));
     }
 
+    const selectedArena = ARENA_THEMES[currentArenaIndex];
+
     if (selectedMode === 'singleplayer') {
       lobby.style.display = 'none';
       requestFullscreen();
-      const game = new Game(canvas, 'singleplayer', null, chosenVariant, null, selectedDifficulty, selectedAIMode);
+      const game = new Game(canvas, 'singleplayer', null, chosenVariant, null, selectedDifficulty, selectedAIMode, null, selectedArena);
       game.hud.onBackToLobby = () => returnToLobby();
       activeGame = game;
       window.game = game;
@@ -629,7 +645,7 @@ window.addEventListener('DOMContentLoaded', async () => {
     if (selectedMode === 'freeplay') {
       lobby.style.display = 'none';
       requestFullscreen();
-      const game = new Game(canvas, 'freeplay', null, chosenVariant);
+      const game = new Game(canvas, 'freeplay', null, chosenVariant, null, 'pro', '1v1', null, selectedArena);
       game.hud.onBackToLobby = () => returnToLobby();
       activeGame = game;
       window.game = game;
@@ -642,7 +658,7 @@ window.addEventListener('DOMContentLoaded', async () => {
       const game = new Game(canvas, 'training', null, chosenVariant, null, 'pro', '1v1', {
         type: selectedTrainingType,
         difficulty: selectedTrainingDifficulty,
-      });
+      }, selectedArena);
       game.hud.onBackToLobby = () => returnToLobby();
       activeGame = game;
       window.game = game;
@@ -700,7 +716,7 @@ window.addEventListener('DOMContentLoaded', async () => {
       // All players are in — launch the game
       lobby.style.display = 'none';
       requestFullscreen();
-      const game = new Game(canvas, 'multiplayer', network, chosenVariant, data);
+      const game = new Game(canvas, 'multiplayer', network, chosenVariant, data, 'pro', '1v1', null, selectedArena);
       game.hud.onBackToLobby = () => returnToLobby();
       game.onMatchEnd = () => {
         setTimeout(() => returnToLobby(), 4000);
@@ -917,6 +933,19 @@ window.addEventListener('DOMContentLoaded', async () => {
     showScreen(lobbyButtons);
   });
 
+  // Changelog
+  btnChangelog.addEventListener('click', () => {
+    lobbyButtons.style.display = 'none';
+    lobbyMusicControls.classList.add('hidden');
+    showScreen(changelogPanel);
+  });
+
+  btnChangelogClose.addEventListener('click', () => {
+    changelogPanel.style.display = 'none';
+    lobbyMusicControls.classList.remove('hidden');
+    showScreen(lobbyButtons);
+  });
+
   settingAutoFullscreen.addEventListener('change', () => {
     const settings = getGeneralSettings();
     settings.autoFullscreen = settingAutoFullscreen.checked;
@@ -940,6 +969,16 @@ window.addEventListener('DOMContentLoaded', async () => {
     updateModelLabel();
   });
 
+  btnPrevArena.addEventListener('click', () => {
+    currentArenaIndex = (currentArenaIndex - 1 + ARENA_THEMES.length) % ARENA_THEMES.length;
+    arenaNameEl.textContent = ARENA_THEMES[currentArenaIndex].name;
+  });
+
+  btnNextArena.addEventListener('click', () => {
+    currentArenaIndex = (currentArenaIndex + 1) % ARENA_THEMES.length;
+    arenaNameEl.textContent = ARENA_THEMES[currentArenaIndex].name;
+  });
+
   btnLetsGo.addEventListener('click', () => {
     startGame();
   });
@@ -947,4 +986,136 @@ window.addEventListener('DOMContentLoaded', async () => {
   btnBack.addEventListener('click', () => {
     hideCarSelector();
   });
+
+  // ========== GAMEPAD LOBBY NAVIGATION ==========
+  {
+    let gpFocusIdx = 0;
+    let gpPrevUp = false, gpPrevDown = false, gpPrevLeft = false, gpPrevRight = false;
+    let gpPrevA = false, gpPrevB = false;
+    const STICK_THRESHOLD = 0.5;
+
+    // Get all visible, clickable buttons on the current lobby screen
+    function getVisibleButtons() {
+      const btns = [];
+      lobby.querySelectorAll('.lobby-btn, .lobby-btn-nav, .lobby-link-btn').forEach(el => {
+        if (el.offsetParent !== null && !el.disabled && el.style.display !== 'none') {
+          btns.push(el);
+        }
+      });
+      return btns;
+    }
+
+    function setGpFocus(btns, idx) {
+      // Remove previous focus
+      lobby.querySelectorAll('.gp-focus').forEach(el => el.classList.remove('gp-focus'));
+      if (btns.length === 0) return;
+      gpFocusIdx = ((idx % btns.length) + btns.length) % btns.length;
+      btns[gpFocusIdx].classList.add('gp-focus');
+      btns[gpFocusIdx].scrollIntoView({ block: 'nearest' });
+    }
+
+    function pollLobbyGamepad() {
+      // Only poll when lobby is visible
+      if (lobby.style.display === 'none') {
+        requestAnimationFrame(pollLobbyGamepad);
+        return;
+      }
+
+      const gamepads = navigator.getGamepads ? navigator.getGamepads() : [];
+      let gp = null;
+      for (const g of gamepads) {
+        if (g) { gp = g; break; }
+      }
+
+      if (!gp) {
+        requestAnimationFrame(pollLobbyGamepad);
+        return;
+      }
+
+      // Read inputs
+      const stickY = gp.axes[1] || 0;
+      const stickX = gp.axes[0] || 0;
+      const dpadUp = gp.buttons[12] ? gp.buttons[12].pressed : false;
+      const dpadDown = gp.buttons[13] ? gp.buttons[13].pressed : false;
+      const dpadLeft = gp.buttons[14] ? gp.buttons[14].pressed : false;
+      const dpadRight = gp.buttons[15] ? gp.buttons[15].pressed : false;
+      const aBtn = gp.buttons[0] ? gp.buttons[0].pressed : false;
+      const bBtn = gp.buttons[1] ? gp.buttons[1].pressed : false;
+
+      const up = dpadUp || stickY < -STICK_THRESHOLD;
+      const down = dpadDown || stickY > STICK_THRESHOLD;
+      const left = dpadLeft || stickX < -STICK_THRESHOLD;
+      const right = dpadRight || stickX > STICK_THRESHOLD;
+
+      const btns = getVisibleButtons();
+
+      // Navigate
+      if (up && !gpPrevUp && btns.length > 0) {
+        setGpFocus(btns, gpFocusIdx - 1);
+      }
+      if (down && !gpPrevDown && btns.length > 0) {
+        setGpFocus(btns, gpFocusIdx + 1);
+      }
+      // Left/right for nav buttons (car/arena selectors)
+      if (left && !gpPrevLeft && btns.length > 0) {
+        const cur = btns[gpFocusIdx];
+        if (cur && cur.classList.contains('lobby-btn-nav')) {
+          cur.click();
+        } else {
+          // Find prev nav button or just navigate up
+          setGpFocus(btns, gpFocusIdx - 1);
+        }
+      }
+      if (right && !gpPrevRight && btns.length > 0) {
+        const cur = btns[gpFocusIdx];
+        if (cur && cur.classList.contains('lobby-btn-nav')) {
+          cur.click();
+        } else {
+          setGpFocus(btns, gpFocusIdx + 1);
+        }
+      }
+
+      // A = select
+      if (aBtn && !gpPrevA && btns.length > 0) {
+        if (gpFocusIdx < btns.length) {
+          btns[gpFocusIdx].click();
+          // Reset focus for new screen
+          gpFocusIdx = 0;
+          setTimeout(() => {
+            const newBtns = getVisibleButtons();
+            if (newBtns.length > 0) setGpFocus(newBtns, 0);
+          }, 100);
+        }
+      }
+
+      // B = back (find visible back button and click it)
+      if (bBtn && !gpPrevB) {
+        const backBtn = lobby.querySelector('.lobby-btn-back:not([style*="display: none"])');
+        if (backBtn && backBtn.offsetParent !== null) {
+          backBtn.click();
+          gpFocusIdx = 0;
+          setTimeout(() => {
+            const newBtns = getVisibleButtons();
+            if (newBtns.length > 0) setGpFocus(newBtns, 0);
+          }, 100);
+        }
+      }
+
+      // Show focus if not already visible
+      if (btns.length > 0 && !lobby.querySelector('.gp-focus')) {
+        setGpFocus(btns, gpFocusIdx);
+      }
+
+      gpPrevUp = up;
+      gpPrevDown = down;
+      gpPrevLeft = left;
+      gpPrevRight = right;
+      gpPrevA = aBtn;
+      gpPrevB = bBtn;
+
+      requestAnimationFrame(pollLobbyGamepad);
+    }
+
+    requestAnimationFrame(pollLobbyGamepad);
+  }
 });

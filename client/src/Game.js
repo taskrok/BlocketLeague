@@ -35,7 +35,7 @@ const _aiEuler = new CANNON.Vec3();
 const _aimEuler = new CANNON.Vec3();
 
 export class Game {
-  constructor(canvas, mode = 'singleplayer', networkManager = null, playerVariant = null, joinedData = null, aiDifficulty = 'pro', aiMode = '1v1', trainingOpts = null) {
+  constructor(canvas, mode = 'singleplayer', networkManager = null, playerVariant = null, joinedData = null, aiDifficulty = 'pro', aiMode = '1v1', trainingOpts = null, arenaTheme = null) {
     this.canvas = canvas;
     this.mode = mode;
     this.network = networkManager;
@@ -44,6 +44,7 @@ export class Game {
     this.aiDifficulty = aiDifficulty;
     this.aiMode = aiMode;
     this.trainingOpts = trainingOpts; // { type, difficulty }
+    this.arenaTheme = arenaTheme;
     this._destroyed = false;
     this._rafId = null;
 
@@ -199,7 +200,7 @@ export class Game {
 
   _initScene() {
     this.scene = new THREE.Scene();
-    this.scene.background = new THREE.Color(0x050510);
+    this.scene.background = new THREE.Color(this.arenaTheme ? this.arenaTheme.bg : 0x050510);
     this.scene.fog = new THREE.Fog(0x050510, 140, 300);
 
     this.camera = new THREE.PerspectiveCamera(
@@ -207,7 +208,7 @@ export class Game {
     );
     this.camera.position.set(0, 15, -30);
 
-    this.arena = new Arena(this.scene, this.world);
+    this.arena = new Arena(this.scene, this.world, this.arenaTheme);
 
     this.world.bodies.forEach(b => {
       if (b.type === CANNON.Body.STATIC && !b.material) {
@@ -338,7 +339,7 @@ export class Game {
 
   _initSceneMultiplayer() {
     this.scene = new THREE.Scene();
-    this.scene.background = new THREE.Color(0x050510);
+    this.scene.background = new THREE.Color(this.arenaTheme ? this.arenaTheme.bg : 0x050510);
     this.scene.fog = new THREE.Fog(0x050510, 140, 300);
 
     this.camera = new THREE.PerspectiveCamera(
@@ -346,7 +347,7 @@ export class Game {
     );
     this.camera.position.set(0, 15, -30);
 
-    this.arena = new Arena(this.scene, this.world);
+    this.arena = new Arena(this.scene, this.world, this.arenaTheme);
 
     this.world.bodies.forEach(b => {
       if (b.type === CANNON.Body.STATIC && !b.material) {
@@ -412,7 +413,9 @@ export class Game {
       this.scores.blue = data.blueScore;
       this.scores.orange = data.orangeScore;
       this.hud.updateScore(data.blueScore, data.orangeScore);
-      this.hud.showGoalScored(data.team);
+      const scorerName = data.scorerIdx >= 0 ? this.hud._getPlayerLabel(data.scorerIdx, this.maxPlayers) : null;
+      this.hud.showGoalScored(data.team, scorerName);
+      this._lastScorerName = scorerName;
 
       // Reset correction offset on state transition
       this._correctionOffset.x = 0;
@@ -1266,9 +1269,14 @@ export class Game {
     const goalSide = this.arena.isInGoal(this.ball.body.position);
     if (goalSide === 0) return;
 
+    let scorerIdx = -1;
     if (this.perfTracker) {
-      this.perfTracker.recordGoal(goalSide);
+      const result = this.perfTracker.recordGoal(goalSide);
+      scorerIdx = result.scorerIdx;
     }
+
+    // Resolve scorer name
+    const scorerName = scorerIdx >= 0 ? this.hud._getPlayerLabel(scorerIdx, this.allCars.length) : null;
 
     // Goal explosion at ball position
     const ballPos = this.ball.body.position;
@@ -1281,13 +1289,16 @@ export class Game {
 
     if (goalSide === 1) {
       this.scores.orange++;
-      this.hud.showGoalScored('orange');
+      this.hud.showGoalScored('orange', scorerName);
     } else {
       this.scores.blue++;
-      this.hud.showGoalScored('blue');
+      this.hud.showGoalScored('blue', scorerName);
     }
 
     this.hud.updateScore(this.scores.blue, this.scores.orange);
+
+    // Save scorer name for replay banner
+    this._lastScorerName = scorerName;
 
     // Save overtime flag for after replay
     this._goalWasOvertime = this.isOvertime;
@@ -1328,7 +1339,9 @@ export class Game {
 
   _enterGoalState() {
     this.state = 'goal';
-    this.goalResetTime = GAME.GOAL_RESET_TIME;
+    // If replay was skipped, skip the goal pause too
+    this.goalResetTime = this._replaySkipped ? 0.3 : GAME.GOAL_RESET_TIME;
+    this._replaySkipped = false;
 
     if (this._goalWasOvertime) {
       setTimeout(() => {
@@ -1344,7 +1357,8 @@ export class Game {
     const frames = this.replayBuffer.getRecentFrames(this.replayBuffer.frameCount);
     this.replayPlayer.start(frames);
     this.state = 'replay';
-    this.hud.showReplayIndicator(true);
+    this._replaySkipped = false;
+    this.hud.showReplayIndicator(true, this._lastScorerName || null);
 
     // Snapshot current keys so held keys don't instantly skip
     this._prevReplayKeys = { ...this.input.keys };
@@ -1411,6 +1425,7 @@ export class Game {
 
   _skipReplay() {
     if (this.state !== 'replay') return;
+    this._replaySkipped = true;
     this.replayPlayer.skip();
     this._onReplayFinished();
   }

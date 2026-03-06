@@ -132,21 +132,6 @@ function buildFromGLB(config) {
   const mCz = actualCenter.z;
   const mBottom = actualBox.min.y;
 
-  // --- Team color: underglow light pool (no visible geometry strips) ---
-  // Soft colored light on the ground beneath the car
-  const underGlowGeo = new THREE.PlaneGeometry(mW * 1.1, mL * 1.1);
-  const underGlowMat = new THREE.MeshBasicMaterial({
-    color: config.neonColor,
-    transparent: true,
-    opacity: 0.25,
-    side: THREE.DoubleSide,
-    depthWrite: false,
-  });
-  const underGlow = new THREE.Mesh(underGlowGeo, underGlowMat);
-  underGlow.rotation.x = -Math.PI / 2;
-  underGlow.position.set(mCx, mBottom - 0.04, mCz);
-  mesh.add(underGlow);
-
   // Point light casts team color onto the ground
   const bottomLight = new THREE.PointLight(config.neonColor, 2, 10);
   bottomLight.position.set(mCx, mBottom - 0.2, mCz);
@@ -660,19 +645,6 @@ function buildProceduralCarMesh(config) {
   const nRear = new THREE.Mesh(nFrontGeo.clone(), neonMat);
   nRear.position.set(0, -H * 0.1 + rideY, -L / 2 - 0.02);
   mesh.add(nRear);
-
-  // Underglow plane
-  const underGlowGeo = new THREE.PlaneGeometry(W * 0.8, L * 0.8);
-  const underGlowMat = new THREE.MeshBasicMaterial({
-    color: config.neonColor,
-    transparent: true,
-    opacity: 0.3,
-    side: THREE.DoubleSide,
-  });
-  const underGlow = new THREE.Mesh(underGlowGeo, underGlowMat);
-  underGlow.rotation.x = -Math.PI / 2;
-  underGlow.position.y = -H / 2 - 0.05 + rideY;
-  mesh.add(underGlow);
 
   // Bottom glow point light
   const bottomLight = new THREE.PointLight(config.neonColor, 1.5, 8);

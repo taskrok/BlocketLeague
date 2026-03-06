@@ -807,6 +807,23 @@ body {
   box-shadow: 0 0 20px rgba(0, 255, 255, 0.15), inset 0 0 20px rgba(0, 255, 255, 0.05);
 }
 
+.arena-selector-nav {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.arena-label {
+  font-size: 13px;
+  font-weight: 700;
+  letter-spacing: 2px;
+  text-transform: uppercase;
+  color: rgba(255, 255, 255, 0.6);
+  text-shadow: 0 0 8px rgba(255, 255, 255, 0.2);
+  min-width: 200px;
+  text-align: center;
+}
+
 .car-selector-buttons {
   display: flex;
   gap: 24px;
@@ -818,6 +835,13 @@ body {
   background: transparent;
   padding: 10px 32px;
   font-size: 14px;
+}
+
+/* Gamepad focus highlight */
+.gp-focus {
+  outline: 2px solid #00ffff;
+  outline-offset: 3px;
+  box-shadow: 0 0 12px rgba(0, 255, 255, 0.5), 0 0 24px rgba(0, 255, 255, 0.2);
 }
 
 .lobby-btn-back:hover {

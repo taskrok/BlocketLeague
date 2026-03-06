@@ -7,9 +7,14 @@
 import * as THREE from 'three';
 import { ARENA, COLORS } from '../../shared/constants.js';
 
-export function createArenaMaterial() {
+export function createArenaMaterial(theme = null) {
+  const floorColor = theme ? theme.floorColor : COLORS.FLOOR;
+  const gridCol1 = theme ? theme.gridColor1 : 0x0088ff;
+  const gridCol2 = theme ? theme.gridColor2 : 0xff2200;
+  const gridEmissive = theme ? theme.gridEmissive : 2.5;
+
   const material = new THREE.MeshStandardMaterial({
-    color: new THREE.Color(COLORS.FLOOR),
+    color: new THREE.Color(floorColor),
     roughness: 0.8,
     metalness: 0.2,
     side: THREE.DoubleSide,
@@ -20,9 +25,9 @@ export function createArenaMaterial() {
 
   material.onBeforeCompile = (shader) => {
     shader.uniforms.gridCellSize = { value: ARENA.GRID_CELL_SIZE };
-    shader.uniforms.gridColorBlue = { value: new THREE.Color(0x0088ff) };
-    shader.uniforms.gridColorRed = { value: new THREE.Color(0xff2200) };
-    shader.uniforms.gridEmissiveStrength = { value: 2.5 };
+    shader.uniforms.gridColorBlue = { value: new THREE.Color(gridCol1) };
+    shader.uniforms.gridColorRed = { value: new THREE.Color(gridCol2) };
+    shader.uniforms.gridEmissiveStrength = { value: gridEmissive };
 
     // Vertex shader: pass world position and world normal
     shader.vertexShader = shader.vertexShader.replace(
@@ -89,7 +94,7 @@ export function createArenaMaterial() {
     );
   };
 
-  material.customProgramCacheKey = () => 'arena-neon-grid-v3';
+  material.customProgramCacheKey = () => `arena-neon-grid-${gridCol1}-${gridCol2}`;
 
   return material;
 }

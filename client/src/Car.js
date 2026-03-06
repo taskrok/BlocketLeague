@@ -166,19 +166,6 @@ export class Car {
     rear.position.set(0, -0.05, -CAR.LENGTH / 2 - 0.02);
     this.mesh.add(rear);
 
-    // Undercar neon glow
-    const underGeo = new THREE.PlaneGeometry(CAR.WIDTH * 0.8, CAR.LENGTH * 0.8);
-    const underMat = new THREE.MeshBasicMaterial({
-      color: this.color,
-      transparent: true,
-      opacity: 0.3,
-      side: THREE.DoubleSide,
-    });
-    const under = new THREE.Mesh(underGeo, underMat);
-    under.rotation.x = -Math.PI / 2;
-    under.position.y = -CAR.HEIGHT / 2 - 0.05;
-    this.mesh.add(under);
-
     // Bottom glow light
     this.bottomLight = new THREE.PointLight(this.color, 1.5, 8);
     this.bottomLight.position.set(0, -0.5, 0);
@@ -1041,6 +1028,7 @@ export class Car {
     }
 
     this.boost = 34;
+    this.boostFlame.visible = false;
     this.hasJumped = false;
     this._jumpedFromWall = false;
     this.canDoubleJump = false;

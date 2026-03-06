@@ -9,6 +9,7 @@ import * as CANNON from 'cannon-es';
 import { ARENA, COLORS, COLLISION_GROUPS } from '../../shared/constants.js';
 import { createArenaGeometry } from './ArenaGeometry.js';
 import { createArenaMaterial } from './ArenaShader.js';
+import { ARENA_THEMES } from './ArenaThemes.js';
 const logoSvgUrl = '/BlocketLeagueLogo.svg';
 
 const HW = ARENA.WIDTH / 2;
@@ -21,10 +22,11 @@ const R  = ARENA.CURVE_RADIUS;
 const CR = ARENA.CORNER_RADIUS;  // XZ corner radius
 
 export class Arena {
-  constructor(scene, world) {
+  constructor(scene, world, theme = null) {
     this.scene = scene;
     this.world = world;
     this.meshes = [];
+    this.theme = theme || ARENA_THEMES[0];
 
     this._buildArenaShell();
     this._buildGrassFloor();
@@ -43,8 +45,8 @@ export class Arena {
     // Procedural striped grass shader — mowed-field look
     const grassMat = new THREE.ShaderMaterial({
       uniforms: {
-        baseColor1: { value: new THREE.Color(0x2d7a2d) },  // lighter green stripe
-        baseColor2: { value: new THREE.Color(0x1f5c1f) },  // darker green stripe
+        baseColor1: { value: new THREE.Color(this.theme.grass1) },
+        baseColor2: { value: new THREE.Color(this.theme.grass2) },
         stripeWidth: { value: 8.0 },                        // width of each mow stripe
         arenaHalfW: { value: HW },
         arenaHalfL: { value: HL },
@@ -112,7 +114,7 @@ export class Arena {
 
   _buildArenaShell() {
     const geometry = createArenaGeometry();
-    const material = createArenaMaterial();
+    const material = createArenaMaterial(this.theme);
 
     const mesh = new THREE.Mesh(geometry, material);
     mesh.receiveShadow = true;
@@ -455,7 +457,7 @@ export class Arena {
   // ========== LIGHTING ==========
 
   _buildLighting() {
-    const ambient = new THREE.AmbientLight(COLORS.AMBIENT, 0.8);
+    const ambient = new THREE.AmbientLight(this.theme.ambientColor, 0.8);
     this.scene.add(ambient);
 
     const positions = [
@@ -466,7 +468,7 @@ export class Arena {
     ];
 
     positions.forEach((pos) => {
-      const light = new THREE.PointLight(0x4466aa, 0.6, 110);
+      const light = new THREE.PointLight(this.theme.lightColor, 0.6, 110);
       light.position.set(...pos);
       this.scene.add(light);
     });
@@ -483,8 +485,8 @@ export class Arena {
   // ========== FIELD MARKINGS ==========
 
   _buildFieldMarkings() {
-    const blueColor = 0x0088ff;
-    const redColor = 0xff2200;
+    const blueColor = this.theme.markingBlue;
+    const redColor = this.theme.markingRed;
 
     // Center line — neutral white divider
     const centerMat = new THREE.MeshStandardMaterial({
@@ -592,7 +594,7 @@ export class Arena {
   // ========== EXTERIOR NEON TEXT ==========
 
   _buildExteriorText() {
-    const text = 'HIGH PING HEROES';
+    const text = this.theme.exteriorText || 'HIGH PING HEROES';
 
     // Render neon block letters to canvas
     const canvas = document.createElement('canvas');
@@ -610,12 +612,18 @@ export class Arena {
     ctx.textAlign = 'center';
     ctx.textBaseline = 'middle';
 
+    // Convert theme glow color to CSS hex
+    const gc = this.theme.exteriorGlow || 0x00ffff;
+    const glowHex = '#' + new THREE.Color(gc).getHexString();
+    const glowBright = '#' + new THREE.Color(gc).lerp(new THREE.Color(0xffffff), 0.4).getHexString();
+    const coreColor = '#' + new THREE.Color(gc).lerp(new THREE.Color(0xffffff), 0.8).getHexString();
+
     // Neon glow: layered soft shadows (outer → inner)
     [
-      { blur: 80, color: '#00ffff', alpha: 0.08 },
-      { blur: 40, color: '#00ffff', alpha: 0.15 },
-      { blur: 20, color: '#00ffff', alpha: 0.3 },
-      { blur: 8,  color: '#66ffff', alpha: 0.6 },
+      { blur: 80, color: glowHex, alpha: 0.08 },
+      { blur: 40, color: glowHex, alpha: 0.15 },
+      { blur: 20, color: glowHex, alpha: 0.3 },
+      { blur: 8,  color: glowBright, alpha: 0.6 },
     ].forEach(({ blur, color, alpha }) => {
       ctx.save();
       ctx.shadowColor = color;
@@ -628,7 +636,7 @@ export class Arena {
 
     // Bright core
     ctx.globalAlpha = 1.0;
-    ctx.fillStyle = '#eeffff';
+    ctx.fillStyle = coreColor;
     ctx.fillText(text, cx, cy);
 
     const texture = new THREE.CanvasTexture(canvas);

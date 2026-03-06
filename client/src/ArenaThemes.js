@@ -1,0 +1,78 @@
+// ============================================
+// Arena Themes — Visual presets for different arenas
+// ============================================
+
+export const ARENA_THEMES = [
+  {
+    id: 'highping',
+    name: 'High Ping Heroes Field',
+    bg: 0x050510,
+    grass1: 0x2d7a2d,
+    grass2: 0x1f5c1f,
+    floorColor: 0x0a0a1a,
+    gridColor1: 0x0088ff,
+    gridColor2: 0xff2200,
+    gridEmissive: 2.5,
+    ambientColor: 0x334466,
+    lightColor: 0x4466aa,
+    markingBlue: 0x0088ff,
+    markingRed: 0xff2200,
+    exteriorText: 'HIGH PING HEROES',
+    exteriorGlow: 0x00ffff,
+  },
+  {
+    id: 'neon',
+    name: 'Neon Nights Arena',
+    bg: 0x05000a,
+    grass1: 0x1a0a30,
+    grass2: 0x120822,
+    floorColor: 0x0a0515,
+    gridColor1: 0xcc00ff,
+    gridColor2: 0xff0088,
+    gridEmissive: 3.0,
+    ambientColor: 0x220033,
+    lightColor: 0x6622aa,
+    markingBlue: 0xcc00ff,
+    markingRed: 0xff0088,
+    exteriorText: 'NEON NIGHTS',
+    exteriorGlow: 0xdd44ff,
+  },
+  {
+    id: 'frost',
+    name: 'Frostbite Stadium',
+    bg: 0x040810,
+    grass1: 0x3a6080,
+    grass2: 0x2a4a65,
+    floorColor: 0x081020,
+    gridColor1: 0x00ccff,
+    gridColor2: 0x44ddff,
+    gridEmissive: 2.0,
+    ambientColor: 0x224466,
+    lightColor: 0x4488cc,
+    markingBlue: 0x00ccff,
+    markingRed: 0x44ddff,
+    exteriorText: 'FROSTBITE',
+    exteriorGlow: 0x66ddff,
+  },
+  {
+    id: 'solar',
+    name: 'Solar Flare Pitch',
+    bg: 0x0a0500,
+    grass1: 0x5a4a20,
+    grass2: 0x3d3210,
+    floorColor: 0x1a0a00,
+    gridColor1: 0xff8800,
+    gridColor2: 0xffcc00,
+    gridEmissive: 2.8,
+    ambientColor: 0x442200,
+    lightColor: 0x885522,
+    markingBlue: 0xff8800,
+    markingRed: 0xffcc00,
+    exteriorText: 'SOLAR FLARE',
+    exteriorGlow: 0xffaa22,
+  },
+];
+
+export function getArenaTheme(id) {
+  return ARENA_THEMES.find(t => t.id === id) || ARENA_THEMES[0];
+}

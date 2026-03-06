@@ -105,9 +105,13 @@ export class HUD {
     }, 800);
   }
 
-  showGoalScored(team) {
+  showGoalScored(team, scorerName = null) {
     const color = team === 'blue' ? '#0088ff' : '#ff6600';
-    this.goalTextEl.textContent = 'GOAL!';
+    if (scorerName) {
+      this.goalTextEl.innerHTML = `GOAL!<div style="font-size:18px;margin-top:6px;letter-spacing:2px;opacity:0.85">${scorerName}</div>`;
+    } else {
+      this.goalTextEl.textContent = 'GOAL!';
+    }
     this.goalTextEl.style.color = color;
     this.goalTextEl.style.textShadow = `0 0 40px ${color}, 0 0 80px ${color}`;
     this.goalTextEl.style.opacity = '1';
@@ -170,7 +174,7 @@ export class HUD {
     this.pingEl.textContent = `${ping}ms`;
   }
 
-  showReplayIndicator(show) {
+  showReplayIndicator(show, scorerName = null) {
     if (show) {
       if (this._replayEl) return; // already showing
       const el = document.createElement('div');
@@ -183,7 +187,18 @@ export class HUD {
         zIndex: '200',
         pointerEvents: 'none',
       });
+      const scorerHtml = scorerName ? `
+        <div style="
+          font-family: 'Orbitron', sans-serif;
+          font-size: 18px;
+          font-weight: 700;
+          color: rgba(255,255,255,0.85);
+          letter-spacing: 3px;
+          margin-bottom: 4px;
+          text-shadow: 0 0 16px rgba(255,255,255,0.5);
+        ">${scorerName}</div>` : '';
       el.innerHTML = `
+        ${scorerHtml}
         <div style="
           font-family: 'Orbitron', sans-serif;
           font-size: 28px;
