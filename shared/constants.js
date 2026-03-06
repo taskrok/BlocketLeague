@@ -32,10 +32,11 @@ export const CAR = {
   ACCELERATION: 36,
   BRAKE_FORCE: 70,
   TURN_SPEED: 2.8,
-  JUMP_FORCE: 12,
-  DOUBLE_JUMP_FORCE: 12,
+  JUMP_FORCE: 10.7,
+  DOUBLE_JUMP_FORCE: 10.7,
   DODGE_FORCE: 20,
-  DODGE_VERTICAL: 3,
+  DODGE_VERTICAL: 2.7,
+  GRAVITY_SCALE: 0.8,          // car gravity = world gravity * this (lighter than ball)
   BOOST_ACCELERATION: 34,
   MAX_BOOST: 100,
   BOOST_USAGE_RATE: 33.3,     // per second

@@ -524,6 +524,7 @@ body {
 }
 
 #mode-selector,
+#ai-mode-selector,
 #difficulty-selector {
   display: flex;
   flex-direction: column;

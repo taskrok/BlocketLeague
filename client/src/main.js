@@ -44,6 +44,12 @@ window.addEventListener('DOMContentLoaded', async () => {
   const orangeSlots = document.getElementById('orange-slots');
   const btnRoomBack = document.getElementById('btn-room-back');
 
+  // AI mode selector elements
+  const aiModeSelector = document.getElementById('ai-mode-selector');
+  const btnAI1v1 = document.getElementById('btn-ai-1v1');
+  const btnAI2v2 = document.getElementById('btn-ai-2v2');
+  const btnAIModeBack = document.getElementById('btn-ai-mode-back');
+
   // Difficulty selector elements
   const difficultySelector = document.getElementById('difficulty-selector');
   const btnDiffRookie = document.getElementById('btn-diff-rookie');
@@ -53,10 +59,25 @@ window.addEventListener('DOMContentLoaded', async () => {
 
   let selectedMode = null;
   let selectedDifficulty = 'pro';
+  let selectedAIMode = '1v1';
   let chosenVariant = null;
   let currentModelIndex = 0;
   let availableModelIds = [];
   let activeGame = null;
+
+  // --- Title music ---
+  const titleMusic = new Audio('/Blocket%20League!.mp3');
+  titleMusic.loop = true;
+  titleMusic.volume = 0.5;
+  let musicStarted = false;
+  const startMusic = () => {
+    if (!musicStarted) {
+      titleMusic.play().catch(() => {});
+      musicStarted = true;
+      document.removeEventListener('click', startMusic);
+    }
+  };
+  document.addEventListener('click', startMusic);
 
   // Room lobby state
   let selectedRoomMode = null; // '1v1' | '2v2'
@@ -240,9 +261,11 @@ window.addEventListener('DOMContentLoaded', async () => {
       networkManager = null;
     }
     lobby.style.display = '';
+    if (musicStarted) titleMusic.play().catch(() => {});
     lobbyButtons.style.display = '';
     roomLobby.style.display = 'none';
     carSelector.style.display = 'none';
+    aiModeSelector.style.display = 'none';
     difficultySelector.style.display = 'none';
     roomCode = null;
     selectedRoomMode = null;
@@ -323,11 +346,13 @@ window.addEventListener('DOMContentLoaded', async () => {
     stopPreview();
     disposePreview();
     carSelector.style.display = 'none';
+    titleMusic.pause();
 
     if (selectedMode === 'singleplayer') {
       lobby.style.display = 'none';
       requestFullscreen();
-      const game = new Game(canvas, 'singleplayer', null, chosenVariant, null, selectedDifficulty);
+      const game = new Game(canvas, 'singleplayer', null, chosenVariant, null, selectedDifficulty, selectedAIMode);
+      game.hud.onBackToLobby = () => returnToLobby();
       activeGame = game;
       window.game = game;
       return;
@@ -381,6 +406,7 @@ window.addEventListener('DOMContentLoaded', async () => {
       lobby.style.display = 'none';
       requestFullscreen();
       const game = new Game(canvas, 'multiplayer', network, chosenVariant, data);
+      game.hud.onBackToLobby = () => returnToLobby();
       game.onMatchEnd = () => {
         setTimeout(() => returnToLobby(), 4000);
       };
@@ -400,9 +426,27 @@ window.addEventListener('DOMContentLoaded', async () => {
 
   // --- Button handlers ---
 
+  // "Play vs AI" → show AI mode selector (1v1 / 2v2)
   btnSingle.addEventListener('click', () => {
     lobbyButtons.style.display = 'none';
+    aiModeSelector.style.display = 'flex';
+  });
+
+  btnAI1v1.addEventListener('click', () => {
+    selectedAIMode = '1v1';
+    aiModeSelector.style.display = 'none';
     difficultySelector.style.display = 'flex';
+  });
+
+  btnAI2v2.addEventListener('click', () => {
+    selectedAIMode = '2v2';
+    aiModeSelector.style.display = 'none';
+    difficultySelector.style.display = 'flex';
+  });
+
+  btnAIModeBack.addEventListener('click', () => {
+    aiModeSelector.style.display = 'none';
+    lobbyButtons.style.display = '';
   });
 
   btnDiffRookie.addEventListener('click', () => {
@@ -425,7 +469,7 @@ window.addEventListener('DOMContentLoaded', async () => {
 
   btnDiffBack.addEventListener('click', () => {
     difficultySelector.style.display = 'none';
-    lobbyButtons.style.display = '';
+    aiModeSelector.style.display = 'flex';
   });
 
   // "Play Online" → show room lobby

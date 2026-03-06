@@ -29,17 +29,19 @@ import {
 import { computeBallHitImpulse } from '../../shared/BallHitImpulse.js';
 import { PerformanceTracker } from '../../shared/PerformanceTracker.js';
 
-// Reusable temp vector for AI euler extraction
+// Reusable temp vectors
 const _aiEuler = new CANNON.Vec3();
+const _aimEuler = new CANNON.Vec3();
 
 export class Game {
-  constructor(canvas, mode = 'singleplayer', networkManager = null, playerVariant = null, joinedData = null, aiDifficulty = 'pro') {
+  constructor(canvas, mode = 'singleplayer', networkManager = null, playerVariant = null, joinedData = null, aiDifficulty = 'pro', aiMode = '1v1') {
     this.canvas = canvas;
     this.mode = mode;
     this.network = networkManager;
     this.playerVariant = playerVariant;
     this._joinedData = joinedData;
     this.aiDifficulty = aiDifficulty;
+    this.aiMode = aiMode;
     this._destroyed = false;
     this._rafId = null;
 
@@ -203,28 +205,75 @@ export class Game {
     const modelIds = modelLoader.getModelIds();
     const playerVariant = this.playerVariant || generateCarVariant(COLORS.CYAN, modelIds);
     playerVariant.bodyColor = COLORS.TEAM_BLUE_BODY;
-    const opponentVariant = generateCarVariant(COLORS.ORANGE, modelIds);
-    opponentVariant.bodyColor = COLORS.TEAM_ORANGE_BODY;
 
-    this.playerCar = new Car(
-      this.scene, this.world,
-      SPAWNS.PLAYER1, COLORS.CYAN, 1,
-      this.arena.trimeshBody, playerVariant
-    );
-    this.playerCar.body.material = this.carMaterial;
+    if (this.aiMode === '2v2') {
+      // 2v2: 4 cars — player + AI teammate (blue) vs 2 AI opponents (orange)
+      const allyVariant = generateCarVariant(COLORS.CYAN, modelIds);
+      allyVariant.bodyColor = COLORS.TEAM_BLUE_BODY;
+      const opp1Variant = generateCarVariant(COLORS.ORANGE, modelIds);
+      opp1Variant.bodyColor = COLORS.TEAM_ORANGE_BODY;
+      const opp2Variant = generateCarVariant(COLORS.ORANGE, modelIds);
+      opp2Variant.bodyColor = COLORS.TEAM_ORANGE_BODY;
 
-    this.opponentCar = new Car(
-      this.scene, this.world,
-      SPAWNS.PLAYER2, COLORS.ORANGE, -1,
-      this.arena.trimeshBody, opponentVariant
-    );
-    this.opponentCar.body.material = this.carMaterial;
+      this.playerCar = new Car(
+        this.scene, this.world,
+        SPAWNS.TEAM_BLUE[0], COLORS.CYAN, 1,
+        this.arena.trimeshBody, playerVariant
+      );
+      this.playerCar.body.material = this.carMaterial;
+
+      const allyCar = new Car(
+        this.scene, this.world,
+        SPAWNS.TEAM_BLUE[1], COLORS.CYAN, 1,
+        this.arena.trimeshBody, allyVariant
+      );
+      allyCar.body.material = this.carMaterial;
+
+      const opp1Car = new Car(
+        this.scene, this.world,
+        SPAWNS.TEAM_ORANGE[0], COLORS.ORANGE, -1,
+        this.arena.trimeshBody, opp1Variant
+      );
+      opp1Car.body.material = this.carMaterial;
+
+      const opp2Car = new Car(
+        this.scene, this.world,
+        SPAWNS.TEAM_ORANGE[1], COLORS.ORANGE, -1,
+        this.arena.trimeshBody, opp2Variant
+      );
+      opp2Car.body.material = this.carMaterial;
+
+      this.allCars = [this.playerCar, allyCar, opp1Car, opp2Car];
+      this.aiCars = [allyCar, opp1Car, opp2Car];
+      this.opponentCar = opp1Car; // legacy alias
+    } else {
+      // 1v1: 2 cars — player (blue) vs AI opponent (orange)
+      const opponentVariant = generateCarVariant(COLORS.ORANGE, modelIds);
+      opponentVariant.bodyColor = COLORS.TEAM_ORANGE_BODY;
+
+      this.playerCar = new Car(
+        this.scene, this.world,
+        SPAWNS.PLAYER1, COLORS.CYAN, 1,
+        this.arena.trimeshBody, playerVariant
+      );
+      this.playerCar.body.material = this.carMaterial;
+
+      this.opponentCar = new Car(
+        this.scene, this.world,
+        SPAWNS.PLAYER2, COLORS.ORANGE, -1,
+        this.arena.trimeshBody, opponentVariant
+      );
+      this.opponentCar.body.material = this.carMaterial;
+
+      this.allCars = [this.playerCar, this.opponentCar];
+      this.aiCars = [this.opponentCar];
+    }
 
     this._initBallCollisionHandler();
     this._initCarCollisionHandler();
 
     this.boostPads = new BoostPads(this.scene);
-    this.perfTracker = new PerformanceTracker(2);
+    this.perfTracker = new PerformanceTracker(this.allCars.length);
   }
 
   // ========== MULTIPLAYER SCENE INIT ==========
@@ -475,7 +524,8 @@ export class Game {
       // Track touch BEFORE impulse (singleplayer only)
       let carIdx = -1;
       if (this.perfTracker) {
-        carIdx = other === this.playerCar.body ? 0 : 1;
+        carIdx = this.allCars ? this.allCars.findIndex(c => c && c.body === other) : -1;
+        if (carIdx < 0) carIdx = other === this.playerCar.body ? 0 : 1;
         this.perfTracker.recordTouch(carIdx, ballPos, ballVel, carPos);
       }
 
@@ -499,10 +549,21 @@ export class Game {
   // ========== DEMOLITION (singleplayer) ==========
 
   _initCarCollisionHandler() {
-    this.playerCar.body.addEventListener('collide', (e) => {
-      if (!(e.body.collisionFilterGroup & COLLISION_GROUPS.CAR)) return;
-      this._handleCarDemolition(this.playerCar, this.opponentCar);
-    });
+    const half = Math.floor(this.allCars.length / 2);
+    for (let i = 0; i < this.allCars.length; i++) {
+      const carA = this.allCars[i];
+      carA.body.addEventListener('collide', (e) => {
+        if (!(e.body.collisionFilterGroup & COLLISION_GROUPS.CAR)) return;
+        // Find the other car
+        const carB = this.allCars.find(c => c && c !== carA && c.body === e.body);
+        if (!carB) return;
+        const idxB = this.allCars.indexOf(carB);
+        // Cross-team only: indices < half are blue, >= half are orange
+        const sameTeam = (i < half) === (idxB < half);
+        if (sameTeam) return;
+        this._handleCarDemolition(carA, carB);
+      });
+    }
   }
 
   _handleCarDemolition(carA, carB) {
@@ -525,8 +586,8 @@ export class Game {
     if (!victim) return;
 
     if (this.perfTracker && attacker) {
-      const attackerIdx = attacker === this.playerCar ? 0 : 1;
-      this.perfTracker.recordDemolition(attackerIdx);
+      const attackerIdx = this.allCars ? this.allCars.indexOf(attacker) : (attacker === this.playerCar ? 0 : 1);
+      if (attackerIdx >= 0) this.perfTracker.recordDemolition(attackerIdx);
     }
 
     this._demolishCar(victim);
@@ -534,11 +595,13 @@ export class Game {
 
   _demolishCar(car) {
     const pos = { x: car.body.position.x, y: car.body.position.y, z: car.body.position.z };
-    const color = car === this.playerCar ? COLORS.CYAN : COLORS.ORANGE;
+    const half = Math.floor(this.allCars.length / 2);
+    const idx = this.allCars.indexOf(car);
+    const color = idx < half ? COLORS.CYAN : COLORS.ORANGE;
     car.demolish();
     this._spawnExplosion(pos, color);
     this.replayBuffer.addEvent({ type: 'demolish', x: pos.x, y: pos.y, z: pos.z, color });
-    this.hud.showDemolished();
+    if (car === this.playerCar) this.hud.showDemolished();
   }
 
   _spawnExplosion(pos, color) {
@@ -821,25 +884,35 @@ export class Game {
       this.accumulator -= PHYSICS.TIMESTEP;
     }
 
-    this.playerCar._syncMesh();
-    this.opponentCar._syncMesh();
+    for (const car of this.allCars) car._syncMesh();
     this.ball.update(dt);
 
     if (this.state === 'playing' || this.state === 'overtime') {
       if (!this.playerCar.demolished) {
-        this.playerCar.update(inputState, dt);
+        const assisted = this._applyAimAssist(inputState);
+        this.playerCar.update(assisted, dt);
       }
       this._updateAI(dt);
-      this.playerCar.updateDemolition(dt, SPAWNS.PLAYER1, 1);
-      this.opponentCar.updateDemolition(dt, SPAWNS.PLAYER2, -1);
-      this.boostPads.update(dt, [this.playerCar, this.opponentCar]);
+
+      // Update demolition respawns for all cars
+      if (this.aiMode === '2v2') {
+        this.allCars[0].updateDemolition(dt, SPAWNS.TEAM_BLUE[0], 1);
+        this.allCars[1].updateDemolition(dt, SPAWNS.TEAM_BLUE[1], 1);
+        this.allCars[2].updateDemolition(dt, SPAWNS.TEAM_ORANGE[0], -1);
+        this.allCars[3].updateDemolition(dt, SPAWNS.TEAM_ORANGE[1], -1);
+      } else {
+        this.playerCar.updateDemolition(dt, SPAWNS.PLAYER1, 1);
+        this.opponentCar.updateDemolition(dt, SPAWNS.PLAYER2, -1);
+      }
+
+      this.boostPads.update(dt, this.allCars);
       if (this.perfTracker) {
         this.perfTracker.setMatchTime(GAME.MATCH_DURATION - this.matchTime);
       }
       this._updateTimer(dt);
 
       // Record frame for replay
-      this.replayBuffer.record(this.ball, [this.playerCar, this.opponentCar], this.boostPads);
+      this.replayBuffer.record(this.ball, this.allCars, this.boostPads);
 
       this._checkGoal();
     } else if (this.state === 'goal_celebration') {
@@ -893,12 +966,15 @@ export class Game {
     }
 
     if (this.state === 'playing' || this.state === 'overtime') {
+      // Apply aim assist for touch users before sending/applying
+      const assisted = this._applyAimAssist(inputState);
+
       // Send input to server
-      const input = this.network.sendInput(inputState);
+      const input = this.network.sendInput(assisted);
       this.network.addPendingInput(input);
 
       // Client-side prediction: apply input locally
-      this.playerCar.update(inputState, dt);
+      this.playerCar.update(assisted, dt);
 
       // Step local physics for player car prediction
       this.accumulator += dt;
@@ -1129,7 +1205,7 @@ export class Game {
     this._spawnGoalExplosion(goalPos, goalColor);
     this.replayBuffer.addEvent({ type: 'goal', x: goalPos.x, y: goalPos.y, z: goalPos.z, color: goalColor });
     // Flush the event into the buffer — no more frames are recorded after this
-    this.replayBuffer.record(this.ball, [this.playerCar, this.opponentCar], this.boostPads);
+    this.replayBuffer.record(this.ball, this.allCars, this.boostPads);
 
     if (goalSide === 1) {
       this.scores.orange++;
@@ -1145,10 +1221,7 @@ export class Game {
     this._goalWasOvertime = this.isOvertime;
 
     // Kill boost flames on all cars
-    const allCars = this.mode === 'singleplayer'
-      ? [this.playerCar, this.opponentCar]
-      : this.allCars;
-    for (const car of allCars) {
+    for (const car of this.allCars) {
       if (car && car.boostFlame) car.boostFlame.visible = false;
     }
 
@@ -1182,9 +1255,7 @@ export class Game {
   }
 
   _updateReplay(dt) {
-    const cars = this.mode === 'singleplayer'
-      ? [this.playerCar, this.opponentCar]
-      : this.allCars;
+    const cars = this.allCars;
 
     const prevIdx = this.replayPlayer.prevFrameIndex;
     const stillPlaying = this.replayPlayer.update(
@@ -1258,9 +1329,7 @@ export class Game {
     }
 
     // Restore boost trail visibility
-    const cars = this.mode === 'singleplayer'
-      ? [this.playerCar, this.opponentCar]
-      : this.allCars;
+    const cars = this.allCars;
     for (const car of cars) {
       if (car && car.boostFlame) {
         car.boostFlame.visible = true;
@@ -1302,7 +1371,7 @@ export class Game {
     if (this.perfTracker) this.perfTracker.resetTouchHistory();
 
     // Clear demolished state before reset
-    for (const car of [this.playerCar, this.opponentCar]) {
+    for (const car of this.allCars) {
       if (car.demolished) {
         car.demolished = false;
         car.respawnTimer = 0;
@@ -1311,8 +1380,16 @@ export class Game {
       }
     }
     this.ball.reset();
-    this.playerCar.reset(SPAWNS.PLAYER1, 1);
-    this.opponentCar.reset(SPAWNS.PLAYER2, -1);
+
+    if (this.aiMode === '2v2') {
+      this.allCars[0].reset(SPAWNS.TEAM_BLUE[0], 1);
+      this.allCars[1].reset(SPAWNS.TEAM_BLUE[1], 1);
+      this.allCars[2].reset(SPAWNS.TEAM_ORANGE[0], -1);
+      this.allCars[3].reset(SPAWNS.TEAM_ORANGE[1], -1);
+    } else {
+      this.playerCar.reset(SPAWNS.PLAYER1, 1);
+      this.opponentCar.reset(SPAWNS.PLAYER2, -1);
+    }
     this._startCountdown();
   }
 
@@ -1320,10 +1397,82 @@ export class Game {
     if (this.perfTracker) {
       const winningTeam = this.scores.blue > this.scores.orange ? 'blue' : 'orange';
       const mvpIdx = this.perfTracker.computeMVP(winningTeam);
-      this.hud.showMatchEnd(this.scores.blue, this.scores.orange, this.perfTracker.getStats(), mvpIdx, 2);
+      this.hud.showMatchEnd(this.scores.blue, this.scores.orange, this.perfTracker.getStats(), mvpIdx, this.allCars.length);
     } else {
       this.hud.showMatchEnd(this.scores.blue, this.scores.orange);
     }
+  }
+
+  // ========== MOBILE AIM ASSIST ==========
+
+  _applyAimAssist(inputState) {
+    // Only active when touch controls are loaded
+    if (!this.input._touch) return inputState;
+
+    const car = this.playerCar;
+    if (!car || car.demolished) return inputState;
+
+    const ballPos = this.ball.getPosition();
+    const carPos = car.getPosition();
+    const toBallX = ballPos.x - carPos.x;
+    const toBallZ = ballPos.z - carPos.z;
+    const distToBall = Math.sqrt(toBallX * toBallX + toBallZ * toBallZ);
+
+    // Car heading angle
+    car.body.quaternion.toEuler(_aimEuler);
+    const carYaw = _aimEuler.y;
+
+    // Angle from car to ball
+    const angleToBall = Math.atan2(toBallX, toBallZ);
+    let angleDiff = angleToBall - carYaw;
+    while (angleDiff > Math.PI) angleDiff -= 2 * Math.PI;
+    while (angleDiff < -Math.PI) angleDiff += 2 * Math.PI;
+    const absAngle = Math.abs(angleDiff);
+
+    // --- 1. Steering auto-correct ---
+    // When player steering is small and ball is in front, nudge toward it
+    if (car.isGrounded && Math.abs(inputState.steer) < 0.3 && absAngle < Math.PI / 2) {
+      // Strength scales with proximity (stronger when close, where precision matters most)
+      const proxFactor = Math.min(1, 30 / (distToBall + 5));
+      // Blend: 40% correction toward ball when stick is neutral, fading as stick input increases
+      const stickFade = 1 - Math.abs(inputState.steer) / 0.3;
+      const correction = Math.sign(angleDiff) * Math.min(absAngle * 0.4, 0.5) * proxFactor * stickFade;
+      inputState = { ...inputState, steer: inputState.steer + correction };
+      // Clamp
+      inputState.steer = Math.max(-1, Math.min(1, inputState.steer));
+    }
+
+    // --- 2. Approach magnetism ---
+    // When driving toward ball in a narrow cone, tighten aim to contact point
+    if (car.isGrounded && absAngle < 0.4 && distToBall < 25 && Math.abs(inputState.throttle) > 0.3) {
+      const magnetStrength = 0.25 * (1 - absAngle / 0.4) * Math.min(1, 15 / (distToBall + 2));
+      const magnetSteer = Math.sign(angleDiff) * magnetStrength;
+      inputState = { ...inputState, steer: inputState.steer + magnetSteer };
+      inputState.steer = Math.max(-1, Math.min(1, inputState.steer));
+    }
+
+    // --- 3. Auto-align dodge toward ball ---
+    // When double-jumping with no directional input, aim the dodge at the ball
+    if (inputState.jumpPressed && !car.isGrounded && car.canDoubleJump) {
+      const df = inputState.dodgeForward !== undefined ? inputState.dodgeForward : inputState.throttle;
+      const ds = inputState.dodgeSteer !== undefined ? inputState.dodgeSteer : inputState.steer;
+      if (df === 0 && ds === 0 && distToBall < 15) {
+        // Convert ball direction to car-local dodge input
+        const cosYaw = Math.cos(carYaw);
+        const sinYaw = Math.sin(carYaw);
+        // Rotate world-space toBall into car-local space
+        const localZ = toBallX * sinYaw + toBallZ * cosYaw;   // forward component
+        const localX = toBallX * cosYaw - toBallZ * sinYaw;   // right component
+        const len = Math.sqrt(localZ * localZ + localX * localX) || 1;
+        inputState = {
+          ...inputState,
+          dodgeForward: localZ / len,
+          dodgeSteer: localX / len,
+        };
+      }
+    }
+
+    return inputState;
   }
 
   // ========== AI (single-player only) ==========
@@ -1396,13 +1545,57 @@ export class Game {
   }
 
   _updateAI(dt) {
-    if (this.opponentCar.demolished) return;
+    // In 2v2, assign roles: on each team, car closest to ball = attacker, farther = support
+    let roles = null;
+    if (this.aiMode === '2v2') {
+      const rawBallPos = this.ball.getPosition();
+      roles = new Map();
+      // Blue team AI cars (indices >= 1 that are < half)
+      // Orange team AI cars (indices >= half)
+      const half = Math.floor(this.allCars.length / 2);
+      // Group AI cars by team
+      const blueAI = [];
+      const orangeAI = [];
+      for (const car of this.aiCars) {
+        const idx = this.allCars.indexOf(car);
+        if (idx < half) blueAI.push(car);
+        else orangeAI.push(car);
+      }
+      // Assign roles per team
+      for (const team of [blueAI, orangeAI]) {
+        if (team.length <= 1) {
+          for (const c of team) roles.set(c, 'attacker');
+          continue;
+        }
+        // Sort by distance to ball
+        const sorted = [...team].sort((a, b) => {
+          const ap = a.getPosition();
+          const bp = b.getPosition();
+          const da = (ap.x - rawBallPos.x) ** 2 + (ap.z - rawBallPos.z) ** 2;
+          const db = (bp.x - rawBallPos.x) ** 2 + (bp.z - rawBallPos.z) ** 2;
+          return da - db;
+        });
+        roles.set(sorted[0], 'attacker');
+        for (let i = 1; i < sorted.length; i++) roles.set(sorted[i], 'support');
+      }
+    }
 
+    for (const car of this.aiCars) {
+      if (car.demolished) continue;
+      const idx = this.allCars.indexOf(car);
+      const half = Math.floor(this.allCars.length / 2);
+      const teamDir = idx < half ? 1 : -1;
+      const role = roles ? roles.get(car) : 'attacker';
+      this._updateAICar(car, teamDir, role, dt);
+    }
+  }
+
+  _updateAICar(car, teamDir, role, dt) {
     const p = this._getAIParams();
-    const ENEMY_GOAL_Z = -ARENA_CONST.LENGTH / 2;
-    const OWN_GOAL_Z = ARENA_CONST.LENGTH / 2;
+    // teamDir: 1 = blue (attacks toward +Z), -1 = orange (attacks toward -Z)
+    const ENEMY_GOAL_Z = teamDir === 1 ? ARENA_CONST.LENGTH / 2 : -ARENA_CONST.LENGTH / 2;
+    const OWN_GOAL_Z = teamDir === 1 ? -ARENA_CONST.LENGTH / 2 : ARENA_CONST.LENGTH / 2;
 
-    const car = this.opponentCar;
     let ballPos = this.ball.getPosition();
     const ballVel = this.ball.body.velocity;
     const carPos = car.getPosition();
@@ -1419,7 +1612,6 @@ export class Game {
 
     // Rookie: add jitter to ball position (simulates imprecise reads)
     if (p.aimJitter > 0) {
-      // Stable jitter per ~200ms window so it's not jittery per frame
       const jitterSeed = Math.floor(performance.now() / 200);
       const jx = (Math.sin(jitterSeed * 1.7) * p.aimJitter);
       const jz = (Math.cos(jitterSeed * 2.3) * p.aimJitter);
@@ -1440,7 +1632,7 @@ export class Game {
     const toBallZ = ballPos.z - carPos.z;
     const distToBall = Math.sqrt(toBallX * toBallX + toBallZ * toBallZ);
 
-    // Ideal hit direction: ball → enemy goal
+    // Ideal hit direction: ball → enemy goal (flip for team direction)
     const goalDx = 0 - ballPos.x;
     const goalDz = ENEMY_GOAL_Z - ballPos.z;
     const goalDist = Math.sqrt(goalDx * goalDx + goalDz * goalDz) || 1;
@@ -1454,14 +1646,46 @@ export class Game {
 
     const approachDot = toBallNX * idealDirX + toBallNZ * idealDirZ;
 
-    // Decide mode
+    // Support role: position between ball and own goal instead of chasing ball
+    if (role === 'support') {
+      const midX = ballPos.x * 0.3;
+      const midZ = (ballPos.z + OWN_GOAL_Z) * 0.5;
+      const sDx = midX - carPos.x;
+      const sDz = midZ - carPos.z;
+      const sAngle = Math.atan2(sDx, sDz);
+      car.body.quaternion.toEuler(_aiEuler);
+      let sAngleDiff = sAngle - _aiEuler.y;
+      while (sAngleDiff > Math.PI) sAngleDiff -= 2 * Math.PI;
+      while (sAngleDiff < -Math.PI) sAngleDiff += 2 * Math.PI;
+      const sAbsAngle = Math.abs(sAngleDiff);
+      const sDist = Math.sqrt(sDx * sDx + sDz * sDz);
+
+      const sSteer = sAngleDiff > 0.05 ? 1 : sAngleDiff < -0.05 ? -1 : 0;
+      const sThrottle = sDist > 5 ? p.maxThrottle : 0.3;
+      const sBoost = p.useBoost && sDist > 30 && sAbsAngle < 0.3;
+      const sHandbrake = sAbsAngle > p.handbrakeAngle && car.body.velocity.length() > p.handbrakeSpeed;
+
+      car.update({
+        throttle: sThrottle, steer: sSteer, jump: false, jumpPressed: false,
+        boost: sBoost, ballCam: true, airRoll: 0, pitchUp: false, pitchDown: false,
+        handbrake: sHandbrake, dodgeForward: 0, dodgeSteer: 0,
+      }, dt);
+      return;
+    }
+
+    // Decide mode — use teamDir to determine defense zone
     let mode;
     let targetX, targetZ;
 
-    const inDefenseZone = ballPos.z > p.defenseZ;
-    const ballMovingToOwnGoal = ballVel.z > -5;
+    // Defense zone is on own-goal side
+    const ballOnOwnSide = teamDir === 1
+      ? ballPos.z < -p.defenseZ
+      : ballPos.z > p.defenseZ;
+    const ballMovingToOwnGoal = teamDir === 1
+      ? ballVel.z < 5
+      : ballVel.z > -5;
 
-    if (inDefenseZone && ballMovingToOwnGoal) {
+    if (ballOnOwnSide && ballMovingToOwnGoal) {
       mode = 'defend';
     } else if (approachDot > Math.cos(p.attackAngle)) {
       mode = 'attack';
@@ -1477,7 +1701,7 @@ export class Game {
       const sideSign = ballPos.x > 0 ? 1 : -1;
       if (distToBall < p.clearDist) {
         targetX = ballPos.x + sideSign * 5;
-        targetZ = ballPos.z - 3;
+        targetZ = ballPos.z + teamDir * 3;
       } else {
         targetX = ballPos.x;
         targetZ = (ballPos.z + OWN_GOAL_Z) / 2;
@@ -1517,8 +1741,9 @@ export class Game {
         boost = true;
       } else if (mode === 'rotate' && distToBall > 30) {
         boost = true;
-      } else if (mode === 'defend' && ballPos.z > OWN_GOAL_Z - 25) {
-        boost = true;
+      } else if (mode === 'defend') {
+        const distToOwnGoal = Math.abs(ballPos.z - OWN_GOAL_Z);
+        if (distToOwnGoal < 25) boost = true;
       }
     }
 
@@ -1541,7 +1766,7 @@ export class Game {
         && !car.isGrounded && car.canDoubleJump && !car.isDodging
         && ballPos.y < 5) {
       jumpPressed = true;
-      dodgeForward = toBallNZ > 0 ? -1 : 1; // flip toward ball
+      dodgeForward = toBallNZ > 0 ? -1 : 1;
       dodgeSteer = toBallNX > 0.3 ? 1 : toBallNX < -0.3 ? -1 : 0;
     }
 

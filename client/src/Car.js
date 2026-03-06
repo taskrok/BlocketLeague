@@ -237,6 +237,9 @@ export class Car {
 
   update(input, dt) {
     if (this.demolished) return;
+    // Reduce effective gravity for cars (lighter than ball for easier aerials)
+    // Counteract (1 - GRAVITY_SCALE) of world gravity with upward force
+    this.body.force.y -= PHYSICS.GRAVITY * CAR.MASS * (1 - CAR.GRAVITY_SCALE);
     this._checkGround();
     this._handleSelfRight(input, dt);
     this._handleMovement(input, dt);

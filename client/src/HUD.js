@@ -335,6 +335,21 @@ export class HUD {
     table.appendChild(tbody);
     el.appendChild(table);
 
+    // Back to Lobby button
+    const btn = document.createElement('button');
+    btn.className = 'lobby-btn';
+    btn.textContent = 'Back to Lobby';
+    Object.assign(btn.style, {
+      marginTop: '18px',
+      fontSize: '16px',
+      padding: '10px 32px',
+      cursor: 'pointer',
+    });
+    btn.addEventListener('click', () => {
+      if (this.onBackToLobby) this.onBackToLobby();
+    });
+    el.appendChild(btn);
+
     const container = document.getElementById('game-container');
     (container || document.body).appendChild(el);
   }
