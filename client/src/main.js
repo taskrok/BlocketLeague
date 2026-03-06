@@ -65,10 +65,26 @@ window.addEventListener('DOMContentLoaded', async () => {
   let availableModelIds = [];
   let activeGame = null;
 
-  // --- Title music ---
-  const titleMusic = new Audio('/Blocket%20League!.mp3');
-  titleMusic.loop = true;
+  // --- Title music (shuffle playlist) ---
+  const musicTracks = [
+    '/Blocket%20League!.mp3',
+    '/Jackson%20is%20good%20at%20Rocket%20League.mp3',
+    '/On%20the%20back%20of%20my%20car.mp3',
+    '/That%20was%20such%20a%20lucky%20hit.mp3',
+  ];
+  // Shuffle using Fisher-Yates
+  for (let i = musicTracks.length - 1; i > 0; i--) {
+    const j = Math.floor(Math.random() * (i + 1));
+    [musicTracks[i], musicTracks[j]] = [musicTracks[j], musicTracks[i]];
+  }
+  let musicIndex = 0;
+  const titleMusic = new Audio(musicTracks[0]);
   titleMusic.volume = 0.5;
+  titleMusic.addEventListener('ended', () => {
+    musicIndex = (musicIndex + 1) % musicTracks.length;
+    titleMusic.src = musicTracks[musicIndex];
+    titleMusic.play().catch(() => {});
+  });
   let musicStarted = false;
   const startMusic = () => {
     if (!musicStarted) {
