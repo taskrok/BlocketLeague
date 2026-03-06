@@ -1054,10 +1054,18 @@ export class Game {
       car.boost = carData.boost;
     }
 
-    // Set ball position/quaternion from interpolated data
+    // Set ball position from interpolated data + forward extrapolation
+    // The ball is interpolated ~adaptiveDelay ms behind the server, so
+    // extrapolate forward using velocity to reduce visual latency
     const ballData = interpState.ball;
     if (ballData) {
-      this.ball.body.position.set(ballData.px, ballData.py, ballData.pz);
+      const extrapMs = this.network._adaptiveDelay * 0.5; // compensate half the delay
+      const extrapS = extrapMs / 1000;
+      this.ball.body.position.set(
+        ballData.px + ballData.vx * extrapS,
+        ballData.py + ballData.vy * extrapS,
+        ballData.pz + ballData.vz * extrapS
+      );
       this.ball.body.velocity.set(ballData.vx, ballData.vy, ballData.vz);
       this.ball.body.quaternion.set(ballData.qx, ballData.qy, ballData.qz, ballData.qw);
     }
