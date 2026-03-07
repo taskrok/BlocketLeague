@@ -1078,6 +1078,12 @@ export class Game {
     if (this.state === 'goal_celebration') {
       this._celebrationTimer -= dt;
       this._updateExplosions(dt);
+      // Allow skipping celebration + replay entirely
+      if (this._checkReplaySkipInput()) {
+        this._replaySkipped = true;
+        this._onReplayFinished();
+        return;
+      }
       if (this._celebrationTimer <= 0) {
         if (this.replayBuffer.frameCount >= 30) {
           this._startReplay();
@@ -1535,11 +1541,18 @@ export class Game {
       }
     }
 
-    // In multiplayer, apply deferred countdown from server
-    if (this.mode !== 'singleplayer' && this._deferredCountdown) {
-      const data = this._deferredCountdown;
-      this._deferredCountdown = null;
-      this._applyCountdown(data);
+    // In multiplayer, apply deferred countdown from server or wait for it
+    if (this.mode !== 'singleplayer' && this.mode !== 'freeplay') {
+      if (this._deferredCountdown) {
+        const data = this._deferredCountdown;
+        this._deferredCountdown = null;
+        this._applyCountdown(data);
+      } else {
+        // Countdown hasn't arrived yet — enter a waiting state
+        // so the game doesn't run singleplayer reset logic.
+        // The countdown handler will pick it up when it arrives.
+        this.state = 'waiting_for_countdown';
+      }
     } else {
       this._enterGoalState();
     }
