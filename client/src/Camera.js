@@ -92,22 +92,31 @@ export class CameraController {
     _carPos.copy(this.target.body.position);
     _carQuat.copy(this.target.body.quaternion);
 
-    // Get car's backward direction projected onto the ground plane.
-    // Extract only yaw from the quaternion so roll/pitch (flips, aerials)
-    // don't cause the camera to spin.
-    _backward.set(0, 0, 1);
-    _backward.applyQuaternion(_carQuat);
-    const hLen = Math.sqrt(_backward.x * _backward.x + _backward.z * _backward.z);
-    if (hLen > 0.01) {
-      _backward.set(-_backward.x / hLen, 0, -_backward.z / hLen);
+    // Determine "behind" direction for camera placement.
+    // When airborne, use velocity (trajectory) direction so air rolls/pitch
+    // don't spin the camera. On ground, use car's facing direction.
+    const vel = this.target.body.velocity;
+    const hSpeed = Math.sqrt(vel.x * vel.x + vel.z * vel.z);
+    const isAirborne = !this.target.isGrounded && hSpeed > 3;
+
+    if (isAirborne) {
+      // Use velocity direction projected onto ground plane
+      _backward.set(-vel.x / hSpeed, 0, -vel.z / hSpeed);
     } else {
-      // Car is pointing straight up/down — use car's local -X as fallback heading
-      _backward.set(-1, 0, 0).applyQuaternion(_carQuat);
-      const fLen = Math.sqrt(_backward.x * _backward.x + _backward.z * _backward.z);
-      if (fLen > 0.001) {
-        _backward.set(_backward.x / fLen, 0, _backward.z / fLen);
+      // Use car's forward from quaternion, projected onto ground plane
+      _backward.set(0, 0, 1);
+      _backward.applyQuaternion(_carQuat);
+      const hLen = Math.sqrt(_backward.x * _backward.x + _backward.z * _backward.z);
+      if (hLen > 0.01) {
+        _backward.set(-_backward.x / hLen, 0, -_backward.z / hLen);
       } else {
-        _backward.set(0, 0, -1);
+        _backward.set(-1, 0, 0).applyQuaternion(_carQuat);
+        const fLen = Math.sqrt(_backward.x * _backward.x + _backward.z * _backward.z);
+        if (fLen > 0.001) {
+          _backward.set(_backward.x / fLen, 0, _backward.z / fLen);
+        } else {
+          _backward.set(0, 0, -1);
+        }
       }
     }
 

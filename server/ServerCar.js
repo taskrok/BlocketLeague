@@ -723,29 +723,51 @@ export class ServerCar {
     if (this.isGrounded || this.isDodging) return;
 
     const angVel = this.body.angularVelocity;
+    const hasPitchInput = input.pitchUp || input.pitchDown;
+    const hasYawInput = input.steer !== 0;
+    const hasRollInput = input.airRoll !== 0;
+    const hasAnyRotInput = hasPitchInput || hasYawInput || hasRollInput;
+
+    // Boost pitch rate right after jump for better aerial takeoff angle
+    const timeSinceJump = (Date.now() - this.jumpTime) / 1000;
+    const pitchBoost = timeSinceJump < 0.35 ? 1.5 : 1.0;
+    const pitchSpeed = CAR.AIR_PITCH_SPEED * pitchBoost;
 
     if (input.pitchUp) {
       const axis = this.body.quaternion.vmult(new CANNON.Vec3(1, 0, 0));
-      angVel.x += axis.x * -CAR.AIR_PITCH_SPEED * dt;
-      angVel.y += axis.y * -CAR.AIR_PITCH_SPEED * dt;
-      angVel.z += axis.z * -CAR.AIR_PITCH_SPEED * dt;
+      angVel.x += axis.x * -pitchSpeed * dt;
+      angVel.y += axis.y * -pitchSpeed * dt;
+      angVel.z += axis.z * -pitchSpeed * dt;
     }
     if (input.pitchDown) {
       const axis = this.body.quaternion.vmult(new CANNON.Vec3(1, 0, 0));
-      angVel.x += axis.x * CAR.AIR_PITCH_SPEED * dt;
-      angVel.y += axis.y * CAR.AIR_PITCH_SPEED * dt;
-      angVel.z += axis.z * CAR.AIR_PITCH_SPEED * dt;
+      angVel.x += axis.x * pitchSpeed * dt;
+      angVel.y += axis.y * pitchSpeed * dt;
+      angVel.z += axis.z * pitchSpeed * dt;
     }
 
-    if (input.steer !== 0) {
+    if (hasYawInput) {
       angVel.y += input.steer * CAR.AIR_YAW_SPEED * dt;
     }
 
-    if (input.airRoll !== 0) {
+    if (hasRollInput) {
       const axis = this.body.quaternion.vmult(new CANNON.Vec3(0, 0, 1));
       angVel.x += axis.x * input.airRoll * CAR.AIR_ROLL_SPEED * dt;
       angVel.y += axis.y * input.airRoll * CAR.AIR_ROLL_SPEED * dt;
       angVel.z += axis.z * input.airRoll * CAR.AIR_ROLL_SPEED * dt;
+    }
+
+    // When no rotational input, aggressively dampen angular velocity
+    // so the car holds its orientation instead of continuing to spin
+    if (!hasAnyRotInput) {
+      const dampRate = 1 - Math.exp(-12 * dt);
+      angVel.x *= (1 - dampRate);
+      angVel.y *= (1 - dampRate);
+      angVel.z *= (1 - dampRate);
+      const mag = angVel.x * angVel.x + angVel.y * angVel.y + angVel.z * angVel.z;
+      if (mag < 0.01) {
+        angVel.set(0, 0, 0);
+      }
     }
   }
 

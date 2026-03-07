@@ -286,12 +286,31 @@ export class GameRoom {
     let attacker = null;
     let victim = null;
 
+    // Only demolish if attacker is driving INTO the victim (dot > 0.5, ~60° cone)
+    // Side-by-side or same-direction travel won't demolish
     if (speedA >= CAR_CONST.SUPERSONIC_THRESHOLD && speedA > speedB) {
-      attacker = carA;
-      victim = carB;
-    } else if (speedB >= CAR_CONST.SUPERSONIC_THRESHOLD && speedB > speedA) {
-      attacker = carB;
-      victim = carA;
+      const va = carA.body.velocity;
+      const dx = carB.body.position.x - carA.body.position.x;
+      const dy = carB.body.position.y - carA.body.position.y;
+      const dz = carB.body.position.z - carA.body.position.z;
+      const dLen = Math.sqrt(dx * dx + dy * dy + dz * dz) || 1;
+      const dot = (va.x * dx + va.y * dy + va.z * dz) / (speedA * dLen);
+      if (dot > 0.5) {
+        attacker = carA;
+        victim = carB;
+      }
+    }
+    if (!victim && speedB >= CAR_CONST.SUPERSONIC_THRESHOLD && speedB > speedA) {
+      const vb = carB.body.velocity;
+      const dx = carA.body.position.x - carB.body.position.x;
+      const dy = carA.body.position.y - carB.body.position.y;
+      const dz = carA.body.position.z - carB.body.position.z;
+      const dLen = Math.sqrt(dx * dx + dy * dy + dz * dz) || 1;
+      const dot = (vb.x * dx + vb.y * dy + vb.z * dz) / (speedB * dLen);
+      if (dot > 0.5) {
+        attacker = carB;
+        victim = carA;
+      }
     }
 
     if (!victim) return;

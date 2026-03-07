@@ -34,6 +34,27 @@ import { TRAINING_PACKS } from './TrainingPacks.js';
 const _aiEuler = new CANNON.Vec3();
 const _aimEuler = new CANNON.Vec3();
 
+// AI team definitions for 2v2 mode — each team has a name and two car model IDs
+const AI_TEAMS = [
+  { name: 'First Responders', cars: ['ambulance', 'firetruck'] },
+  { name: 'Boys in Blue', cars: ['police', 'tractor-police'] },
+  { name: 'Street Racers', cars: ['race', 'sedan-sports'] },
+  { name: 'Future Shock', cars: ['race-future', 'hatchback-sports'] },
+  { name: 'Heavy Haul', cars: ['truck', 'truck-flat'] },
+  { name: 'Special Delivery', cars: ['delivery', 'delivery-flat'] },
+  { name: 'Sunday Drivers', cars: ['sedan', 'suv'] },
+  { name: 'Country Club', cars: ['suv-luxury', 'taxi'] },
+  { name: 'Mud Dogs', cars: ['tractor', 'tractor-shovel'] },
+  { name: 'City Workers', cars: ['garbage-truck', 'van'] },
+];
+
+function pickAITeam(availableModelIds) {
+  // Filter to teams whose models are both loaded
+  const valid = AI_TEAMS.filter(t => t.cars.every(c => availableModelIds.includes(c)));
+  if (valid.length === 0) return null;
+  return valid[Math.floor(Math.random() * valid.length)];
+}
+
 export class Game {
   constructor(canvas, mode = 'singleplayer', networkManager = null, playerVariant = null, joinedData = null, aiDifficulty = 'pro', aiMode = '1v1', trainingOpts = null, arenaTheme = null) {
     this.canvas = canvas;
@@ -245,12 +266,20 @@ export class Game {
       this.aiCars = [];
     } else if (this.aiMode === '2v2') {
       // 2v2: 4 cars — player + AI teammate (blue) vs 2 AI opponents (orange)
+      const aiTeam = pickAITeam(modelIds);
+      this._aiTeamName = aiTeam ? aiTeam.name : 'Orange';
+
       const allyVariant = generateCarVariant(COLORS.CYAN, modelIds);
       allyVariant.bodyColor = COLORS.TEAM_BLUE_BODY;
       const opp1Variant = generateCarVariant(COLORS.ORANGE, modelIds);
       opp1Variant.bodyColor = COLORS.TEAM_ORANGE_BODY;
       const opp2Variant = generateCarVariant(COLORS.ORANGE, modelIds);
       opp2Variant.bodyColor = COLORS.TEAM_ORANGE_BODY;
+
+      if (aiTeam) {
+        opp1Variant.modelId = aiTeam.cars[0];
+        opp2Variant.modelId = aiTeam.cars[1];
+      }
 
       this.playerCar = new Car(
         this.scene, this.world,
@@ -343,6 +372,11 @@ export class Game {
       }
     }
     this.hud.setPlayerNames(names);
+
+    // Set team names for 2v2
+    if (this.aiMode === '2v2' && this._aiTeamName) {
+      this.hud.setTeamNames('BLUE', this._aiTeamName.toUpperCase());
+    }
   }
 
   // ========== MULTIPLAYER SCENE INIT ==========
@@ -491,6 +525,7 @@ export class Game {
     this.network.on('gameOver', (data) => {
       this.state = 'ended';
       this.hud.showMatchEnd(data.blueScore, data.orangeScore, data.stats, data.mvpIdx, this.maxPlayers);
+      this._setupCelebration();
       if (this.onMatchEnd) this.onMatchEnd();
     });
 
@@ -657,22 +692,40 @@ export class Game {
     const speedA = carA.getSpeed();
     const speedB = carB.getSpeed();
 
-    // Demolition at supersonic speed
+    // Demolition at supersonic speed — but only if driving INTO the other car.
+    // Dot product of attacker velocity direction vs direction toward victim must be > 0.5
+    // (within ~60° cone). Side-by-side or same-direction travel won't demolish.
     if (speedA >= CAR_CONST.SUPERSONIC_THRESHOLD && speedA > speedB) {
-      if (this.perfTracker) {
-        const idx = this.allCars.indexOf(carA);
-        if (idx >= 0) this.perfTracker.recordDemolition(idx);
+      const va = carA.body.velocity;
+      const dx = carB.body.position.x - carA.body.position.x;
+      const dy = carB.body.position.y - carA.body.position.y;
+      const dz = carB.body.position.z - carA.body.position.z;
+      const dLen = Math.sqrt(dx * dx + dy * dy + dz * dz) || 1;
+      const dot = (va.x * dx + va.y * dy + va.z * dz) / (speedA * dLen);
+      if (dot > 0.5) {
+        if (this.perfTracker) {
+          const idx = this.allCars.indexOf(carA);
+          if (idx >= 0) this.perfTracker.recordDemolition(idx);
+        }
+        this._demolishCar(carB);
+        return;
       }
-      this._demolishCar(carB);
-      return;
     }
     if (speedB >= CAR_CONST.SUPERSONIC_THRESHOLD && speedB > speedA) {
-      if (this.perfTracker) {
-        const idx = this.allCars.indexOf(carB);
-        if (idx >= 0) this.perfTracker.recordDemolition(idx);
+      const vb = carB.body.velocity;
+      const dx = carA.body.position.x - carB.body.position.x;
+      const dy = carA.body.position.y - carB.body.position.y;
+      const dz = carA.body.position.z - carB.body.position.z;
+      const dLen = Math.sqrt(dx * dx + dy * dy + dz * dz) || 1;
+      const dot = (vb.x * dx + vb.y * dy + vb.z * dz) / (speedB * dLen);
+      if (dot > 0.5) {
+        if (this.perfTracker) {
+          const idx = this.allCars.indexOf(carB);
+          if (idx >= 0) this.perfTracker.recordDemolition(idx);
+        }
+        this._demolishCar(carA);
+        return;
       }
-      this._demolishCar(carA);
-      return;
     }
 
     // Sub-supersonic bump: faster car plows through, slower car gets launched
@@ -998,10 +1051,34 @@ export class Game {
     for (const car of this.allCars) car._syncMesh();
     this.ball.update(dt);
 
+    // Post-game celebration: allow player to jump, flip, and boost
+    if (this.state === 'ended') {
+      this.playerCar.boost = CAR_CONST.MAX_BOOST;
+      // Strip driving input — only allow jump, boost, air control
+      const celebInput = {
+        throttle: 0, steer: 0,
+        jump: inputState.jump, jumpPressed: inputState.jumpPressed,
+        boost: inputState.boost,
+        airRoll: inputState.airRoll,
+        pitchUp: inputState.pitchUp, pitchDown: inputState.pitchDown,
+        dodgeForward: inputState.dodgeForward, dodgeSteer: inputState.dodgeSteer,
+        handbrake: false,
+      };
+      this.playerCar.update(celebInput, dt);
+      for (const car of this.allCars) car._syncMesh();
+      this._updateExplosions(dt);
+      return;
+    }
+
     if (this.state === 'playing' || this.state === 'overtime') {
       if (!this.playerCar.demolished) {
         const assisted = this._applyAimAssist(inputState);
         this.playerCar.update(assisted, dt);
+      }
+
+      // Infinite boost in freeplay
+      if (this.mode === 'freeplay') {
+        this.playerCar.boost = CAR_CONST.MAX_BOOST;
       }
 
       if (this.mode !== 'freeplay') {
@@ -1091,6 +1168,33 @@ export class Game {
           this._onReplayFinished();
         }
       }
+      return;
+    }
+
+    // Post-game celebration: allow player to jump, flip, and boost
+    if (this.state === 'ended') {
+      this.playerCar.boost = CAR_CONST.MAX_BOOST;
+      const celebInput = {
+        throttle: 0, steer: 0,
+        jump: inputState.jump, jumpPressed: inputState.jumpPressed,
+        boost: inputState.boost,
+        airRoll: inputState.airRoll,
+        pitchUp: inputState.pitchUp, pitchDown: inputState.pitchDown,
+        dodgeForward: inputState.dodgeForward, dodgeSteer: inputState.dodgeSteer,
+        handbrake: false,
+      };
+      this.playerCar.update(celebInput, dt);
+
+      this.accumulator += dt;
+      while (this.accumulator >= PHYSICS.TIMESTEP) {
+        this.world.step(PHYSICS.TIMESTEP);
+        this.accumulator -= PHYSICS.TIMESTEP;
+      }
+
+      for (const car of this.allCars) {
+        if (car) car._syncMesh();
+      }
+      this._updateExplosions(dt);
       return;
     }
 
@@ -1617,6 +1721,42 @@ export class Game {
       this.hud.showMatchEnd(this.scores.blue, this.scores.orange, this.perfTracker.getStats(), mvpIdx, this.allCars.length);
     } else {
       this.hud.showMatchEnd(this.scores.blue, this.scores.orange);
+    }
+    this._setupCelebration();
+  }
+
+  _setupCelebration() {
+    // Hide the ball off-screen
+    this.ball.body.position.set(0, -50, 0);
+    this.ball.body.velocity.set(0, 0, 0);
+    this.ball.mesh.visible = false;
+
+    // Line up all cars at midfield facing the camera
+    const carCount = this.allCars.filter(c => c).length;
+    const spacing = 6;
+    const startX = -((carCount - 1) * spacing) / 2;
+
+    this.allCars.forEach((car, i) => {
+      if (!car) return;
+      // Restore demolished cars for celebration
+      if (car.demolished) {
+        car.demolished = false;
+        car.respawnTimer = 0;
+        car.body.collisionFilterMask = COLLISION_GROUPS.ARENA_BOXES | COLLISION_GROUPS.BALL | COLLISION_GROUPS.CAR;
+        car.mesh.visible = true;
+      }
+      const x = startX + i * spacing;
+      car.body.position.set(x, 2, 0);
+      car.body.velocity.set(0, 0, 0);
+      car.body.angularVelocity.set(0, 0, 0);
+      // Face toward positive Z (toward camera default position)
+      car.body.quaternion.setFromEuler(0, Math.PI, 0);
+      car._syncMesh();
+    });
+
+    // Position camera for a nice view of the lineup
+    if (this.cameraController) {
+      this.cameraController.resetSmoothing();
     }
   }
 
