@@ -399,9 +399,23 @@ export class Game {
     });
 
     this.network.on('gameState', (snapshot) => {
-      // Only reconcile player car during active gameplay
       if (this.state === 'playing' || this.state === 'overtime') {
+        // Active gameplay: full reconciliation with prediction replay
         this._reconcile(snapshot);
+      } else if (this.state === 'countdown') {
+        // During countdown: snap player car to server position (no prediction needed)
+        const myState = snapshot.players[this.playerNumber];
+        if (myState && this.playerCar) {
+          this.playerCar.body.position.set(myState.px, myState.py, myState.pz);
+          this.playerCar.body.velocity.set(0, 0, 0);
+          this.playerCar.body.quaternion.set(myState.qx, myState.qy, myState.qz, myState.qw);
+          this.playerCar.body.angularVelocity.set(0, 0, 0);
+          this.playerCar.boost = myState.boost;
+          this._correctionOffset.x = 0;
+          this._correctionOffset.y = 0;
+          this._correctionOffset.z = 0;
+          this.playerCar._syncMesh();
+        }
       }
     });
 
@@ -1539,6 +1553,18 @@ export class Game {
     this._correctionOffset.z = 0;
     this.network.pendingInputs = [];
     this.replayBuffer.clear();
+    this._ballTarget = null; // reset ball visual target so it picks up fresh server state
+
+    // Reset demolished state on all cars so they're visible for countdown
+    for (const car of this.allCars) {
+      if (car && car.demolished) {
+        car.demolished = false;
+        car.respawnTimer = 0;
+        car.body.collisionFilterMask = COLLISION_GROUPS.ARENA_BOXES | COLLISION_GROUPS.BALL | COLLISION_GROUPS.CAR;
+        car.mesh.visible = true;
+      }
+    }
+
     if (data.count === 0) {
       this.state = 'playing';
     }
