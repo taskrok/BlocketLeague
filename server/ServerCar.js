@@ -349,6 +349,8 @@ export class ServerCar {
   _handleSelfRight(input, dt) {
     if (this.onWall) return;
     if (this.isDodging || this._dodgeDecaying) return;
+    if (this.hasJumped) return;
+    if (this.body.velocity.y > 3) return;
 
     const up = this.body.quaternion.vmult(new CANNON.Vec3(0, 1, 0));
     const nearFloor = this.body.position.y < CAR.HEIGHT * 3;

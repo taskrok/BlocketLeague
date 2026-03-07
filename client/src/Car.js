@@ -542,6 +542,8 @@ export class Car {
   _handleSelfRight(input, dt) {
     if (this.onWall) return; // don't self-right when on a wall
     if (this.isDodging || this._dodgeDecaying) return; // let flips complete
+    if (this.hasJumped) return; // don't fight intentional aerial tilt after jumping
+    if (this.body.velocity.y > 3) return; // car is rising — don't interfere
 
     _v1.set(0, 1, 0);
     const up = this.body.quaternion.vmult(_v1);

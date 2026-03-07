@@ -225,6 +225,8 @@ export class NetworkManager {
   }
 
   _lerpBall(a, b, t) {
+    // SLERP for ball quaternion (smooth spin interpolation)
+    const sq = slerp(a.qx, a.qy, a.qz, a.qw, b.qx, b.qy, b.qz, b.qw, t);
     return {
       px: a.px + (b.px - a.px) * t,
       py: a.py + (b.py - a.py) * t,
@@ -232,10 +234,10 @@ export class NetworkManager {
       vx: a.vx + (b.vx - a.vx) * t,
       vy: a.vy + (b.vy - a.vy) * t,
       vz: a.vz + (b.vz - a.vz) * t,
-      qx: a.qx + (b.qx - a.qx) * t,
-      qy: a.qy + (b.qy - a.qy) * t,
-      qz: a.qz + (b.qz - a.qz) * t,
-      qw: a.qw + (b.qw - a.qw) * t,
+      qx: sq[0],
+      qy: sq[1],
+      qz: sq[2],
+      qw: sq[3],
     };
   }
 

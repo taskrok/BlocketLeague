@@ -192,6 +192,13 @@ export class Game {
       }
     ));
 
+    this.world.addContactMaterial(new CANNON.ContactMaterial(
+      carMaterial, carMaterial, {
+        restitution: 0.05,
+        friction: 0.0,
+      }
+    ));
+
     this.world.defaultContactMaterial.restitution = 0.3;
     this.world.defaultContactMaterial.friction = 0.0;
   }
@@ -622,36 +629,60 @@ export class Game {
         // Cross-team only: indices < half are blue, >= half are orange
         const sameTeam = (i < half) === (idxB < half);
         if (sameTeam) return;
-        this._handleCarDemolition(carA, carB);
+        this._handleCarCollision(carA, carB);
       });
     }
   }
 
-  _handleCarDemolition(carA, carB) {
+  _handleCarCollision(carA, carB) {
     if (carA.demolished || carB.demolished) return;
 
     const speedA = carA.getSpeed();
     const speedB = carB.getSpeed();
 
-    let attacker = null;
-    let victim = null;
-
+    // Demolition at supersonic speed
     if (speedA >= CAR_CONST.SUPERSONIC_THRESHOLD && speedA > speedB) {
-      attacker = carA;
-      victim = carB;
-    } else if (speedB >= CAR_CONST.SUPERSONIC_THRESHOLD && speedB > speedA) {
-      attacker = carB;
-      victim = carA;
+      if (this.perfTracker) {
+        const idx = this.allCars.indexOf(carA);
+        if (idx >= 0) this.perfTracker.recordDemolition(idx);
+      }
+      this._demolishCar(carB);
+      return;
+    }
+    if (speedB >= CAR_CONST.SUPERSONIC_THRESHOLD && speedB > speedA) {
+      if (this.perfTracker) {
+        const idx = this.allCars.indexOf(carB);
+        if (idx >= 0) this.perfTracker.recordDemolition(idx);
+      }
+      this._demolishCar(carA);
+      return;
     }
 
-    if (!victim) return;
+    // Sub-supersonic bump: faster car plows through, slower car gets launched
+    if (speedA < 2 && speedB < 2) return; // both nearly stationary, let physics handle it
 
-    if (this.perfTracker && attacker) {
-      const attackerIdx = this.allCars ? this.allCars.indexOf(attacker) : (attacker === this.playerCar ? 0 : 1);
-      if (attackerIdx >= 0) this.perfTracker.recordDemolition(attackerIdx);
-    }
+    const bumper = speedA >= speedB ? carA : carB;
+    const bumped = bumper === carA ? carB : carA;
 
-    this._demolishCar(victim);
+    // Direction from bumper to bumped
+    const dx = bumped.body.position.x - bumper.body.position.x;
+    const dz = bumped.body.position.z - bumper.body.position.z;
+    const dist = Math.sqrt(dx * dx + dz * dz) || 1;
+    const nx = dx / dist;
+    const nz = dz / dist;
+
+    const bumperSpeed = bumper.getSpeed();
+    const bumpStrength = Math.min(bumperSpeed * 0.6, 20);
+
+    // Launch the bumped car in bump direction + upward
+    bumped.body.velocity.x += nx * bumpStrength;
+    bumped.body.velocity.z += nz * bumpStrength;
+    bumped.body.velocity.y += bumpStrength * 0.4;
+
+    // Bumper barely affected — just reduce a little speed
+    const bv = bumper.body.velocity;
+    bv.x *= 0.85;
+    bv.z *= 0.85;
   }
 
   _demolishCar(car) {
@@ -1087,8 +1118,8 @@ export class Game {
       }
     }
 
-    // Decay correction offset for smooth reconciliation
-    const decay = 1 - NETWORK.BLEND_RATE;
+    // Decay correction offset for smooth reconciliation (frame-rate independent)
+    const decay = Math.exp(-10 * dt); // smooth exponential decay ~10 Hz half-life
     this._correctionOffset.x *= decay;
     this._correctionOffset.y *= decay;
     this._correctionOffset.z *= decay;
@@ -1106,7 +1137,13 @@ export class Game {
     body.position.y -= oy;
     body.position.z -= oz;
 
+    // Extrapolate remote cars forward using velocity for smooth motion between server updates
     for (const { car } of this.remoteCars) {
+      if (!car.demolished) {
+        car.body.position.x += car.body.velocity.x * dt;
+        car.body.position.y += car.body.velocity.y * dt;
+        car.body.position.z += car.body.velocity.z * dt;
+      }
       car._syncMesh();
     }
     this.ball.update(dt);
@@ -1167,10 +1204,11 @@ export class Game {
     const offsetDist = Math.sqrt(newOffX * newOffX + newOffY * newOffY + newOffZ * newOffZ);
 
     if (offsetDist > NETWORK.SNAP_THRESHOLD) {
-      // Large error: snap (zero offset, no smoothing)
-      this._correctionOffset.x = 0;
-      this._correctionOffset.y = 0;
-      this._correctionOffset.z = 0;
+      // Large error: clamp offset to threshold distance and let it blend out
+      const scale = NETWORK.SNAP_THRESHOLD / offsetDist;
+      this._correctionOffset.x = newOffX * scale;
+      this._correctionOffset.y = newOffY * scale;
+      this._correctionOffset.z = newOffZ * scale;
     } else {
       // Small error: carry visual offset (it decays each frame in _loopMultiplayer)
       this._correctionOffset.x = newOffX;
@@ -1210,7 +1248,7 @@ export class Game {
     // extrapolate forward using velocity to reduce visual latency
     const ballData = interpState.ball;
     if (ballData) {
-      const extrapMs = this.network._adaptiveDelay * 0.5; // compensate half the delay
+      const extrapMs = this.network._adaptiveDelay; // compensate full interpolation delay
       const extrapS = extrapMs / 1000;
       this.ball.body.position.set(
         ballData.px + ballData.vx * extrapS,

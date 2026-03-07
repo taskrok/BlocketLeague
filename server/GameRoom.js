@@ -360,20 +360,18 @@ export class GameRoom {
     this._stopLoops();
 
     const physicsMs = 1000 / NETWORK.TICK_RATE;
-    const broadcastMs = 1000 / NETWORK.SEND_RATE;
+    // Broadcast every N physics ticks instead of independent setInterval
+    // This eliminates timing drift between physics and broadcast
+    this._broadcastTickCounter = 0;
+    this._broadcastEveryNTicks = Math.round(NETWORK.TICK_RATE / NETWORK.SEND_RATE); // 60/30 = 2
 
     this._physicsInterval = setInterval(() => this._physicsTick(), physicsMs);
-    this._broadcastInterval = setInterval(() => this._broadcast(), broadcastMs);
   }
 
   _stopLoops() {
     if (this._physicsInterval) {
       clearInterval(this._physicsInterval);
       this._physicsInterval = null;
-    }
-    if (this._broadcastInterval) {
-      clearInterval(this._broadcastInterval);
-      this._broadcastInterval = null;
     }
     if (this._countdownInterval) {
       clearInterval(this._countdownInterval);
@@ -431,6 +429,13 @@ export class GameRoom {
     }
 
     this.tick++;
+
+    // Broadcast on every Nth physics tick (synchronized, no drift)
+    this._broadcastTickCounter++;
+    if (this._broadcastTickCounter >= this._broadcastEveryNTicks) {
+      this._broadcastTickCounter = 0;
+      this._broadcast();
+    }
   }
 
   _checkGoal() {

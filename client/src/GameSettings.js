@@ -175,6 +175,7 @@ export class GameSettings {
       { id: 'controls', label: 'Keys' },
       { id: 'controller', label: 'Pad' },
       { id: 'audio', label: 'Audio' },
+      { id: 'display', label: 'Display' },
     ];
     this._tabButtons = {};
     for (const tab of tabs) {
@@ -207,6 +208,10 @@ export class GameSettings {
     // Audio pane
     this._audioPane = this._buildAudioPane();
     this._tabContent.appendChild(this._audioPane);
+
+    // Display pane
+    this._displayPane = this._buildDisplayPane();
+    this._tabContent.appendChild(this._displayPane);
 
     this.panel.appendChild(this._tabContent);
 
@@ -465,17 +470,26 @@ export class GameSettings {
     slidersWrap.appendChild(row);
     pane.appendChild(slidersWrap);
 
-    // --- Display section ---
-    const displayTitle = document.createElement('div');
-    displayTitle.className = 'cs-label';
-    displayTitle.style.marginTop = '16px';
-    displayTitle.style.marginBottom = '8px';
-    displayTitle.style.color = 'rgba(255,255,255,0.4)';
-    displayTitle.style.fontSize = '11px';
-    displayTitle.style.letterSpacing = '2px';
-    displayTitle.style.textTransform = 'uppercase';
-    displayTitle.textContent = 'Display';
-    pane.appendChild(displayTitle);
+    const resetBtn = document.createElement('button');
+    resetBtn.className = 'cs-reset';
+    resetBtn.style.marginTop = '16px';
+    resetBtn.textContent = 'Reset to Defaults';
+    resetBtn.addEventListener('click', () => {
+      this._audioVolume = 0.5;
+      this._audioSlider.input.value = 0.5;
+      this._audioSlider.valSpan.textContent = '50';
+      this._applyAudioVolume();
+      this._saveAudioSettings();
+    });
+    pane.appendChild(resetBtn);
+
+    return pane;
+  }
+
+  _buildDisplayPane() {
+    const pane = document.createElement('div');
+    pane.className = 'gs-pane';
+    pane.dataset.pane = 'display';
 
     // Fullscreen toggle button
     const fsBtn = document.createElement('button');
@@ -516,22 +530,6 @@ export class GameSettings {
     afRow.appendChild(afCheck);
     afRow.appendChild(afLabel);
     pane.appendChild(afRow);
-
-    const resetBtn = document.createElement('button');
-    resetBtn.className = 'cs-reset';
-    resetBtn.style.marginTop = '16px';
-    resetBtn.textContent = 'Reset to Defaults';
-    resetBtn.addEventListener('click', () => {
-      this._audioVolume = 0.5;
-      this._audioSlider.input.value = 0.5;
-      this._audioSlider.valSpan.textContent = '50';
-      this._applyAudioVolume();
-      this._saveAudioSettings();
-      this._autoFullscreen = false;
-      afCheck.checked = false;
-      this._saveGeneralSettings();
-    });
-    pane.appendChild(resetBtn);
 
     return pane;
   }
