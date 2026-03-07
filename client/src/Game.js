@@ -70,6 +70,9 @@ export class Game {
     // Smooth reconciliation: visual correction offset decays over time
     this._correctionOffset = { x: 0, y: 0, z: 0 };
 
+    // Server-authoritative ball target for smooth visual interpolation (multiplayer)
+    this._ballTarget = null;
+
     // Deferred countdown events (buffered during replay/celebration)
     this._deferredCountdown = null;
 
@@ -1146,7 +1149,9 @@ export class Game {
       }
       car._syncMesh();
     }
-    this.ball.update(dt);
+
+    // Smooth ball visual: interpolate toward server target + extrapolate with velocity
+    this._updateBallVisual(dt);
 
     // Animate boost pads (visual only)
     this.boostPads.update(dt, []);
@@ -1243,21 +1248,45 @@ export class Game {
       car.boost = carData.boost;
     }
 
-    // Set ball position from interpolated data + forward extrapolation
-    // The ball is interpolated ~adaptiveDelay ms behind the server, so
-    // extrapolate forward using velocity to reduce visual latency
+    // Ball is 100% server-authoritative — no client physics, just smooth interpolation.
+    // Store the interpolated target and let _updateBallVisual() smoothly track it.
     const ballData = interpState.ball;
     if (ballData) {
-      const extrapMs = this.network._adaptiveDelay; // compensate full interpolation delay
-      const extrapS = extrapMs / 1000;
-      this.ball.body.position.set(
-        ballData.px + ballData.vx * extrapS,
-        ballData.py + ballData.vy * extrapS,
-        ballData.pz + ballData.vz * extrapS
-      );
-      this.ball.body.velocity.set(ballData.vx, ballData.vy, ballData.vz);
-      this.ball.body.quaternion.set(ballData.qx, ballData.qy, ballData.qz, ballData.qw);
+      this._ballTarget = ballData;
     }
+  }
+
+  _updateBallVisual(dt) {
+    const target = this._ballTarget;
+    if (!target) {
+      this.ball.update(dt);
+      return;
+    }
+
+    const body = this.ball.body;
+
+    // Extrapolate target position forward using velocity (reduces perceived lag)
+    const extrapS = dt; // one frame ahead
+    const tx = target.px + target.vx * extrapS;
+    const ty = target.py + target.vy * extrapS;
+    const tz = target.pz + target.vz * extrapS;
+
+    // Smoothly blend current position toward target (fast lerp for responsiveness)
+    const lerp = 1 - Math.exp(-20 * dt); // ~20Hz blend rate — very responsive
+    body.position.x += (tx - body.position.x) * lerp;
+    body.position.y += (ty - body.position.y) * lerp;
+    body.position.z += (tz - body.position.z) * lerp;
+
+    // Also extrapolate between updates: drift toward target using velocity
+    body.position.x += target.vx * dt * (1 - lerp);
+    body.position.y += target.vy * dt * (1 - lerp);
+    body.position.z += target.vz * dt * (1 - lerp);
+
+    // Set velocity for visual spin calculation
+    body.velocity.set(target.vx, target.vy, target.vz);
+
+    // Update visual (spin, glow, shadow)
+    this.ball.update(dt);
   }
 
   _syncBoostPads(bitmask) {
