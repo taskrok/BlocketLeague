@@ -84,8 +84,9 @@ export class Ball {
       this.sphere.add(patch);
     });
 
-    // Inner glow light
-    this.light = new THREE.PointLight(COLORS.BALL, 1.0, 20);
+    // Inner glow light (smaller range on touch devices to avoid visible aura)
+    const isMobile = 'ontouchstart' in window || navigator.maxTouchPoints > 0;
+    this.light = new THREE.PointLight(COLORS.BALL, isMobile ? 0.4 : 1.0, isMobile ? 8 : 20);
     this.mesh.add(this.light);
 
     // Ground shadow indicator (ring on the floor below ball)
@@ -142,7 +143,9 @@ export class Ball {
     this.mesh.quaternion.copy(this._spinQuat);
 
     // Update light intensity based on speed
-    this.light.intensity = 0.8 + Math.min(curSpeed * 0.05, 1.5);
+    this.light.intensity = this.light.distance <= 8
+      ? 0.3 + Math.min(curSpeed * 0.02, 0.5)   // mobile: subtle
+      : 0.8 + Math.min(curSpeed * 0.05, 1.5);   // desktop: full glow
 
     // Emissive intensity based on speed
     const intensity = 0.3 + Math.min(curSpeed * 0.02, 0.8);

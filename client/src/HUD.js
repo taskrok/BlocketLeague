@@ -33,6 +33,8 @@ export class HUD {
 
     // Player names for scoreboard
     this._playerNames = [];
+    // Team names for 2v2 (blue, orange)
+    this._teamNames = { blue: 'BLUE', orange: 'ORANGE' };
 
     // Ping display (created dynamically for multiplayer)
     this.pingEl = null;
@@ -105,6 +107,36 @@ export class HUD {
     }, 800);
   }
 
+  showVsBanner(blueTeamName, orangeTeamName) {
+    if (this._vsBanner) this._vsBanner.remove();
+    const el = document.createElement('div');
+    el.id = 'vs-banner';
+    Object.assign(el.style, {
+      position: 'fixed', top: '18%', left: '50%', transform: 'translateX(-50%)',
+      zIndex: '200', textAlign: 'center', pointerEvents: 'none',
+      fontFamily: "'Rajdhani', 'Segoe UI', Arial, sans-serif",
+      opacity: '0', transition: 'opacity 0.5s',
+    });
+    el.innerHTML = `
+      <div style="font-size:32px;font-weight:800;letter-spacing:3px;text-transform:uppercase">
+        <span style="color:#0088ff;text-shadow:0 0 20px rgba(0,136,255,0.5)">${blueTeamName}</span>
+        <span style="color:rgba(255,255,255,0.4);font-size:20px;margin:0 12px;vertical-align:middle">VS</span>
+        <span style="color:#ff6600;text-shadow:0 0 20px rgba(255,102,0,0.5)">${orangeTeamName}</span>
+      </div>
+    `;
+    document.getElementById('game-container').appendChild(el);
+    this._vsBanner = el;
+
+    // Fade in
+    requestAnimationFrame(() => { el.style.opacity = '1'; });
+
+    // Fade out after 3s
+    this._addTimeout(() => {
+      el.style.opacity = '0';
+      this._addTimeout(() => { if (el.parentNode) el.remove(); }, 600);
+    }, 3000);
+  }
+
   showGoalScored(team, scorerName = null) {
     const color = team === 'blue' ? '#0088ff' : '#ff6600';
     if (scorerName) {
@@ -130,7 +162,8 @@ export class HUD {
   showMatchEnd(blueScore, orangeScore, stats, mvpIdx, maxPlayers) {
     if (!stats) {
       // Fallback: no stats available
-      this.goalTextEl.textContent = blueScore > orangeScore ? 'BLUE WINS!' : 'ORANGE WINS!';
+      const winTeam = blueScore > orangeScore ? this._teamNames.blue : this._teamNames.orange;
+      this.goalTextEl.textContent = `${winTeam} WINS!`;
       const color = blueScore > orangeScore ? '#0088ff' : '#ff6600';
       this.goalTextEl.style.color = color;
       this.goalTextEl.style.textShadow = `0 0 40px ${color}, 0 0 80px ${color}`;
@@ -302,7 +335,8 @@ export class HUD {
 
     const blueWins = blueScore > orangeScore;
     const winColor = blueWins ? '#0088ff' : '#ff6600';
-    const winText = blueWins ? 'BLUE WINS!' : 'ORANGE WINS!';
+    const winTeam = blueWins ? this._teamNames.blue : this._teamNames.orange;
+    const winText = `${winTeam} WINS!`;
     const half = maxPlayers / 2;
 
     const el = document.createElement('div');
@@ -404,6 +438,10 @@ export class HUD {
     this._playerNames = names || [];
   }
 
+  setTeamNames(blue, orange) {
+    this._teamNames = { blue: blue || 'BLUE', orange: orange || 'ORANGE' };
+  }
+
   _getPlayerLabel(idx, maxPlayers) {
     if (this._playerNames[idx]) return this._playerNames[idx];
     if (maxPlayers === 2) {
@@ -438,6 +476,10 @@ export class HUD {
     if (this._liveScoreboardEl) {
       this._liveScoreboardEl.remove();
       this._liveScoreboardEl = null;
+    }
+    if (this._vsBanner) {
+      this._vsBanner.remove();
+      this._vsBanner = null;
     }
     this.showReplayIndicator(false);
   }

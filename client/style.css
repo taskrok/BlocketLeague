@@ -9,6 +9,32 @@ html, body {
   height: 100dvh;
 }
 
+/* Car nameplates */
+.car-nameplate {
+  position: absolute;
+  pointer-events: none;
+  font-family: 'Rajdhani', 'Segoe UI', Arial, sans-serif;
+  font-size: 13px;
+  font-weight: 700;
+  letter-spacing: 1.5px;
+  text-transform: uppercase;
+  white-space: nowrap;
+  z-index: 50;
+  transition: opacity 0.15s;
+  background: rgba(0, 0, 0, 0.55);
+  padding: 2px 8px 2px 5px;
+  border-radius: 4px;
+  display: flex;
+  align-items: center;
+  gap: 5px;
+}
+.car-nameplate .np-boost {
+  flex-shrink: 0;
+}
+.car-nameplate .np-boost-fill {
+  transition: stroke-dashoffset 0.2s;
+}
+
 body {
   background: #000;
   overflow: hidden;
@@ -1731,8 +1757,11 @@ body {
   }
 
   #speed-bar {
-    bottom: 190px;
-    width: 120px;
+    bottom: 195px;
+    left: auto;
+    right: 25px;
+    transform: none;
+    width: 60px;
   }
 
   .score {

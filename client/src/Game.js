@@ -33,6 +33,7 @@ import { TRAINING_PACKS } from './TrainingPacks.js';
 // Reusable temp vectors
 const _aiEuler = new CANNON.Vec3();
 const _aimEuler = new CANNON.Vec3();
+const _npVec = new THREE.Vector3(); // reusable vector for nameplate projection
 
 // AI team definitions for 2v2 mode — each team has a name and two car model IDs
 const AI_TEAMS = [
@@ -48,9 +49,15 @@ const AI_TEAMS = [
   { name: 'City Workers', cars: ['garbage-truck', 'van'] },
 ];
 
-function pickAITeam(availableModelIds) {
-  // Filter to teams whose models are both loaded
-  const valid = AI_TEAMS.filter(t => t.cars.every(c => availableModelIds.includes(c)));
+function findPlayerTeam(playerModelId) {
+  if (!playerModelId) return null;
+  return AI_TEAMS.find(t => t.cars.includes(playerModelId)) || null;
+}
+
+function pickOpponentTeam(availableModelIds, excludeTeam) {
+  const valid = AI_TEAMS.filter(t =>
+    t !== excludeTeam && t.cars.every(c => availableModelIds.includes(c))
+  );
   if (valid.length === 0) return null;
   return valid[Math.floor(Math.random() * valid.length)];
 }
@@ -266,19 +273,29 @@ export class Game {
       this.aiCars = [];
     } else if (this.aiMode === '2v2') {
       // 2v2: 4 cars — player + AI teammate (blue) vs 2 AI opponents (orange)
-      const aiTeam = pickAITeam(modelIds);
-      this._aiTeamName = aiTeam ? aiTeam.name : 'Orange';
+      // Find player's team based on their car, pick a different team for opponents
+      const playerModelId = playerVariant ? playerVariant.modelId : null;
+      const playerTeam = findPlayerTeam(playerModelId);
+      const oppTeam = pickOpponentTeam(modelIds, playerTeam);
 
+      this._playerTeamName = playerTeam ? playerTeam.name : 'Blue';
+      this._aiTeamName = oppTeam ? oppTeam.name : 'Orange';
+
+      // Assign teammate: the other car from the player's team
       const allyVariant = generateCarVariant(COLORS.CYAN, modelIds);
       allyVariant.bodyColor = COLORS.TEAM_BLUE_BODY;
+      if (playerTeam) {
+        const allyModelId = playerTeam.cars.find(c => c !== playerModelId) || playerTeam.cars[0];
+        allyVariant.modelId = allyModelId;
+      }
+
       const opp1Variant = generateCarVariant(COLORS.ORANGE, modelIds);
       opp1Variant.bodyColor = COLORS.TEAM_ORANGE_BODY;
       const opp2Variant = generateCarVariant(COLORS.ORANGE, modelIds);
       opp2Variant.bodyColor = COLORS.TEAM_ORANGE_BODY;
-
-      if (aiTeam) {
-        opp1Variant.modelId = aiTeam.cars[0];
-        opp2Variant.modelId = aiTeam.cars[1];
+      if (oppTeam) {
+        opp1Variant.modelId = oppTeam.cars[0];
+        opp2Variant.modelId = oppTeam.cars[1];
       }
 
       this.playerCar = new Car(
@@ -371,11 +388,81 @@ export class Game {
         names.push(shuffled.pop() || `Bot ${i}`);
       }
     }
+    this._carNames = names;
     this.hud.setPlayerNames(names);
 
     // Set team names for 2v2
-    if (this.aiMode === '2v2' && this._aiTeamName) {
-      this.hud.setTeamNames('BLUE', this._aiTeamName.toUpperCase());
+    if (this.aiMode === '2v2') {
+      const blueName = (this._playerTeamName || 'BLUE').toUpperCase();
+      const orangeName = (this._aiTeamName || 'ORANGE').toUpperCase();
+      this.hud.setTeamNames(blueName, orangeName);
+    }
+
+    // Create nameplates for all cars except the player
+    this._initNameplates();
+  }
+
+  _initNameplates() {
+    this._nameplates = [];
+    const container = document.getElementById('game-container');
+    for (let i = 0; i < this.allCars.length; i++) {
+      if (i === 0) { this._nameplates.push(null); continue; } // skip player car
+
+      const el = document.createElement('div');
+      el.className = 'car-nameplate';
+      // Team color: in 2v2 blue is indices 0-1, orange is 2-3. In 1v1, 0 is blue, 1 is orange.
+      const half = this.allCars.length / 2;
+      const isBlue = i < half;
+      const teamColor = isBlue ? '#4dc8ff' : '#ff8844';
+      el.style.color = teamColor;
+      // Boost indicator circle (SVG) + name
+      const circ = 2 * Math.PI * 5; // r=5
+      el.innerHTML = `<svg class="np-boost" width="14" height="14" viewBox="0 0 14 14"><circle cx="7" cy="7" r="5" fill="none" stroke="rgba(255,255,255,0.25)" stroke-width="2"/><circle class="np-boost-fill" cx="7" cy="7" r="5" fill="none" stroke="${teamColor}" stroke-width="2" stroke-dasharray="${circ}" stroke-dashoffset="0" transform="rotate(-90 7 7)"/></svg><span class="np-name">${this._carNames[i] || ''}</span>`;
+      container.appendChild(el);
+      this._nameplates.push(el);
+    }
+  }
+
+  _updateNameplates() {
+    if (!this._nameplates || !this.camera) return;
+    const cam = this.camera;
+    const halfW = this.canvas.clientWidth / 2;
+    const halfH = this.canvas.clientHeight / 2;
+
+    for (let i = 1; i < this.allCars.length; i++) {
+      const el = this._nameplates[i];
+      if (!el) continue;
+      const car = this.allCars[i];
+      if (!car || !car.mesh) { el.style.display = 'none'; continue; }
+
+      // Project car position to screen (offset up above the car)
+      _npVec.set(car.mesh.position.x, car.mesh.position.y + 3.5, car.mesh.position.z);
+      _npVec.project(cam);
+
+      // Behind camera check
+      if (_npVec.z > 1) { el.style.display = 'none'; continue; }
+
+      const sx = (_npVec.x * halfW) + halfW;
+      const sy = -((_npVec.y * halfH) - halfH);
+
+      // Distance-based scale and opacity
+      const dist = cam.position.distanceTo(car.mesh.position);
+      const scale = Math.max(0.5, Math.min(1, 20 / dist));
+      const opacity = Math.max(0.3, Math.min(0.9, 25 / dist));
+
+      el.style.display = '';
+      el.style.left = `${sx}px`;
+      el.style.top = `${sy}px`;
+      el.style.transform = `translate(-50%, -100%) scale(${scale.toFixed(2)})`;
+      el.style.opacity = opacity.toFixed(2);
+
+      // Update boost circle
+      const fill = el.querySelector('.np-boost-fill');
+      if (fill) {
+        const pct = (car.boost || 0) / 100;
+        const circ = 2 * Math.PI * 5;
+        fill.setAttribute('stroke-dashoffset', (circ * (1 - pct)).toFixed(1));
+      }
     }
   }
 
@@ -742,17 +829,17 @@ export class Game {
     const nz = dz / dist;
 
     const bumperSpeed = bumper.getSpeed();
-    const bumpStrength = Math.min(bumperSpeed * 0.6, 20);
+    const bumpStrength = Math.min(bumperSpeed * 0.3, 8);
 
-    // Launch the bumped car in bump direction + upward
+    // Nudge the bumped car in bump direction + slight upward
     bumped.body.velocity.x += nx * bumpStrength;
     bumped.body.velocity.z += nz * bumpStrength;
-    bumped.body.velocity.y += bumpStrength * 0.4;
+    bumped.body.velocity.y += bumpStrength * 0.15;
 
-    // Bumper barely affected — just reduce a little speed
+    // Bumper loses a little speed
     const bv = bumper.body.velocity;
-    bv.x *= 0.85;
-    bv.z *= 0.85;
+    bv.x *= 0.9;
+    bv.z *= 0.9;
   }
 
   _demolishCar(car) {
@@ -967,6 +1054,11 @@ export class Game {
     this.state = 'countdown';
     this.countdownTime = GAME.COUNTDOWN_DURATION;
 
+    // Show "TEAM vs TEAM" banner for 2v2
+    if (this.aiMode === '2v2') {
+      this.hud.showVsBanner(this._playerTeamName || 'Blue', this._aiTeamName || 'Orange');
+    }
+
     let count = GAME.COUNTDOWN_DURATION;
     this.hud.showCountdown(count);
 
@@ -1026,6 +1118,9 @@ export class Game {
     if (this.network && this.network.rtt > 0) {
       this.hud.updatePing(this.network.rtt);
     }
+
+    // Update car nameplates
+    this._updateNameplates();
 
     this.composer.render();
   }
@@ -2685,6 +2780,14 @@ export class Game {
     }
     if (this._trainingCompleteKeyHandler) {
       window.removeEventListener('keydown', this._trainingCompleteKeyHandler);
+    }
+
+    // Clean up nameplates
+    if (this._nameplates) {
+      for (const el of this._nameplates) {
+        if (el) el.remove();
+      }
+      this._nameplates = null;
     }
 
     // Destroy subsystems

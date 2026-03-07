@@ -190,9 +190,22 @@ export class ReplayPlayer {
       // Sync mesh
       car._syncMesh();
 
-      // Hide boost flame during replay
+      // Show boost flame if car was boosting in this frame
       if (car.boostFlame) {
-        car.boostFlame.visible = false;
+        const wasBoosting = a.boosting || false;
+        car.boostFlame.visible = wasBoosting;
+        if (wasBoosting) {
+          car.boostFlame.children.forEach((child) => {
+            if (child.isMesh) {
+              child.scale.setScalar(0.8 + Math.random() * 0.5);
+              child.material.opacity = 0.5 + Math.random() * 0.5;
+            }
+          });
+          if (car.flameLight) car.flameLight.intensity = 1 + Math.random() * 1.5;
+          if (car.bottomLight) car.bottomLight.intensity = 2.0;
+        } else {
+          if (car.bottomLight) car.bottomLight.intensity = 1.0;
+        }
       }
     }
   }

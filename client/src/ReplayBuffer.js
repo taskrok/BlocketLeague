@@ -57,6 +57,7 @@ export class ReplayBuffer {
         vx: cv.x, vy: cv.y, vz: cv.z,
         qx: cq.x, qy: cq.y, qz: cq.z, qw: cq.w,
         boost: car.boost,
+        boosting: car.boostFlame ? car.boostFlame.visible : false,
         demolished: car.demolished,
       };
     }
