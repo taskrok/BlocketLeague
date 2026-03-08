@@ -17,7 +17,7 @@ import { Ball } from './Ball.js';
 import { BoostPads } from './BoostPads.js';
 import { InputManager } from './InputManager.js';
 import { CameraController } from './Camera.js';
-import { GameSettings } from './GameSettings.js';
+import { GameSettings, getDisplaySettings } from './GameSettings.js';
 import { HUD } from './HUD.js';
 import { ReplayBuffer } from './ReplayBuffer.js';
 import { ReplayPlayer } from './ReplayPlayer.js';
@@ -699,8 +699,9 @@ export class Game {
     const renderPass = new RenderPass(this.scene, this.camera);
     this.composer.addPass(renderPass);
 
-    // Skip bloom on iOS — render targets exceed Safari's GPU memory limits
-    if (!this._isIOS) {
+    // Skip bloom on iOS or if disabled in display settings
+    const displaySettings = getDisplaySettings();
+    if (!this._isIOS && displaySettings.bloom) {
       // Use half-resolution for bloom to reduce GPU cost
       const bloomPass = new UnrealBloomPass(
         new THREE.Vector2(
@@ -1952,26 +1953,29 @@ export class Game {
         };
       case 'allstar':
         return {
-          approachOffset: 10,
-          attackAngle: 0.3,       // tight cone → precise shots
-          defenseZ: 35,           // reacts early
-          clearDist: 12,
-          steerDeadzone: 0.03,    // tight steering
+          approachOffset: 7,      // tighter approaches
+          attackAngle: 0.25,      // precise shot cone
+          defenseZ: 40,           // reacts very early
+          clearDist: 10,          // clears sooner
+          steerDeadzone: 0.02,    // precise steering
           maxThrottle: 1,
-          rotateSlowAngle: 1.2,
-          rotateThrottle: 0.6,
+          rotateSlowAngle: 1.4,
+          rotateThrottle: 0.8,    // fast rotations
           useBoost: true,
-          handbrakeAngle: 1.0,
-          handbrakeSpeed: 8,
+          handbrakeAngle: 0.8,    // handbrakes more readily
+          handbrakeSpeed: 6,
           jumpBall: true,
-          jumpHeight: 2.5,       // jumps for lower balls too
-          jumpDist: 10,
-          dodgeBall: true,        // dodge-hits the ball
-          dodgeDist: 5,
+          jumpHeight: 2.0,        // jumps for lower balls
+          jumpDist: 14,           // jumps from farther
+          dodgeBall: true,
+          dodgeDist: 7,           // dodge-hits from farther
           reactionDelay: 0,
           aimJitter: 0,
-          leadBall: true,         // predicts ball position
-          leadTime: 0.4,          // seconds of prediction
+          leadBall: true,
+          leadTime: 0.6,          // better prediction
+          aerialBoost: true,      // boost toward aerial balls
+          shadowDefense: true,    // shadow ball position on defense
+          boostForSpeed: true,    // use boost for supersonic speed
         };
       default: // pro
         return {
@@ -2153,8 +2157,13 @@ export class Game {
     } else if (mode === 'defend') {
       const sideSign = ballPos.x > 0 ? 1 : -1;
       if (distToBall < p.clearDist) {
+        // Close to ball: clear it to the side and upfield
         targetX = ballPos.x + sideSign * 5;
         targetZ = ballPos.z + teamDir * 3;
+      } else if (p.shadowDefense) {
+        // Shadow defense: match ball's X, stay between ball and own goal
+        targetX = ballPos.x * 0.8;
+        targetZ = ballPos.z + (OWN_GOAL_Z - ballPos.z) * 0.3;
       } else {
         targetX = ballPos.x;
         targetZ = (ballPos.z + OWN_GOAL_Z) / 2;
@@ -2198,6 +2207,10 @@ export class Game {
         const distToOwnGoal = Math.abs(ballPos.z - OWN_GOAL_Z);
         if (distToOwnGoal < 25) boost = true;
       }
+      // Boost for supersonic speed when approaching ball
+      if (p.boostForSpeed && mode === 'attack' && absAngle < 0.5 && distToBall > 20) {
+        boost = true;
+      }
     }
 
     // Handbrake
@@ -2210,6 +2223,11 @@ export class Game {
     const jumpDist = p.jumpDist || 8;
     if (p.jumpBall && mode === 'attack' && distToBall < jumpDist && ballPos.y > jumpHeight && car.isGrounded) {
       jumpPressed = true;
+    }
+
+    // All-Star: aerial boost — hold boost while in air moving toward ball
+    if (p.aerialBoost && !car.isGrounded && ballPos.y > 3 && distToBall < 25) {
+      boost = true;
     }
 
     // All-Star: dodge into ball for powerful hits

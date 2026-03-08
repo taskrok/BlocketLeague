@@ -8,6 +8,16 @@ import { InputManager } from './InputManager.js';
 const CAMERA_STORAGE_KEY = 'blocket-camera-settings';
 const AUDIO_STORAGE_KEY = 'blocket-audio-settings';
 const GENERAL_STORAGE_KEY = 'blocket-general-settings';
+const DISPLAY_STORAGE_KEY = 'blocket-display-settings';
+
+export const DISPLAY_DEFAULTS = {
+  bloom: true,
+  antialias: true,
+  nameplates: true,
+  particles: true,
+  fpsCounter: false,
+  renderScale: 1.0,
+};
 
 // Shared accessor so main.js can read the setting without importing the class
 export function getGeneralSettings() {
@@ -16,6 +26,14 @@ export function getGeneralSettings() {
     if (saved) return JSON.parse(saved);
   } catch {}
   return { autoFullscreen: false };
+}
+
+export function getDisplaySettings() {
+  try {
+    const saved = localStorage.getItem(DISPLAY_STORAGE_KEY);
+    if (saved) return { ...DISPLAY_DEFAULTS, ...JSON.parse(saved) };
+  } catch {}
+  return { ...DISPLAY_DEFAULTS };
 }
 
 const CAMERA_DEFAULTS = {
