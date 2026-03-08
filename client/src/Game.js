@@ -356,7 +356,8 @@ export class Game {
     this._initCarCollisionHandler();
 
     this.boostPads = new BoostPads(this.scene);
-    this.perfTracker = new PerformanceTracker(this.allCars.length);
+    this.maxPlayers = this.allCars.length;
+    this.perfTracker = new PerformanceTracker(this.maxPlayers);
 
     // Assign names for scoreboard
     this._assignPlayerNames();
@@ -1104,8 +1105,8 @@ export class Game {
       this.hud.updateSpeed(this.playerCar.getSpeed(), CAR_CONST.BOOST_MAX_SPEED);
     }
 
-    // Live scoreboard (hold Tab / LB)
-    if (inputState.scoreboard && this.state !== 'ended' && this.state !== 'countdown' && this.state !== 'replay') {
+    // Live scoreboard (hold Tab / LB) — skip in freeplay (no opponents to score against)
+    if (inputState.scoreboard && this.mode !== 'freeplay' && this.state !== 'ended' && this.state !== 'countdown' && this.state !== 'replay') {
       const stats = this.perfTracker ? this.perfTracker.getStats() : null;
       const mp = this.perfTracker ? this.perfTracker.maxPlayers : this.maxPlayers;
       const pings = this.network ? this.network.playerPings : null;

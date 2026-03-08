@@ -41,7 +41,7 @@ export class Car {
     this._dodgeAngVel = null;     // world-space angular velocity maintained during dodge
     this._dodgeDecaying = false;  // vertical momentum decay after dodge torque phase
     this._dodgeDecayStart = 0;    // timestamp when decay phase began
-    this._stuckTimer = 0;         // time spent tilted near floor (for auto self-right)
+    this._selfRighting = false;   // active self-right state (triggered by throttle while tilted)
 
     // Surface tracking for wall driving
     this.surfaceNormal = new CANNON.Vec3(0, 1, 0);
@@ -540,53 +540,46 @@ export class Car {
   }
 
   _handleSelfRight(input, dt) {
-    if (this.onWall) return; // don't self-right when on a wall
-    if (this.isDodging || this._dodgeDecaying) return; // let flips complete
-    if (this.hasJumped) return; // don't fight intentional aerial tilt after jumping
-    if (this.body.velocity.y > 3) return; // car is rising — don't interfere
+    if (this.onWall) return;
+    if (this.isDodging || this._dodgeDecaying) return;
+    // Don't fight intentional aerial tilt — but allow self-right if
+    // the car has come back down near the floor (failed aerial / landed on head)
+    if (this.hasJumped && this.body.position.y > CAR.HEIGHT * 3) return;
 
     _v1.set(0, 1, 0);
     const up = this.body.quaternion.vmult(_v1);
     const nearFloor = this.body.position.y < CAR.HEIGHT * 3;
 
-    if (!nearFloor) {
-      this._stuckTimer = 0;
-      return;
+    const isTilted = up.y < 0.1; // only when on back, side, or nose — not slight tilt
+    if (!isTilted || !nearFloor) { this._endSelfRight(); return; }
+    if (!input.throttle) { this._endSelfRight(); return; }
+
+    this._selfRighting = true;
+
+    // Determine roll/pitch axis to right the car
+    _v1.set(0, 0, 1);
+    const forward = this.body.quaternion.vmult(_v1);
+    _v1.set(1, 0, 0);
+    const right = this.body.quaternion.vmult(_v1);
+    const rollSpeed = 8;
+
+    if (Math.abs(forward.y) < 0.7) {
+      // Car is rolled sideways — spin around forward axis
+      const rollDir = right.y > 0 ? -1 : 1;
+      this.body.angularVelocity.x = forward.x * rollSpeed * rollDir;
+      this.body.angularVelocity.y = forward.y * rollSpeed * rollDir;
+      this.body.angularVelocity.z = forward.z * rollSpeed * rollDir;
+    } else {
+      // Car is pitched (nose/tail down) — spin around right axis
+      const pitchDir = forward.y > 0 ? 1 : -1;
+      this.body.angularVelocity.x = right.x * rollSpeed * pitchDir;
+      this.body.angularVelocity.y = right.y * rollSpeed * pitchDir;
+      this.body.angularVelocity.z = right.z * rollSpeed * pitchDir;
     }
+  }
 
-    const isTilted = up.y < 0.7;   // nose, tail, or side down
-    const isFlipped = up.y < 0.3;  // fully upside-down
-
-    if (!isTilted) {
-      this._stuckTimer = 0;
-      return;
-    }
-
-    this._stuckTimer = (this._stuckTimer || 0) + dt;
-
-    // Immediate correction: car is tilted and near/on the floor.
-    // Snap upright aggressively to prevent skip-bouncing.
-    this.body.quaternion.toEuler(_euler);
-    _q1.setFromEuler(0, _euler.y, 0);
-    this.body.quaternion.slerp(_q1, 0.5, this.body.quaternion);
-    this.body.quaternion.normalize();
-    this.body.angularVelocity.set(0, this.body.angularVelocity.y * 0.3, 0);
-
-    // Pop up to settle onto wheels (once, not every frame)
-    if (this.body.velocity.y < 2) {
-      this.body.velocity.y = 3;
-    }
-
-    // If stuck tilted for a while or fully flipped, be even more aggressive
-    const hasInput = input.throttle !== 0 || input.jumpPressed || input.steer !== 0;
-    if ((isFlipped && hasInput) || this._stuckTimer > 0.4) {
-      this.body.quaternion.slerp(_q1, 0.8, this.body.quaternion);
-      this.body.quaternion.normalize();
-      this.body.angularVelocity.set(0, 0, 0);
-      if (this.body.velocity.y < 5) {
-        this.body.velocity.y = 8;
-      }
-    }
+  _endSelfRight() {
+    this._selfRighting = false;
   }
 
   _handleMovement(input, dt) {
@@ -692,22 +685,14 @@ export class Car {
       this.body.angularVelocity.scale(0.85, this.body.angularVelocity);
     }
 
-    // Kill sideways velocity (grip) — reduced during handbrake to allow drifting
+    // Kill sideways velocity (grip) — reduced during handbrake to allow drifting.
+    // RL drops lateral friction to ~10% during powerslide — the car preserves its
+    // velocity vector naturally because sideways grip is almost zero.
     const gripFactor = handbraking ? CAR.HANDBRAKE_GRIP : 0.92;
     const sideSpeed = vel.dot(right);
-    const sideRemoval = sideSpeed * gripFactor;
-    vel.x -= right.x * sideRemoval;
-    vel.y -= right.y * sideRemoval;
-    vel.z -= right.z * sideRemoval;
-
-    // During handbrake, redirect a small portion of removed sideways energy forward
-    // so the car doesn't bleed all speed, but mostly slides sideways (drift feel)
-    if (handbraking && Math.abs(sideRemoval) > 0.1) {
-      const fwdSign = forwardSpeed >= 0 ? 1 : -1;
-      vel.x += forward.x * Math.abs(sideRemoval) * 0.35 * fwdSign;
-      vel.y += forward.y * Math.abs(sideRemoval) * 0.35 * fwdSign;
-      vel.z += forward.z * Math.abs(sideRemoval) * 0.35 * fwdSign;
-    }
+    vel.x -= right.x * sideSpeed * gripFactor;
+    vel.y -= right.y * sideSpeed * gripFactor;
+    vel.z -= right.z * sideSpeed * gripFactor;
 
     // Align car to surface normal
     this._alignToSurface(dt);
@@ -946,49 +931,49 @@ export class Car {
     if (this.isGrounded || this.isDodging) return;
 
     const angVel = this.body.angularVelocity;
-    const hasPitchInput = input.pitchUp || input.pitchDown;
-    const hasYawInput = input.steer !== 0;
-    const hasRollInput = input.airRoll !== 0;
-    const hasAnyRotInput = hasPitchInput || hasYawInput || hasRollInput;
+    const quat = this.body.quaternion;
 
-    if (hasPitchInput) {
-      _v1.set(1, 0, 0);
-      this.body.quaternion.vmult(_v1, _v1);
-      const sign = input.pitchUp ? -1 : 1;
-      // Boost pitch rate right after jump for better aerial takeoff angle
-      const timeSinceJump = (performance.now() - this.jumpTime) / 1000;
-      const pitchBoost = timeSinceJump < 0.35 ? 1.5 : 1.0;
-      const pitchSpeed = CAR.AIR_PITCH_SPEED * pitchBoost;
-      angVel.x += _v1.x * sign * pitchSpeed * dt;
-      angVel.y += _v1.y * sign * pitchSpeed * dt;
-      angVel.z += _v1.z * sign * pitchSpeed * dt;
-    }
+    // Get car's local axes in world space
+    _v1.set(1, 0, 0);
+    const rightAxis = quat.vmult(_v1);
+    _v1.set(0, 1, 0);
+    const upAxis = quat.vmult(_v1);
+    _v1.set(0, 0, 1);
+    const forwardAxis = quat.vmult(_v1);
 
-    if (hasYawInput) {
-      angVel.y += input.steer * CAR.AIR_YAW_SPEED * dt;
-    }
+    // Decompose world angular velocity into local axes
+    const localPitch = angVel.x * rightAxis.x + angVel.y * rightAxis.y + angVel.z * rightAxis.z;
+    const localYaw = angVel.x * upAxis.x + angVel.y * upAxis.y + angVel.z * upAxis.z;
+    const localRoll = angVel.x * forwardAxis.x + angVel.y * forwardAxis.y + angVel.z * forwardAxis.z;
 
-    if (hasRollInput) {
-      _v1.set(0, 0, 1);
-      this.body.quaternion.vmult(_v1, _v1);
-      angVel.x += _v1.x * input.airRoll * CAR.AIR_ROLL_SPEED * dt;
-      angVel.y += _v1.y * input.airRoll * CAR.AIR_ROLL_SPEED * dt;
-      angVel.z += _v1.z * input.airRoll * CAR.AIR_ROLL_SPEED * dt;
-    }
+    // Input values
+    const pitchInput = input.pitchUp ? -1 : (input.pitchDown ? 1 : 0);
+    const yawInput = input.steer || 0;
+    const rollInput = input.airRoll || 0;
 
-    // When no rotational input, aggressively dampen angular velocity
-    // so the car holds its orientation instead of continuing to spin
-    if (!hasAnyRotInput) {
-      const dampRate = 1 - Math.exp(-12 * dt); // fast stop — feels locked in
-      angVel.x *= (1 - dampRate);
-      angVel.y *= (1 - dampRate);
-      angVel.z *= (1 - dampRate);
-      // Snap to zero when very small to prevent micro-drift
-      const mag = angVel.x * angVel.x + angVel.y * angVel.y + angVel.z * angVel.z;
-      if (mag < 0.01) {
-        angVel.set(0, 0, 0);
-      }
-    }
+    // RL torque model: torque = input * torqueStrength
+    // RL damping model: damping reduces with input magnitude for pitch/yaw,
+    //                   roll damping is always on
+    const torqueScale = 0.1;  // tuning factor (approximates RL's CAR_TORQUE_SCALE * inertia)
+
+    const pitchTorque = pitchInput * CAR.AIR_PITCH_TORQUE * torqueScale;
+    const yawTorque = yawInput * CAR.AIR_YAW_TORQUE * torqueScale;
+    const rollTorque = rollInput * CAR.AIR_ROLL_TORQUE * torqueScale;
+
+    // Per-axis damping: pitch/yaw damping reduces when that axis has input
+    const pitchDamp = CAR.AIR_PITCH_DAMPING * (1 - Math.abs(pitchInput)) * torqueScale;
+    const yawDamp = CAR.AIR_YAW_DAMPING * (1 - Math.abs(yawInput)) * torqueScale;
+    const rollDamp = CAR.AIR_ROLL_DAMPING * torqueScale;  // always on, even with input
+
+    // Compute local angular acceleration: torque - damping * velocity
+    const dPitch = (pitchTorque - pitchDamp * localPitch) * dt;
+    const dYaw = (yawTorque - yawDamp * localYaw) * dt;
+    const dRoll = (rollTorque - rollDamp * localRoll) * dt;
+
+    // Apply back in world space
+    angVel.x += rightAxis.x * dPitch + upAxis.x * dYaw + forwardAxis.x * dRoll;
+    angVel.y += rightAxis.y * dPitch + upAxis.y * dYaw + forwardAxis.y * dRoll;
+    angVel.z += rightAxis.z * dPitch + upAxis.z * dYaw + forwardAxis.z * dRoll;
   }
 
   _syncMesh() {
@@ -1042,6 +1027,7 @@ export class Car {
     this.isDodging = false;
     this._dodgeDecaying = false;
     this._dodgeDecayStart = 0;
+    this._endSelfRight();
     this.isGrounded = false;
     this.onWall = false;
     this.onGoalSurface = false;

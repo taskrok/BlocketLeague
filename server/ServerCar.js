@@ -25,7 +25,7 @@ export class ServerCar {
     this._dodgeAngVel = null;
     this._dodgeDecaying = false;
     this._dodgeDecayStart = 0;
-    this._stuckTimer = 0;
+    this._selfRighting = false;
 
     // Surface tracking
     this.surfaceNormal = new CANNON.Vec3(0, 1, 0);
@@ -349,50 +349,39 @@ export class ServerCar {
   _handleSelfRight(input, dt) {
     if (this.onWall) return;
     if (this.isDodging || this._dodgeDecaying) return;
-    if (this.hasJumped) return;
-    if (this.body.velocity.y > 3) return;
+    if (this.hasJumped && this.body.position.y > CAR.HEIGHT * 3) return;
 
     const up = this.body.quaternion.vmult(new CANNON.Vec3(0, 1, 0));
     const nearFloor = this.body.position.y < CAR.HEIGHT * 3;
 
-    if (!nearFloor) {
-      this._stuckTimer = 0;
-      return;
+    const isTilted = up.y < 0.1;
+    if (!isTilted || !nearFloor) { this._endSelfRight(); return; }
+    if (!input.throttle) { this._endSelfRight(); return; }
+
+    this._selfRighting = true;
+
+    // Determine roll/pitch axis to right the car
+    const forward = this.body.quaternion.vmult(new CANNON.Vec3(0, 0, 1));
+    const right = this.body.quaternion.vmult(new CANNON.Vec3(1, 0, 0));
+    const rollSpeed = 8;
+
+    if (Math.abs(forward.y) < 0.7) {
+      // Car is rolled sideways — spin around forward axis
+      const rollDir = right.y > 0 ? -1 : 1;
+      this.body.angularVelocity.x = forward.x * rollSpeed * rollDir;
+      this.body.angularVelocity.y = forward.y * rollSpeed * rollDir;
+      this.body.angularVelocity.z = forward.z * rollSpeed * rollDir;
+    } else {
+      // Car is pitched (nose/tail down) — spin around right axis
+      const pitchDir = forward.y > 0 ? 1 : -1;
+      this.body.angularVelocity.x = right.x * rollSpeed * pitchDir;
+      this.body.angularVelocity.y = right.y * rollSpeed * pitchDir;
+      this.body.angularVelocity.z = right.z * rollSpeed * pitchDir;
     }
+  }
 
-    const isTilted = up.y < 0.7;
-    const isFlipped = up.y < 0.3;
-
-    if (!isTilted) {
-      this._stuckTimer = 0;
-      return;
-    }
-
-    this._stuckTimer = (this._stuckTimer || 0) + dt;
-
-    // Immediate correction: snap upright to prevent skip-bouncing
-    const euler = new CANNON.Vec3();
-    this.body.quaternion.toEuler(euler);
-    const target = new CANNON.Quaternion();
-    target.setFromEuler(0, euler.y, 0);
-    this.body.quaternion.slerp(target, 0.5, this.body.quaternion);
-    this.body.quaternion.normalize();
-    this.body.angularVelocity.set(0, this.body.angularVelocity.y * 0.3, 0);
-
-    if (this.body.velocity.y < 2) {
-      this.body.velocity.y = 3;
-    }
-
-    // If stuck or fully flipped, be even more aggressive
-    const hasInput = input.throttle !== 0 || input.jumpPressed || input.steer !== 0;
-    if ((isFlipped && hasInput) || this._stuckTimer > 0.4) {
-      this.body.quaternion.slerp(target, 0.8, this.body.quaternion);
-      this.body.quaternion.normalize();
-      this.body.angularVelocity.set(0, 0, 0);
-      if (this.body.velocity.y < 5) {
-        this.body.velocity.y = 8;
-      }
-    }
+  _endSelfRight() {
+    this._selfRighting = false;
   }
 
   _handleMovement(input, dt) {
@@ -488,17 +477,9 @@ export class ServerCar {
 
     const gripFactor = handbraking ? CAR.HANDBRAKE_GRIP : 0.92;
     const sideSpeed = vel.dot(right);
-    const sideRemoval = sideSpeed * gripFactor;
-    vel.x -= right.x * sideRemoval;
-    vel.y -= right.y * sideRemoval;
-    vel.z -= right.z * sideRemoval;
-
-    if (handbraking && Math.abs(sideRemoval) > 0.1) {
-      const fwdSign = forwardSpeed >= 0 ? 1 : -1;
-      vel.x += forward.x * Math.abs(sideRemoval) * 0.35 * fwdSign;
-      vel.y += forward.y * Math.abs(sideRemoval) * 0.35 * fwdSign;
-      vel.z += forward.z * Math.abs(sideRemoval) * 0.35 * fwdSign;
-    }
+    vel.x -= right.x * sideSpeed * gripFactor;
+    vel.y -= right.y * sideSpeed * gripFactor;
+    vel.z -= right.z * sideSpeed * gripFactor;
 
     this._alignToSurface(dt);
   }
@@ -723,52 +704,44 @@ export class ServerCar {
     if (this.isGrounded || this.isDodging) return;
 
     const angVel = this.body.angularVelocity;
-    const hasPitchInput = input.pitchUp || input.pitchDown;
-    const hasYawInput = input.steer !== 0;
-    const hasRollInput = input.airRoll !== 0;
-    const hasAnyRotInput = hasPitchInput || hasYawInput || hasRollInput;
+    const quat = this.body.quaternion;
 
-    // Boost pitch rate right after jump for better aerial takeoff angle
-    const timeSinceJump = (Date.now() - this.jumpTime) / 1000;
-    const pitchBoost = timeSinceJump < 0.35 ? 1.5 : 1.0;
-    const pitchSpeed = CAR.AIR_PITCH_SPEED * pitchBoost;
+    // Get car's local axes in world space
+    const rightAxis = quat.vmult(new CANNON.Vec3(1, 0, 0));
+    const upAxis = quat.vmult(new CANNON.Vec3(0, 1, 0));
+    const forwardAxis = quat.vmult(new CANNON.Vec3(0, 0, 1));
 
-    if (input.pitchUp) {
-      const axis = this.body.quaternion.vmult(new CANNON.Vec3(1, 0, 0));
-      angVel.x += axis.x * -pitchSpeed * dt;
-      angVel.y += axis.y * -pitchSpeed * dt;
-      angVel.z += axis.z * -pitchSpeed * dt;
-    }
-    if (input.pitchDown) {
-      const axis = this.body.quaternion.vmult(new CANNON.Vec3(1, 0, 0));
-      angVel.x += axis.x * pitchSpeed * dt;
-      angVel.y += axis.y * pitchSpeed * dt;
-      angVel.z += axis.z * pitchSpeed * dt;
-    }
+    // Decompose world angular velocity into local axes
+    const localPitch = angVel.x * rightAxis.x + angVel.y * rightAxis.y + angVel.z * rightAxis.z;
+    const localYaw = angVel.x * upAxis.x + angVel.y * upAxis.y + angVel.z * upAxis.z;
+    const localRoll = angVel.x * forwardAxis.x + angVel.y * forwardAxis.y + angVel.z * forwardAxis.z;
 
-    if (hasYawInput) {
-      angVel.y += input.steer * CAR.AIR_YAW_SPEED * dt;
-    }
+    // Input values
+    const pitchInput = input.pitchUp ? -1 : (input.pitchDown ? 1 : 0);
+    const yawInput = input.steer || 0;
+    const rollInput = input.airRoll || 0;
 
-    if (hasRollInput) {
-      const axis = this.body.quaternion.vmult(new CANNON.Vec3(0, 0, 1));
-      angVel.x += axis.x * input.airRoll * CAR.AIR_ROLL_SPEED * dt;
-      angVel.y += axis.y * input.airRoll * CAR.AIR_ROLL_SPEED * dt;
-      angVel.z += axis.z * input.airRoll * CAR.AIR_ROLL_SPEED * dt;
-    }
+    // RL torque model: torque = input * torqueStrength
+    const torqueScale = 0.1;
 
-    // When no rotational input, aggressively dampen angular velocity
-    // so the car holds its orientation instead of continuing to spin
-    if (!hasAnyRotInput) {
-      const dampRate = 1 - Math.exp(-12 * dt);
-      angVel.x *= (1 - dampRate);
-      angVel.y *= (1 - dampRate);
-      angVel.z *= (1 - dampRate);
-      const mag = angVel.x * angVel.x + angVel.y * angVel.y + angVel.z * angVel.z;
-      if (mag < 0.01) {
-        angVel.set(0, 0, 0);
-      }
-    }
+    const pitchTorque = pitchInput * CAR.AIR_PITCH_TORQUE * torqueScale;
+    const yawTorque = yawInput * CAR.AIR_YAW_TORQUE * torqueScale;
+    const rollTorque = rollInput * CAR.AIR_ROLL_TORQUE * torqueScale;
+
+    // Per-axis damping: pitch/yaw reduces with input, roll always on
+    const pitchDamp = CAR.AIR_PITCH_DAMPING * (1 - Math.abs(pitchInput)) * torqueScale;
+    const yawDamp = CAR.AIR_YAW_DAMPING * (1 - Math.abs(yawInput)) * torqueScale;
+    const rollDamp = CAR.AIR_ROLL_DAMPING * torqueScale;
+
+    // Local angular acceleration: torque - damping * velocity
+    const dPitch = (pitchTorque - pitchDamp * localPitch) * dt;
+    const dYaw = (yawTorque - yawDamp * localYaw) * dt;
+    const dRoll = (rollTorque - rollDamp * localRoll) * dt;
+
+    // Apply back in world space
+    angVel.x += rightAxis.x * dPitch + upAxis.x * dYaw + forwardAxis.x * dRoll;
+    angVel.y += rightAxis.y * dPitch + upAxis.y * dYaw + forwardAxis.y * dRoll;
+    angVel.z += rightAxis.z * dPitch + upAxis.z * dYaw + forwardAxis.z * dRoll;
   }
 
   addBoost(amount) {
@@ -793,6 +766,7 @@ export class ServerCar {
     this.isDodging = false;
     this._dodgeDecaying = false;
     this._dodgeDecayStart = 0;
+    this._endSelfRight();
     this.isGrounded = false;
     this.onWall = false;
     this.onGoalSurface = false;

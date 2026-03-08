@@ -44,8 +44,8 @@ export class BoostPads {
     group.position.set(position.x, 0, position.z);
 
     if (isLarge) {
-      // Large pad: prominent hexagonal base + large floating orb
-      const baseGeo = new THREE.CircleGeometry(visualRadius * 1.4, 6);
+      // Large pad: prominent hexagonal base + large floating sphere
+      const baseGeo = new THREE.CircleGeometry(visualRadius * 1.6, 6);
       const baseMat = new THREE.MeshStandardMaterial({
         color: color,
         emissive: color,
@@ -74,8 +74,8 @@ export class BoostPads {
       ring.position.y = 0.06;
       group.add(ring);
 
-      // Floating orb — bigger and brighter
-      const orbGeo = new THREE.OctahedronGeometry(1.2, 0);
+      // Floating sphere — bigger and brighter
+      const orbGeo = new THREE.SphereGeometry(1.6, 16, 12);
       const orbMat = new THREE.MeshStandardMaterial({
         color: color,
         emissive: color,

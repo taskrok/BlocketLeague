@@ -6,7 +6,7 @@
 
 import * as THREE from 'three';
 import * as CANNON from 'cannon-es';
-import { ARENA, COLORS, COLLISION_GROUPS } from '../../shared/constants.js';
+import { ARENA, COLORS, COLLISION_GROUPS, BOOST_PAD_LAYOUT } from '../../shared/constants.js';
 import { createArenaGeometry } from './ArenaGeometry.js';
 import { createArenaMaterial } from './ArenaShader.js';
 import { ARENA_THEMES } from './ArenaThemes.js';
@@ -532,6 +532,66 @@ export class Arena {
     redRing.rotation.x = -Math.PI / 2;
     redRing.position.y = 0.06;
     this.scene.add(redRing);
+
+    // Circles around large (100%) boost pads
+    const HW = ARENA.WIDTH / 2;
+    const HL = ARENA.LENGTH / 2;
+    const boostCircleRadius = 6;
+    const boostCircleThickness = 0.3;
+
+    BOOST_PAD_LAYOUT.large.forEach((pos) => {
+      const wx = pos.x * HW;
+      const wz = pos.z * HL;
+      const circleGeo = new THREE.RingGeometry(
+        boostCircleRadius, boostCircleRadius + boostCircleThickness, 32
+      );
+      const circleMat = new THREE.MeshStandardMaterial({
+        color: 0xffffff,
+        emissive: 0xffffff,
+        emissiveIntensity: 0.6,
+        transparent: true,
+        opacity: 0.4,
+        side: THREE.DoubleSide,
+      });
+      const circle = new THREE.Mesh(circleGeo, circleMat);
+      circle.rotation.x = -Math.PI / 2;
+      circle.position.set(wx, 0.12, wz);
+      this.scene.add(circle);
+    });
+
+    // Arched boundary lines — one continuous arch per side through all 3 large pads,
+    // bowing outward toward the wall
+    const lineThickness = 0.25;
+    const lineY = 0.12;
+    const arcSegments = 64;
+
+    // Large pad world positions: [0]=back-left, [1]=back-right, [2]=mid-left, [3]=mid-right, [4]=front-left, [5]=front-right
+    const largePads = BOOST_PAD_LAYOUT.large.map(p => ({
+      x: p.x * HW,
+      z: p.z * HL,
+    }));
+
+    // Left chain: pads 0 → 2 → 4 (back-left → mid-left → front-left)
+    // Right chain: pads 1 → 3 → 5 (back-right → mid-right → front-right)
+    const chains = [
+      { pads: [largePads[0], largePads[2], largePads[4]], side: -1 },
+      { pads: [largePads[1], largePads[3], largePads[5]], side: 1 },
+    ];
+
+    chains.forEach(({ pads: chainPads }) => {
+      // Use the 3 pad positions as control points — CatmullRom will arch through all of them
+      const controlPoints = chainPads.map(p => new THREE.Vector3(p.x, lineY, p.z));
+      const curve = new THREE.CatmullRomCurve3(controlPoints);
+      const tubeGeo = new THREE.TubeGeometry(curve, arcSegments, lineThickness / 2, 4, false);
+      const tubeMat = new THREE.MeshStandardMaterial({
+        color: 0xffffff,
+        emissive: 0xffffff,
+        emissiveIntensity: 0.5,
+        transparent: true,
+        opacity: 0.4,
+      });
+      this.scene.add(new THREE.Mesh(tubeGeo, tubeMat));
+    });
   }
 
   // ========== FIELD TEXT (painted on grass) ==========

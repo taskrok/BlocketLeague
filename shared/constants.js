@@ -40,21 +40,27 @@ export const CAR = {
   BOOST_ACCELERATION: 34,
   MAX_BOOST: 100,
   BOOST_USAGE_RATE: 33.3,     // per second
-  AIR_ROLL_SPEED: 9.5,
-  AIR_PITCH_SPEED: 7.5,
-  AIR_YAW_SPEED: 4.0,
+  // Air control torques (RL-derived: RocketSim CAR_AIR_CONTROL_TORQUE / DAMPING)
+  // Applied as torque, not velocity — creates natural ramp-up feel
+  AIR_PITCH_TORQUE: 130,
+  AIR_YAW_TORQUE: 95,
+  AIR_ROLL_TORQUE: 400,
+  // Per-axis damping: pitch/yaw reduce with input, roll always on
+  AIR_PITCH_DAMPING: 30,
+  AIR_YAW_DAMPING: 20,
+  AIR_ROLL_DAMPING: 50,
   GROUND_OFFSET: 0.55,        // half height - how high car sits
   JUMP_COOLDOWN: 1250,        // ms for double jump window
   SIDEWAYS_GRIP: 0.05,        // 0 = full grip, 1 = ice
   HANDBRAKE_TURN_MULTIPLIER: 1.8,  // steering multiplier while powersliding
-  HANDBRAKE_GRIP: 0.12,            // sideways grip during handbrake (lower = more slide)
+  HANDBRAKE_GRIP: 0.04,            // sideways grip during handbrake (lower = more slide)
   LINEAR_DAMPING: 0.3,
   ANGULAR_DAMPING: 0.95,
   GROUND_RAY_LENGTH: 1.2,     // raycast distance for ground check
   WALL_STICK_FORCE: 30,       // force keeping car on walls
   MAX_ANGULAR_VELOCITY: 5.5,  // rad/s cap matching RL
   COAST_DECEL: 4,             // linear coasting deceleration (u/s²) — slow decay preserves supersonic
-  AIR_THROTTLE_ACCEL: 4.0,    // forward thrust in air for aerial control
+  AIR_THROTTLE_ACCEL: 1.5,    // forward thrust in air (RL: ~1.33 m/s²)
   DODGE_DURATION: 400,        // ms, snappy flip window
   DODGE_SPIN_SPEED: 15.7,     // rad/s for one rotation in 400ms (2π/0.4)
   SUPERSONIC_THRESHOLD: 44,   // matches throttle-only max — speed needed to demolish
@@ -125,15 +131,15 @@ export const NETWORK = {
 // 6 large + 28 small = 34 pads total (matches Rocket League DFH Stadium)
 export const BOOST_PAD_LAYOUT = {
   large: [
-    // Back-left & back-right (RL: ±3072, ±4096)
-    { x: -0.75, z: -0.80 },
-    { x:  0.75, z: -0.80 },
-    // Mid-left & mid-right (RL: ±3584, 0)
-    { x: -0.875, z: 0 },
-    { x:  0.875, z: 0 },
-    // Front-left & front-right (RL: ±3072, ±4096)
-    { x: -0.75, z:  0.80 },
-    { x:  0.75, z:  0.80 },
+    // Back-left & back-right
+    { x: -0.67, z: -0.80 },
+    { x:  0.67, z: -0.80 },
+    // Mid-left & mid-right
+    { x: -0.79, z: 0 },
+    { x:  0.79, z: 0 },
+    // Front-left & front-right
+    { x: -0.67, z:  0.80 },
+    { x:  0.67, z:  0.80 },
   ],
   small: [
     // Center boost (RL: 0, 0)

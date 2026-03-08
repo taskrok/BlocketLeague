@@ -266,7 +266,7 @@ export class HUD {
 
   showLiveScoreboard(blueScore, orangeScore, stats, maxPlayers, pings) {
     if (!stats) return;
-    const half = maxPlayers / 2;
+    const half = Math.floor(maxPlayers / 2);
     const hasPings = pings && pings.length >= maxPlayers;
 
     // Create element once, then update contents
@@ -337,7 +337,7 @@ export class HUD {
     const winColor = blueWins ? '#0088ff' : '#ff6600';
     const winTeam = blueWins ? this._teamNames.blue : this._teamNames.orange;
     const winText = `${winTeam} WINS!`;
-    const half = maxPlayers / 2;
+    const half = Math.floor(maxPlayers / 2);
 
     const el = document.createElement('div');
     el.id = 'match-scoreboard';
@@ -447,7 +447,7 @@ export class HUD {
     if (maxPlayers === 2) {
       return idx === 0 ? 'Player' : 'AI';
     }
-    const half = maxPlayers / 2;
+    const half = Math.floor(maxPlayers / 2);
     if (idx < half) {
       return `Blue ${idx + 1}`;
     }
