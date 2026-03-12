@@ -304,6 +304,11 @@ io.on('connection', (socket) => {
   });
 
   // Quick-chat relay: broadcast to all players in the room
+  socket.on('replaySkip', () => {
+    const room = playerRooms.get(socket.id);
+    if (room) room.replaySkip(socket.id);
+  });
+
   socket.on('quickChat', (data) => {
     const room = playerRooms.get(socket.id);
     if (!room) return;

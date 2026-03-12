@@ -1118,6 +1118,9 @@ export class Game {
       // Allow skipping celebration + replay entirely
       if (this._checkReplaySkipInput()) {
         this._replaySkipped = true;
+        if (this.network && this.network.socket) {
+          this.network.socket.emit('replaySkip');
+        }
         this._onReplayFinished();
         return;
       }
@@ -1622,6 +1625,10 @@ export class Game {
     if (this.state !== 'replay') return;
     this._replaySkipped = true;
     this.replayPlayer.skip();
+    // Notify server so it can fast-forward if all players skip
+    if (this.network && this.network.socket) {
+      this.network.socket.emit('replaySkip');
+    }
     this._onReplayFinished();
   }
 
@@ -1660,6 +1667,26 @@ export class Game {
         // so the game doesn't run singleplayer reset logic.
         // The countdown handler will pick it up when it arrives.
         this.state = 'waiting_for_countdown';
+        // Reset cars/ball to spawn and clear stale snapshots so the
+        // interpolation loop doesn't keep showing pre-goal positions
+        this.ball.reset();
+        this._ballTarget = null;
+        this.network.clearSnapshots();
+        if (this.maxPlayers === 4) {
+          this.allCars[0].reset(SPAWNS.TEAM_BLUE[0], 1);
+          this.allCars[1].reset(SPAWNS.TEAM_BLUE[1], 1);
+          this.allCars[2].reset(SPAWNS.TEAM_ORANGE[0], -1);
+          this.allCars[3].reset(SPAWNS.TEAM_ORANGE[1], -1);
+        } else {
+          const spawns = this.maxPlayers === 2
+            ? [SPAWNS.PLAYER1, SPAWNS.PLAYER2]
+            : [SPAWNS.PLAYER1];
+          for (let i = 0; i < this.allCars.length; i++) {
+            if (this.allCars[i] && spawns[i]) {
+              this.allCars[i].reset(spawns[i], i === 0 ? 1 : -1);
+            }
+          }
+        }
       }
     } else {
       this._enterGoalState();
@@ -1674,6 +1701,7 @@ export class Game {
     this._correctionOffset.y = 0;
     this._correctionOffset.z = 0;
     this.network.pendingInputs = [];
+    this.network.clearSnapshots(); // discard stale pre-goal snapshots so they don't override reset positions
     this.replayBuffer.clear();
     this._ballTarget = null; // reset ball visual target so it picks up fresh server state
 

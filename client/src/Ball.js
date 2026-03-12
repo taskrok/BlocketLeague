@@ -195,6 +195,9 @@ export class Ball {
     this.body.velocity.set(0, 0, 0);
     this.body.angularVelocity.set(0, 0, 0);
     this._spinQuat.identity();
+    // Sync mesh immediately so visuals match reset position
+    this.mesh.position.copy(this.body.position);
+    this.mesh.quaternion.set(0, 0, 0, 1);
   }
 
   getPosition() {

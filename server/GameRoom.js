@@ -52,6 +52,9 @@ export class GameRoom {
 
     // Slots controlled by server-side AI bots (Set of slot indices)
     this.botSlots = new Set();
+
+    // Track which human players have skipped the replay
+    this._replaySkips = new Set();
   }
 
   // ========== TEAM HELPERS ==========
@@ -693,6 +696,7 @@ export class GameRoom {
     });
 
     this.state = 'goal';
+    this._replaySkips.clear();
     // Allow time for client-side celebration (1.5s) + replay (~6.7s) + buffer
     this.goalResetTime = 9;
 
@@ -859,6 +863,17 @@ export class GameRoom {
     const idx = this.socketIdToSlot.get(socketId);
     if (idx !== undefined) {
       this.playerPings[idx] = rtt;
+    }
+  }
+
+  replaySkip(socketId) {
+    if (this.state !== 'goal') return;
+    this._replaySkips.add(socketId);
+    // Check if all human players have skipped
+    const humanPlayers = this.players.filter((p, i) => p && !this.botSlots.has(i));
+    const allSkipped = humanPlayers.every(p => this._replaySkips.has(p.socketId));
+    if (allSkipped) {
+      this.goalResetTime = 0; // trigger immediate reset on next tick
     }
   }
 

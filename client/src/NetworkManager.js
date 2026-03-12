@@ -490,6 +490,11 @@ export class NetworkManager {
     return this._snapshotCount > 0 ? this._getSnapshot(this._snapshotCount - 1) : null;
   }
 
+  clearSnapshots() {
+    this._snapshotHead = 0;
+    this._snapshotCount = 0;
+  }
+
   // ========== EVENT SYSTEM ==========
 
   on(event, fn) {
