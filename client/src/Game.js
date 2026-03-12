@@ -1162,18 +1162,30 @@ export class Game {
       // Apply aim assist for touch users before sending/applying
       const assisted = this._applyAimAssist(inputState);
 
-      // Send input to server
-      const input = this.network.sendInput(assisted);
-      this.network.addPendingInput(input);
-
-      // Client-side prediction: apply input locally
-      this.playerCar.update(assisted, dt);
-
-      // Step local physics for player car prediction
+      // Client-side prediction with fixed timestep matching server (60Hz).
+      // Both car.update() and world.step() use PHYSICS.TIMESTEP to ensure
+      // prediction matches server exactly. Variable frame time is handled
+      // by the accumulator — we may run 0, 1, or 2 steps per render frame.
       this.accumulator += dt;
+      let steppedThisFrame = false;
       while (this.accumulator >= PHYSICS.TIMESTEP) {
+        // Send input to server once per fixed step (matches server processing rate).
+        // Sending per-step instead of per-frame avoids flooding at high frame rates
+        // and ensures each pending input corresponds to exactly one physics step.
+        const input = this.network.sendInput(assisted);
+        this.network.addPendingInput(input);
+
+        this.playerCar.update(assisted, PHYSICS.TIMESTEP);
         this.world.step(PHYSICS.TIMESTEP);
         this.accumulator -= PHYSICS.TIMESTEP;
+        steppedThisFrame = true;
+      }
+
+      // If no physics step this frame (high framerate), still send input
+      // so the server stays responsive, but don't add to pending buffer
+      // (no physics step = no prediction to reconcile)
+      if (!steppedThisFrame) {
+        this.network.sendInput(assisted);
       }
     }
 
@@ -1205,8 +1217,14 @@ export class Game {
       }
     }
 
-    // Decay correction offset for smooth reconciliation (frame-rate independent)
-    const decay = Math.exp(-10 * dt); // smooth exponential decay ~10 Hz half-life
+    // Decay correction offset for smooth reconciliation (frame-rate independent).
+    // The decay rate adapts to network conditions: higher RTT means corrections
+    // are larger but should blend out faster to avoid persistent visual drift.
+    // Base rate 12 produces ~58ms half-life. With RTT > 100ms, rate increases
+    // to blend corrections out before the next server update arrives.
+    const rtt = this.network ? this.network.getRTT() : 0;
+    const decayRate = 12 + Math.max(0, rtt - 50) * 0.1; // scale up for high latency
+    const decay = Math.exp(-decayRate * dt);
     this._correctionOffset.x *= decay;
     this._correctionOffset.y *= decay;
     this._correctionOffset.z *= decay;
@@ -1224,13 +1242,11 @@ export class Game {
     body.position.y -= oy;
     body.position.z -= oz;
 
-    // Extrapolate remote cars forward using velocity for smooth motion between server updates
+    // Sync remote car meshes to their interpolated positions.
+    // Interpolation in NetworkManager already produces smooth positions between
+    // server snapshots. No velocity extrapolation needed here - adding it would
+    // double-count movement and cause overshoot/rubber-banding.
     for (const { car } of this.remoteCars) {
-      if (!car.demolished) {
-        car.body.position.x += car.body.velocity.x * dt;
-        car.body.position.y += car.body.velocity.y * dt;
-        car.body.position.z += car.body.velocity.z * dt;
-      }
       car._syncMesh();
     }
 
@@ -1351,25 +1367,36 @@ export class Game {
 
     const body = this.ball.body;
 
-    // Extrapolate target position forward using velocity (reduces perceived lag)
-    const extrapS = dt; // one frame ahead
+    // Extrapolate target position forward using velocity to predict where the
+    // ball will be by the time the next server update arrives. This compensates
+    // for the interpolation delay and makes the ball feel more responsive.
+    const extrapS = dt;
     const tx = target.px + target.vx * extrapS;
     const ty = target.py + target.vy * extrapS;
     const tz = target.pz + target.vz * extrapS;
 
-    // Smoothly blend current position toward target (fast lerp for responsiveness)
-    const lerp = 1 - Math.exp(-20 * dt); // ~20Hz blend rate — very responsive
+    // Smoothly blend current position toward extrapolated target.
+    // Single lerp step - no additional velocity drift to avoid double-counting.
+    const lerp = 1 - Math.exp(-25 * dt); // ~25Hz blend rate for responsive tracking
     body.position.x += (tx - body.position.x) * lerp;
     body.position.y += (ty - body.position.y) * lerp;
     body.position.z += (tz - body.position.z) * lerp;
 
-    // Also extrapolate between updates: drift toward target using velocity
-    body.position.x += target.vx * dt * (1 - lerp);
-    body.position.y += target.vy * dt * (1 - lerp);
-    body.position.z += target.vz * dt * (1 - lerp);
-
     // Set velocity for visual spin calculation
     body.velocity.set(target.vx, target.vy, target.vz);
+
+    // Smooth quaternion toward target (avoids jarring ball spin jumps)
+    const bq = body.quaternion;
+    const tqx = target.qx, tqy = target.qy, tqz = target.qz, tqw = target.qw;
+    let dot = bq.x * tqx + bq.y * tqy + bq.z * tqz + bq.w * tqw;
+    const sign = dot < 0 ? -1 : 1;
+    bq.x += (tqx * sign - bq.x) * lerp;
+    bq.y += (tqy * sign - bq.y) * lerp;
+    bq.z += (tqz * sign - bq.z) * lerp;
+    bq.w += (tqw * sign - bq.w) * lerp;
+    // Normalize
+    const invLen = 1 / Math.sqrt(bq.x * bq.x + bq.y * bq.y + bq.z * bq.z + bq.w * bq.w);
+    bq.x *= invLen; bq.y *= invLen; bq.z *= invLen; bq.w *= invLen;
 
     // Update visual (spin, glow, shadow)
     this.ball.update(dt);

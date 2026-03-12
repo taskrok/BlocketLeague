@@ -47,6 +47,9 @@ export class GameRoom {
     // Body-to-car-index Map for O(1) collision lookups
     this.bodyToCarIndex = new Map();
 
+    // Socket ID to slot index Map for O(1) input routing
+    this.socketIdToSlot = new Map();
+
     // Slots controlled by server-side AI bots (Set of slot indices)
     this.botSlots = new Set();
   }
@@ -127,6 +130,7 @@ export class GameRoom {
       latestInput: this._emptyInput(),
       lastProcessedInput: 0,
     };
+    this.socketIdToSlot.set(socket.id, slot);
     socket.join(this.roomId);
 
     // Broadcast lobby state to all players in the room
@@ -142,11 +146,20 @@ export class GameRoom {
   }
 
   removePlayer(socketId) {
-    const idx = this.players.findIndex(p => p && p.socketId === socketId);
-    if (idx === -1) return;
+    const idx = this.socketIdToSlot.get(socketId);
+    if (idx === undefined) {
+      // Fallback linear scan (shouldn't happen, but defensive)
+      const fallbackIdx = this.players.findIndex(p => p && p.socketId === socketId);
+      if (fallbackIdx === -1) return;
+      return this._removePlayerByIndex(fallbackIdx, socketId);
+    }
+    this._removePlayerByIndex(idx, socketId);
+  }
 
+  _removePlayerByIndex(idx, socketId) {
     const playerName = this.players[idx].playerName || `Player ${idx + 1}`;
     this.players[idx].socket.leave(this.roomId);
+    this.socketIdToSlot.delete(socketId);
 
     // If game is in progress, replace with AI bot instead of removing
     if (this.state !== 'waiting') {
@@ -157,18 +170,22 @@ export class GameRoom {
       this.players[idx].playerName = playerName + ' (Bot)';
       this.botSlots.add(idx);
 
-      // Notify remaining human players
-      const remaining = this.players.filter(p => p && p.socket);
-      remaining.forEach(p => {
-        p.socket.emit('playerDisconnected', {
-          slot: idx,
-          name: playerName,
-          message: `${playerName} disconnected - replaced by bot`,
-        });
-      });
+      // Notify remaining human players (for-loop avoids .filter allocation)
+      let hasHumans = false;
+      for (let i = 0; i < this.maxPlayers; i++) {
+        const p = this.players[i];
+        if (p && p.socket) {
+          hasHumans = true;
+          p.socket.emit('playerDisconnected', {
+            slot: idx,
+            name: playerName,
+            message: `${playerName} disconnected - replaced by bot`,
+          });
+        }
+      }
 
       // If no human players remain, stop the game loops
-      if (remaining.length === 0) {
+      if (!hasHumans) {
         this._stopLoops();
       }
       return;
@@ -181,30 +198,32 @@ export class GameRoom {
   }
 
   receiveInput(socketId, input) {
-    const player = this.players.find(p => p && p.socketId === socketId);
+    const slot = this.socketIdToSlot.get(socketId);
+    if (slot === undefined) return;
+    const player = this.players[slot];
     if (!player) return;
 
     // Validate seq is a reasonable number
     if (typeof input.seq !== 'number' || !isFinite(input.seq) || input.seq < 0 || input.seq > 1e9) return;
     if (input.seq <= player.lastProcessedInput) return;
 
-    // Sanitize analog values: clamp to [-1, 1]
-    const clamp = (v, lo, hi) => Math.max(lo, Math.min(hi, typeof v === 'number' && isFinite(v) ? v : 0));
-    input.throttle = clamp(input.throttle, -1, 1);
-    input.steer = clamp(input.steer, -1, 1);
-    input.airRoll = clamp(input.airRoll, -1, 1);
-    input.dodgeForward = clamp(input.dodgeForward, -1, 1);
-    input.dodgeSteer = clamp(input.dodgeSteer, -1, 1);
-
+    // Copy fields into the player's existing latestInput object (zero allocation).
+    // This is required because decodeInput() returns a pooled/reused object.
+    const li = player.latestInput;
+    li.seq = input.seq;
+    // Inline clamp for analog values [-1, 1] (avoids closure allocation per call)
+    let v = input.throttle; li.throttle = v !== v || typeof v !== 'number' ? 0 : v < -1 ? -1 : v > 1 ? 1 : v;
+    v = input.steer; li.steer = v !== v || typeof v !== 'number' ? 0 : v < -1 ? -1 : v > 1 ? 1 : v;
+    v = input.airRoll; li.airRoll = v !== v || typeof v !== 'number' ? 0 : v < -1 ? -1 : v > 1 ? 1 : v;
+    v = input.dodgeForward; li.dodgeForward = v !== v || typeof v !== 'number' ? 0 : v < -1 ? -1 : v > 1 ? 1 : v;
+    v = input.dodgeSteer; li.dodgeSteer = v !== v || typeof v !== 'number' ? 0 : v < -1 ? -1 : v > 1 ? 1 : v;
     // Coerce booleans
-    input.jump = !!input.jump;
-    input.jumpPressed = !!input.jumpPressed;
-    input.boost = !!input.boost;
-    input.handbrake = !!input.handbrake;
-    input.pitchUp = !!input.pitchUp;
-    input.pitchDown = !!input.pitchDown;
-
-    player.latestInput = input;
+    li.jump = !!input.jump;
+    li.jumpPressed = !!input.jumpPressed;
+    li.boost = !!input.boost;
+    li.handbrake = !!input.handbrake;
+    li.pitchUp = !!input.pitchUp;
+    li.pitchDown = !!input.pitchDown;
   }
 
   isFull() {
@@ -245,8 +264,8 @@ export class GameRoom {
   }
 
   switchTeam(socketId) {
-    const idx = this.players.findIndex(p => p && p.socketId === socketId);
-    if (idx === -1) return;
+    const idx = this.socketIdToSlot.get(socketId);
+    if (idx === undefined) return;
     if (this.state !== 'waiting') return;
 
     const currentTeam = this._getTeam(idx);
@@ -258,6 +277,8 @@ export class GameRoom {
       if (this.players[i] === null) {
         this.players[i] = this.players[idx];
         this.players[idx] = null;
+        // Update socketIdToSlot to point to the new slot
+        this.socketIdToSlot.set(socketId, i);
         this._broadcastLobbyState();
         return;
       }
@@ -355,6 +376,10 @@ export class GameRoom {
       this.bodyToCarIndex.set(car.body, i);
     }
 
+    // Pre-allocated vectors for collision handler (avoids allocation per collision)
+    const _collisionForward = new CANNON.Vec3();
+    const _collisionZAxis = new CANNON.Vec3(0, 0, 1);
+
     // Psyonix-style ball hit impulse on car-ball collision
     this.ball.body.addEventListener('collide', (e) => {
       const other = e.body;
@@ -366,7 +391,8 @@ export class GameRoom {
       const ballVel = this.ball.body.velocity;
       const carPos = other.position;
       const carVel = other.velocity;
-      const carForward = other.quaternion.vmult(new CANNON.Vec3(0, 0, 1));
+      other.quaternion.vmult(_collisionZAxis, _collisionForward);
+      const carForward = _collisionForward;
 
       // Record touch BEFORE impulse
       if (carIdx >= 0) {
@@ -404,6 +430,9 @@ export class GameRoom {
 
     this.boostPads = new ServerBoostPads();
     this.perfTracker = new PerformanceTracker(this.maxPlayers);
+
+    // Pre-allocate broadcast state objects (avoids allocation every 30Hz tick)
+    this._initBroadcastState();
   }
 
   _handleCarDemolition(carA, carB) {
@@ -485,11 +514,20 @@ export class GameRoom {
     this._broadcastTickCounter = 0;
     this._broadcastEveryNTicks = Math.round(NETWORK.TICK_RATE / NETWORK.SEND_RATE); // 60/30 = 2
 
-    // High-resolution timer loop using setImmediate + time accumulation
-    // This prevents drift that setInterval suffers from under load
+    // Track server time for inclusion in state broadcasts (monotonic ms).
+    // Only set once on first start — preserve across goal resets so client
+    // clock sync is not disrupted by server time jumping back to 0.
+    if (!this._serverStartTime) {
+      this._serverStartTime = performance.now();
+    }
+
+    // High-resolution timer loop using setTimeout with drift compensation
+    // Unlike setImmediate (which spins the CPU at 100%), this sleeps between
+    // ticks and compensates for setTimeout's ~1-4ms jitter via accumulator.
     this._physicsRunning = true;
     this._physicsLastTime = performance.now();
     this._physicsAccumulator = 0;
+    this._physicsTargetTime = this._physicsLastTime + physicsMs;
 
     const physicsLoop = () => {
       if (!this._physicsRunning) return;
@@ -507,16 +545,20 @@ export class GameRoom {
         this._physicsAccumulator -= dt;
       }
 
-      this._physicsTimer = setImmediate(physicsLoop);
+      // Schedule next tick with drift compensation: calculate how long until
+      // the next target time, clamping to at least 1ms to avoid busy-waiting
+      this._physicsTargetTime += physicsMs;
+      const delay = Math.max(1, this._physicsTargetTime - performance.now());
+      this._physicsTimer = setTimeout(physicsLoop, delay);
     };
 
-    this._physicsTimer = setImmediate(physicsLoop);
+    this._physicsTimer = setTimeout(physicsLoop, physicsMs);
   }
 
   _stopLoops() {
     this._physicsRunning = false;
     if (this._physicsTimer) {
-      clearImmediate(this._physicsTimer);
+      clearTimeout(this._physicsTimer);
       this._physicsTimer = null;
     }
     if (this._physicsInterval) {
@@ -551,6 +593,7 @@ export class GameRoom {
     this.players.fill(null);
     this.botSlots.clear();
     this.bodyToCarIndex.clear();
+    this.socketIdToSlot.clear();
     if (this._onCleanup) {
       this._onCleanup(this.roomId);
     }
@@ -564,11 +607,14 @@ export class GameRoom {
     const dt = PHYSICS.TIMESTEP;
 
     // Apply inputs to cars (human players + AI bots)
-    this.players.forEach((player, idx) => {
-      if (!player) return;
+    // Uses for-loop instead of .forEach to avoid closure allocation per tick
+    const isActive = this.state === 'playing' || this.state === 'overtime';
+    for (let idx = 0; idx < this.maxPlayers; idx++) {
+      const player = this.players[idx];
+      if (!player) continue;
 
       // Compute AI input for bot-controlled slots
-      if (this.botSlots.has(idx) && (this.state === 'playing' || this.state === 'overtime')) {
+      if (this.botSlots.has(idx) && isActive) {
         const teamDir = this._getDirection(idx);
         const role = this._getAIRole(idx);
         player.latestInput = computeAIInput(this.cars[idx], this.ball, teamDir, role);
@@ -576,7 +622,7 @@ export class GameRoom {
 
       const input = player.latestInput;
 
-      if (this.state === 'playing' || this.state === 'overtime') {
+      if (isActive) {
         this.cars[idx].update(input, dt);
       }
 
@@ -584,8 +630,9 @@ export class GameRoom {
       player.lastProcessedInput = input.seq || 0;
 
       // Clear jumpPressed after processing (edge-triggered)
-      player.latestInput = { ...player.latestInput, jumpPressed: false };
-    });
+      // Mutate in-place instead of spread operator (avoids object allocation every tick)
+      input.jumpPressed = false;
+    }
 
     // Step physics
     this.world.step(dt);
@@ -725,47 +772,79 @@ export class GameRoom {
 
   // ========== BROADCAST (30Hz, binary protocol) ==========
 
+  _initBroadcastState() {
+    // Pre-allocate broadcast state objects to avoid GC pressure at 30Hz
+    this._broadcastBall = { px: 0, py: 0, pz: 0, vx: 0, vy: 0, vz: 0, qx: 0, qy: 0, qz: 0, qw: 1 };
+    this._broadcastPlayers = [];
+    for (let i = 0; i < this.maxPlayers; i++) {
+      this._broadcastPlayers.push({
+        px: 0, py: 0, pz: 0,
+        vx: 0, vy: 0, vz: 0,
+        qx: 0, qy: 0, qz: 0, qw: 1,
+        avx: 0, avy: 0, avz: 0,
+        boost: 0, demolished: false, lastProcessedInput: 0,
+      });
+    }
+    this._broadcastGameState = {
+      tick: 0,
+      ball: this._broadcastBall,
+      players: this._broadcastPlayers,
+      boostPads: null,
+      score: { blue: 0, orange: 0 },
+      timer: 0,
+      state: 'playing',
+      serverTime: 0,
+    };
+  }
+
   _broadcast() {
+    // Check for human players first (avoid work if no one is listening)
+    let hasHumans = false;
+    for (let i = 0; i < this.maxPlayers; i++) {
+      const p = this.players[i];
+      if (p && p.socket) { hasHumans = true; break; }
+    }
+    if (!hasHumans) return;
+
+    // Write ball data into pre-allocated object
     const bp = this.ball.body.position;
     const bv = this.ball.body.velocity;
     const bq = this.ball.body.quaternion;
+    const bb = this._broadcastBall;
+    bb.px = bp.x; bb.py = bp.y; bb.pz = bp.z;
+    bb.vx = bv.x; bb.vy = bv.y; bb.vz = bv.z;
+    bb.qx = bq.x; bb.qy = bq.y; bb.qz = bq.z; bb.qw = bq.w;
 
-    const playersData = this.cars.map((car, idx) => {
-      const p = car.body.position;
-      const v = car.body.velocity;
-      const q = car.body.quaternion;
-      const av = car.body.angularVelocity;
-      return {
-        px: p.x, py: p.y, pz: p.z,
-        vx: v.x, vy: v.y, vz: v.z,
-        qx: q.x, qy: q.y, qz: q.z, qw: q.w,
-        avx: av.x, avy: av.y, avz: av.z,
-        boost: car.boost,
-        demolished: car.demolished,
-        lastProcessedInput: this.players[idx] ? this.players[idx].lastProcessedInput : 0,
-      };
-    });
+    // Write player data into pre-allocated objects (no .map(), no new objects)
+    const playersData = this._broadcastPlayers;
+    for (let idx = 0; idx < this.maxPlayers; idx++) {
+      const car = this.cars[idx];
+      const pd = playersData[idx];
+      const cp = car.body.position;
+      const cv = car.body.velocity;
+      const cq = car.body.quaternion;
+      const cav = car.body.angularVelocity;
+      pd.px = cp.x; pd.py = cp.y; pd.pz = cp.z;
+      pd.vx = cv.x; pd.vy = cv.y; pd.vz = cv.z;
+      pd.qx = cq.x; pd.qy = cq.y; pd.qz = cq.z; pd.qw = cq.w;
+      pd.avx = cav.x; pd.avy = cav.y; pd.avz = cav.z;
+      pd.boost = car.boost;
+      pd.demolished = car.demolished;
+      pd.lastProcessedInput = this.players[idx] ? this.players[idx].lastProcessedInput : 0;
+    }
 
-    const gameState = {
-      tick: this.tick,
-      ball: {
-        px: bp.x, py: bp.y, pz: bp.z,
-        vx: bv.x, vy: bv.y, vz: bv.z,
-        qx: bq.x, qy: bq.y, qz: bq.z, qw: bq.w,
-      },
-      players: playersData,
-      boostPads: this.boostPads.getActiveBitmaskBytes(),
-      score: { blue: this.scores.blue, orange: this.scores.orange },
-      timer: this.matchTime,
-      state: this.state,
-    };
+    // Update pre-allocated game state object
+    const gs = this._broadcastGameState;
+    gs.tick = this.tick;
+    gs.boostPads = this.boostPads.getActiveBitmaskBytes();
+    gs.score.blue = this.scores.blue;
+    gs.score.orange = this.scores.orange;
+    gs.timer = this.matchTime;
+    gs.state = this.state;
+    gs.serverTime = this._serverStartTime ? (performance.now() - this._serverStartTime) / 1000 : 0;
 
     // Binary encode + volatile emit (drops packets under pressure instead of queuing)
-    // Only emit if there are human players to receive it
-    const hasHumans = this.players.some(p => p && p.socket);
-    if (!hasHumans) return;
-
-    const buffer = encodeGameState(gameState, this.maxPlayers);
+    const buffer = encodeGameState(gs, this.maxPlayers);
     this.io.to(this.roomId).volatile.emit('gameState', buffer);
 
     // Broadcast pings ~1Hz (every 30th broadcast at 30Hz)
@@ -777,8 +856,8 @@ export class GameRoom {
   // ========== HELPERS ==========
 
   setPlayerPing(socketId, rtt) {
-    const idx = this.players.findIndex(p => p && p.socketId === socketId);
-    if (idx >= 0) {
+    const idx = this.socketIdToSlot.get(socketId);
+    if (idx !== undefined) {
       this.playerPings[idx] = rtt;
     }
   }

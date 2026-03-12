@@ -20,6 +20,13 @@ const io = new Server(server, {
     origin: '*',
     methods: ['GET', 'POST'],
   },
+  // Disable per-message compression: adds CPU overhead and latency for
+  // small binary packets (~100-200 bytes). Net negative for real-time games.
+  perMessageDeflate: false,
+  // Allow binary data up to 1KB (our largest packet is ~200 bytes for 4 players)
+  maxHttpBufferSize: 1024,
+  // Prefer websocket transport, skip polling upgrade dance
+  transports: ['websocket'],
 });
 
 const PORT = process.env.PORT || 3001;
