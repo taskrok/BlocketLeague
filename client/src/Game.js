@@ -1677,6 +1677,25 @@ export class Game {
     this.replayBuffer.clear();
     this._ballTarget = null; // reset ball visual target so it picks up fresh server state
 
+    // Reset all cars and ball to spawn positions before countdown begins
+    // (server has already reset; this ensures client visuals match immediately)
+    this.ball.reset();
+    if (this.maxPlayers === 4) {
+      this.allCars[0].reset(SPAWNS.TEAM_BLUE[0], 1);
+      this.allCars[1].reset(SPAWNS.TEAM_BLUE[1], 1);
+      this.allCars[2].reset(SPAWNS.TEAM_ORANGE[0], -1);
+      this.allCars[3].reset(SPAWNS.TEAM_ORANGE[1], -1);
+    } else {
+      const spawns = this.maxPlayers === 2
+        ? [SPAWNS.PLAYER1, SPAWNS.PLAYER2]
+        : [SPAWNS.PLAYER1];
+      for (let i = 0; i < this.allCars.length; i++) {
+        if (this.allCars[i] && spawns[i]) {
+          this.allCars[i].reset(spawns[i], i === 0 ? 1 : -1);
+        }
+      }
+    }
+
     // Reset demolished state on all cars so they're visible for countdown
     for (const car of this.allCars) {
       if (car && car.demolished) {
