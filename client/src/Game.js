@@ -24,46 +24,38 @@ import { ReplayPlayer } from './ReplayPlayer.js';
 import {
   PHYSICS, ARENA as ARENA_CONST, BALL as BALL_CONST,
   COLORS, SPAWNS, GAME, CAR as CAR_CONST, COLLISION_GROUPS,
-  NETWORK, DEMOLITION,
+  NETWORK, DEMOLITION, RANDOM_NAMES,
 } from '../../shared/constants.js';
 import { computeBallHitImpulse } from '../../shared/BallHitImpulse.js';
 import { PerformanceTracker } from '../../shared/PerformanceTracker.js';
-import { TRAINING_PACKS } from './TrainingPacks.js';
+import { checkDemolition, handleBump } from '../../shared/Demolition.js';
+import { AIController, findPlayerTeam, pickOpponentTeam } from './AIController.js';
+import { ExplosionManager } from './ExplosionManager.js';
+import { TrainingMode } from './TrainingMode.js';
+import { audioManager } from './AudioManager.js';
+import { QuickChat } from './QuickChat.js';
+import { BallIndicator } from './BallIndicator.js';
+import { Tutorial, isTutorialComplete } from './Tutorial.js';
+import { progression } from './Progression.js';
 
 // Reusable temp vectors
-const _aiEuler = new CANNON.Vec3();
 const _aimEuler = new CANNON.Vec3();
 const _npVec = new THREE.Vector3(); // reusable vector for nameplate projection
 
-// AI team definitions for 2v2 mode — each team has a name and two car model IDs
-const AI_TEAMS = [
-  { name: 'First Responders', cars: ['ambulance', 'firetruck'] },
-  { name: 'Boys in Blue', cars: ['police', 'tractor-police'] },
-  { name: 'Street Racers', cars: ['race', 'sedan-sports'] },
-  { name: 'Future Shock', cars: ['race-future', 'hatchback-sports'] },
-  { name: 'Heavy Haul', cars: ['truck', 'truck-flat'] },
-  { name: 'Special Delivery', cars: ['delivery', 'delivery-flat'] },
-  { name: 'Sunday Drivers', cars: ['sedan', 'suv'] },
-  { name: 'Country Club', cars: ['suv-luxury', 'taxi'] },
-  { name: 'Mud Dogs', cars: ['tractor', 'tractor-shovel'] },
-  { name: 'City Workers', cars: ['garbage-truck', 'van'] },
-];
-
-function findPlayerTeam(playerModelId) {
-  if (!playerModelId) return null;
-  return AI_TEAMS.find(t => t.cars.includes(playerModelId)) || null;
-}
-
-function pickOpponentTeam(availableModelIds, excludeTeam) {
-  const valid = AI_TEAMS.filter(t =>
-    t !== excludeTeam && t.cars.every(c => availableModelIds.includes(c))
-  );
-  if (valid.length === 0) return null;
-  return valid[Math.floor(Math.random() * valid.length)];
-}
 
 export class Game {
-  constructor(canvas, mode = 'singleplayer', networkManager = null, playerVariant = null, joinedData = null, aiDifficulty = 'pro', aiMode = '1v1', trainingOpts = null, arenaTheme = null) {
+  constructor(canvas, options = {}) {
+    const {
+      mode = 'singleplayer',
+      networkManager = null,
+      playerVariant = null,
+      joinedData = null,
+      aiDifficulty = 'pro',
+      aiMode = '1v1',
+      trainingOpts = null,
+      arenaTheme = null,
+    } = options;
+
     this.canvas = canvas;
     this.mode = mode;
     this.network = networkManager;
@@ -104,8 +96,7 @@ export class Game {
     // Deferred countdown events (buffered during replay/celebration)
     this._deferredCountdown = null;
 
-    // Explosion VFX
-    this._activeExplosions = [];
+    // Explosion and landing ring VFX (delegated to ExplosionManager, created after scene init)
 
     this._initRenderer();
     this._initPhysics();
@@ -113,6 +104,11 @@ export class Game {
     this.input = new InputManager();
     this.hud = new HUD();
     this.replayBuffer = new ReplayBuffer();
+
+    // Add HUD level badge
+    this._hudLevelBadge = progression.createHUDLevelBadge();
+    const gameContainer = document.getElementById('game-container');
+    if (gameContainer) gameContainer.appendChild(this._hudLevelBadge);
     this.replayPlayer = new ReplayPlayer();
 
     if (this.mode === 'training') {
@@ -125,12 +121,19 @@ export class Game {
       this._initPostProcessing();
       if (this.mode === 'freeplay') {
         this.state = 'playing';
+        audioManager.startCrowdAmbiance();
         this.matchTime = Infinity;
         this.hud.updateTimer(0);
         this.hud.timerEl.textContent = 'FREE PLAY';
         this.hud.timerEl.style.color = '#00ff88';
         this.hud.timerEl.style.textShadow = '0 0 16px rgba(0, 255, 136, 0.6)';
+        // Start tutorial if not yet completed
+        if (!isTutorialComplete()) {
+          this.tutorial = new Tutorial(this);
+        }
       } else {
+        // Start match timer for progression tracking
+        progression.startMatch();
         this._startCountdown();
       }
     } else {
@@ -146,6 +149,19 @@ export class Game {
     this.gameSettings.onReturnToLobby = () => {
       if (this.hud.onBackToLobby) this.hud.onBackToLobby();
     };
+
+    // Quick-chat system
+    this.quickChat = new QuickChat({
+      container: document.getElementById('game-container'),
+      camera: this.camera,
+      canvas: this.canvas,
+      input: this.input,
+      network: this.network,
+      mode: this.mode,
+    });
+
+    // Off-screen ball indicator
+    this.ballIndicator = new BallIndicator(this.camera, this.ball, this.canvas);
 
     this.clock = new THREE.Clock();
     this.accumulator = 0;
@@ -269,6 +285,7 @@ export class Game {
         this.arena.trimeshBody, playerVariant
       );
       this.playerCar.body.material = this.carMaterial;
+      this.playerCar.isLocalPlayer = true;
       this.allCars = [this.playerCar];
       this.aiCars = [];
     } else if (this.aiMode === '2v2') {
@@ -304,6 +321,7 @@ export class Game {
         this.arena.trimeshBody, playerVariant
       );
       this.playerCar.body.material = this.carMaterial;
+      this.playerCar.isLocalPlayer = true;
 
       const allyCar = new Car(
         this.scene, this.world,
@@ -340,6 +358,7 @@ export class Game {
         this.arena.trimeshBody, playerVariant
       );
       this.playerCar.body.material = this.carMaterial;
+      this.playerCar.isLocalPlayer = true;
 
       this.opponentCar = new Car(
         this.scene, this.world,
@@ -352,26 +371,35 @@ export class Game {
       this.aiCars = [this.opponentCar];
     }
 
+    // Set per-car audio profile based on the player's car model
+    if (playerVariant && playerVariant.modelId) {
+      audioManager.setCarModel(playerVariant.modelId);
+    }
+
     this._initBallCollisionHandler();
     this._initCarCollisionHandler();
 
     this.boostPads = new BoostPads(this.scene);
+    this.explosionManager = new ExplosionManager(this.scene);
     this.maxPlayers = this.allCars.length;
     this.perfTracker = new PerformanceTracker(this.maxPlayers);
 
     // Assign names for scoreboard
     this._assignPlayerNames();
+
+    // AI controller (singleplayer modes only)
+    if (this.aiCars && this.aiCars.length > 0) {
+      this.aiController = new AIController({
+        allCars: this.allCars,
+        aiCars: this.aiCars,
+        ball: this.ball,
+        difficulty: this.aiDifficulty,
+        aiMode: this.aiMode,
+      });
+    }
   }
 
   _assignPlayerNames() {
-    const RANDOM_NAMES = [
-      'Donut','Penguin','Stumpy','Whicker','Shadow','Howard','Wilshire','Darling',
-      'Disco','Jack','The Bear','Sneak','The Big L','Whisp','Wheezy','Crazy',
-      'Goat','Pirate','Saucy','Hambone','Butcher','Walla Walla','Snake','Caboose',
-      'Sleepy','Killer','Stompy','Mopey','Dopey','Weasel','Ghost','Dasher',
-      'Grumpy','Hollywood','Tooth','Noodle','King','Cupid','Prancer',
-    ];
-
     // Shuffle and pick unique names for AI
     const shuffled = [...RANDOM_NAMES].sort(() => Math.random() - 0.5);
 
@@ -467,6 +495,22 @@ export class Game {
     }
   }
 
+
+  // ========== CONTROLS HINT (GAMEPAD AWARE) ==========
+
+  _updateControlsHint() {
+    const hint = this.hud.controlsHint;
+    if (!hint || hint.classList.contains('hidden')) return;
+
+    const hasGamepad = this.input._gamepadIndex !== null;
+    if (hasGamepad && !this._controlsHintGamepad) {
+      this._controlsHintGamepad = true;
+      hint.innerHTML = '<p>A - Jump | B - Boost | LT - Air Roll | RB/LB - Roll | Y - Ball Cam</p>';
+    } else if (!hasGamepad && this._controlsHintGamepad) {
+      this._controlsHintGamepad = false;
+      hint.innerHTML = '<p>WASD - Drive | SPACE - Jump | SHIFT - Boost | C - Ball Cam | J/L - Look</p>';
+    }
+  }
   // ========== MULTIPLAYER SCENE INIT ==========
 
   _initSceneMultiplayer() {
@@ -493,9 +537,11 @@ export class Game {
 
     // Boost pads with isRemote — server handles pickup/respawn
     this.boostPads = new BoostPads(this.scene, true);
+    this.explosionManager = new ExplosionManager(this.scene);
   }
 
   _initMultiplayer() {
+    progression.startMatch();
     this._localVariant = this.playerVariant || generateCarVariant(COLORS.CYAN, modelLoader.getModelIds());
 
     // If joinedData was passed from the lobby flow, create cars immediately
@@ -549,7 +595,8 @@ export class Game {
       const isBlueTeam = data.victimIdx < this.maxPlayers / 2;
       const color = isBlueTeam ? COLORS.CYAN : COLORS.ORANGE;
       victim.demolish();
-      this._spawnExplosion(pos, color);
+      this.explosionManager.spawnExplosion(pos, color);
+      audioManager.playDemolition();
       if (data.victimIdx === this.playerNumber) {
         this.hud.showDemolished();
       }
@@ -561,6 +608,7 @@ export class Game {
       this.hud.updateScore(data.blueScore, data.orangeScore);
       const scorerName = data.scorerIdx >= 0 ? this.hud._getPlayerLabel(data.scorerIdx, this.maxPlayers) : null;
       this.hud.showGoalScored(data.team, scorerName);
+      audioManager.playGoalHorn();
       this._lastScorerName = scorerName;
 
       // Reset correction offset on state transition
@@ -571,13 +619,14 @@ export class Game {
 
       // Spawn goal explosion at ball position
       const goalColor = data.team === 'orange' ? COLORS.GOAL_ORANGE : COLORS.GOAL_BLUE;
+      if (this.cameraController) this.cameraController.shakeGoal();
       if (data.ballPos) {
-        this._spawnGoalExplosion(data.ballPos, goalColor);
+        this.explosionManager.spawnGoalExplosion(data.ballPos, goalColor);
         this.replayBuffer.addEvent({ type: 'goal', x: data.ballPos.x, y: data.ballPos.y, z: data.ballPos.z, color: goalColor });
       } else {
         // Fallback: use current ball position
         const bp = this.ball.body.position;
-        this._spawnGoalExplosion({ x: bp.x, y: bp.y, z: bp.z }, goalColor);
+        this.explosionManager.spawnGoalExplosion({ x: bp.x, y: bp.y, z: bp.z }, goalColor);
         this.replayBuffer.addEvent({ type: 'goal', x: bp.x, y: bp.y, z: bp.z, color: goalColor });
       }
 
@@ -612,7 +661,20 @@ export class Game {
 
     this.network.on('gameOver', (data) => {
       this.state = 'ended';
+      audioManager.stopAll();
       this.hud.showMatchEnd(data.blueScore, data.orangeScore, data.stats, data.mvpIdx, this.maxPlayers);
+
+      // Record progression for multiplayer
+      if (data.stats && this.playerNumber >= 0) {
+        const playerStats = data.stats[this.playerNumber];
+        const playerWon = (this.myTeam === 'blue' && data.blueScore > data.orangeScore) ||
+                          (this.myTeam === 'orange' && data.orangeScore > data.blueScore);
+        const xpResult = progression.endMatch(playerStats, playerWon, 0);
+        if (xpResult) {
+          progression.showXPScreen(xpResult);
+        }
+      }
+
       this._setupCelebration();
       if (this.onMatchEnd) this.onMatchEnd();
     });
@@ -650,7 +712,13 @@ export class Game {
       this.arena.trimeshBody, localVariant
     );
     this.playerCar.body.material = this.carMaterial;
+    this.playerCar.isLocalPlayer = true;
     this.allCars[mySlot] = this.playerCar;
+
+    // Set per-car audio profile for multiplayer
+    if (localVariant && localVariant.modelId) {
+      audioManager.setCarModel(localVariant.modelId);
+    }
 
     // Create remote cars for all other players
     this.remoteCars = [];
@@ -748,6 +816,12 @@ export class Game {
       this.ball.body.velocity.y = impulse.y;
       this.ball.body.velocity.z = impulse.z;
 
+      // Ball impact flash and camera shake
+      const hitSpeed = Math.sqrt(impulse.x * impulse.x + impulse.y * impulse.y + impulse.z * impulse.z);
+      this.ball.flash(hitSpeed);
+      if (this.cameraController) this.cameraController.shakeHit(hitSpeed);
+      audioManager.playBallHit(hitSpeed);
+
       // Finalize touch AFTER impulse (singleplayer only)
       if (this.perfTracker && carIdx >= 0) {
         this.perfTracker.finalizePendingTouch(this.ball.body.velocity);
@@ -776,72 +850,18 @@ export class Game {
   }
 
   _handleCarCollision(carA, carB) {
-    if (carA.demolished || carB.demolished) return;
-
-    const speedA = carA.getSpeed();
-    const speedB = carB.getSpeed();
-
-    // Demolition at supersonic speed — but only if driving INTO the other car.
-    // Dot product of attacker velocity direction vs direction toward victim must be > 0.5
-    // (within ~60° cone). Side-by-side or same-direction travel won't demolish.
-    if (speedA >= CAR_CONST.SUPERSONIC_THRESHOLD && speedA > speedB) {
-      const va = carA.body.velocity;
-      const dx = carB.body.position.x - carA.body.position.x;
-      const dy = carB.body.position.y - carA.body.position.y;
-      const dz = carB.body.position.z - carA.body.position.z;
-      const dLen = Math.sqrt(dx * dx + dy * dy + dz * dz) || 1;
-      const dot = (va.x * dx + va.y * dy + va.z * dz) / (speedA * dLen);
-      if (dot > 0.5) {
-        if (this.perfTracker) {
-          const idx = this.allCars.indexOf(carA);
-          if (idx >= 0) this.perfTracker.recordDemolition(idx);
-        }
-        this._demolishCar(carB);
-        return;
+    const result = checkDemolition(carA, carB);
+    if (result) {
+      if (this.perfTracker) {
+        const idx = this.allCars.indexOf(result.attacker);
+        if (idx >= 0) this.perfTracker.recordDemolition(idx);
       }
-    }
-    if (speedB >= CAR_CONST.SUPERSONIC_THRESHOLD && speedB > speedA) {
-      const vb = carB.body.velocity;
-      const dx = carA.body.position.x - carB.body.position.x;
-      const dy = carA.body.position.y - carB.body.position.y;
-      const dz = carA.body.position.z - carB.body.position.z;
-      const dLen = Math.sqrt(dx * dx + dy * dy + dz * dz) || 1;
-      const dot = (vb.x * dx + vb.y * dy + vb.z * dz) / (speedB * dLen);
-      if (dot > 0.5) {
-        if (this.perfTracker) {
-          const idx = this.allCars.indexOf(carB);
-          if (idx >= 0) this.perfTracker.recordDemolition(idx);
-        }
-        this._demolishCar(carA);
-        return;
-      }
+      this._demolishCar(result.victim);
+      return;
     }
 
-    // Sub-supersonic bump: faster car plows through, slower car gets launched
-    if (speedA < 2 && speedB < 2) return; // both nearly stationary, let physics handle it
-
-    const bumper = speedA >= speedB ? carA : carB;
-    const bumped = bumper === carA ? carB : carA;
-
-    // Direction from bumper to bumped
-    const dx = bumped.body.position.x - bumper.body.position.x;
-    const dz = bumped.body.position.z - bumper.body.position.z;
-    const dist = Math.sqrt(dx * dx + dz * dz) || 1;
-    const nx = dx / dist;
-    const nz = dz / dist;
-
-    const bumperSpeed = bumper.getSpeed();
-    const bumpStrength = Math.min(bumperSpeed * 0.3, 8);
-
-    // Nudge the bumped car in bump direction + slight upward
-    bumped.body.velocity.x += nx * bumpStrength;
-    bumped.body.velocity.z += nz * bumpStrength;
-    bumped.body.velocity.y += bumpStrength * 0.15;
-
-    // Bumper loses a little speed
-    const bv = bumper.body.velocity;
-    bv.x *= 0.9;
-    bv.z *= 0.9;
+    // Sub-supersonic bump
+    handleBump(carA, carB);
   }
 
   _demolishCar(car) {
@@ -850,205 +870,20 @@ export class Game {
     const idx = this.allCars.indexOf(car);
     const color = idx < half ? COLORS.CYAN : COLORS.ORANGE;
     car.demolish();
-    this._spawnExplosion(pos, color);
+    this.explosionManager.spawnExplosion(pos, color);
     this.replayBuffer.addEvent({ type: 'demolish', x: pos.x, y: pos.y, z: pos.z, color });
+    if (this.cameraController) this.cameraController.shakeDemolition();
     if (car === this.playerCar) this.hud.showDemolished();
+    audioManager.playDemolition();
   }
 
-  _spawnExplosion(pos, color) {
-    const group = new THREE.Group();
-    group.position.set(pos.x, pos.y, pos.z);
 
-    // Flash sphere — reuse shared geometry
-    if (!this._sharedFlashGeo) {
-      this._sharedFlashGeo = new THREE.SphereGeometry(1, 12, 12);
-    }
-    const flashMat = new THREE.MeshBasicMaterial({
-      color: color,
-      transparent: true,
-      opacity: 1,
-    });
-    const flash = new THREE.Mesh(this._sharedFlashGeo, flashMat);
-    group.add(flash);
 
-    // Point light
-    const light = new THREE.PointLight(color, 5, 30);
-    group.add(light);
 
-    // Debris particles — reuse shared geometry
-    if (!this._sharedDebrisGeo) {
-      this._sharedDebrisGeo = new THREE.BoxGeometry(0.3, 0.3, 0.3);
-    }
-    const particles = [];
-    for (let i = 0; i < DEMOLITION.PARTICLE_COUNT; i++) {
-      const mat = new THREE.MeshBasicMaterial({
-        color: color,
-        transparent: true,
-        opacity: 1,
-      });
-      const p = new THREE.Mesh(this._sharedDebrisGeo, mat);
-      p.position.set(0, 0, 0);
-      const vx = (Math.random() - 0.5) * 2 * DEMOLITION.PARTICLE_SPEED;
-      const vy = Math.random() * DEMOLITION.PARTICLE_SPEED;
-      const vz = (Math.random() - 0.5) * 2 * DEMOLITION.PARTICLE_SPEED;
-      group.add(p);
-      particles.push({ mesh: p, vx, vy, vz });
-    }
 
-    this.scene.add(group);
-    this._activeExplosions.push({
-      group,
-      flash,
-      light,
-      particles,
-      elapsed: 0,
-    });
-  }
 
-  _updateExplosions(dt) {
-    for (let i = this._activeExplosions.length - 1; i >= 0; i--) {
-      const ex = this._activeExplosions[i];
-      ex.elapsed += dt;
 
-      const duration = ex.isGoal ? 1.0 : DEMOLITION.EXPLOSION_DURATION;
-      const lifetime = ex.isGoal ? 1.4 : DEMOLITION.PARTICLE_LIFETIME;
 
-      // Flash: scale up and fade out
-      const flashT = Math.min(ex.elapsed / duration, 1);
-      const flashScale = ex.isGoal ? 2 + flashT * 18 : 1 + flashT * 8;
-      ex.flash.scale.setScalar(flashScale);
-      ex.flash.material.opacity = Math.max(0, 1 - flashT);
-      ex.light.intensity = Math.max(0, (ex.isGoal ? 10 : 5) * (1 - flashT));
-
-      // Goal: expanding shockwave rings
-      if (ex.isGoal && ex.ring) {
-        const ringScale = 2 + flashT * 40;
-        ex.ring.scale.setScalar(ringScale);
-        ex.ring.material.opacity = Math.max(0, 0.9 * (1 - flashT));
-        ex.ring2.scale.setScalar(ringScale * 0.8);
-        ex.ring2.material.opacity = Math.max(0, 0.7 * (1 - flashT * 1.2));
-      }
-
-      // Particles: move + gravity + fade
-      const particleT = Math.min(ex.elapsed / lifetime, 1);
-      for (const p of ex.particles) {
-        p.mesh.position.x += p.vx * dt;
-        p.mesh.position.y += p.vy * dt;
-        p.mesh.position.z += p.vz * dt;
-        p.vy -= 30 * dt;
-
-        // Sparks: drag slows them, fade faster
-        if (p.isSpark) {
-          p.vx *= 0.97;
-          p.vy *= 0.97;
-          p.vz *= 0.97;
-          p.mesh.material.opacity = Math.max(0, 1 - particleT * 1.3);
-        } else {
-          // Debris: tumble
-          if (p.spin) p.mesh.rotation.x += p.spin * dt;
-          p.mesh.material.opacity = Math.max(0, 1 - particleT);
-        }
-      }
-
-      // Cleanup when done (shared geometry is NOT disposed — reused across explosions)
-      if (ex.elapsed >= lifetime) {
-        this.scene.remove(ex.group);
-        ex.flash.material.dispose();
-        for (const p of ex.particles) {
-          p.mesh.material.dispose();
-        }
-        if (ex.ring) {
-          ex.ring.material.dispose();
-          ex.ring2.material.dispose();
-        }
-        ex.light.dispose();
-        this._activeExplosions.splice(i, 1);
-      }
-    }
-  }
-
-  _spawnGoalExplosion(pos, color) {
-    const group = new THREE.Group();
-    group.position.set(pos.x, pos.y, pos.z);
-    const c = new THREE.Color(color);
-
-    // --- Core flash sphere ---
-    if (!this._sharedFlashGeo) {
-      this._sharedFlashGeo = new THREE.SphereGeometry(1, 12, 12);
-    }
-    const flashMat = new THREE.MeshBasicMaterial({
-      color, transparent: true, opacity: 1,
-    });
-    const flash = new THREE.Mesh(this._sharedFlashGeo, flashMat);
-    group.add(flash);
-
-    // --- Bright point light ---
-    const light = new THREE.PointLight(color, 10, 80);
-    group.add(light);
-
-    // --- Expanding shockwave ring ---
-    const ringGeo = new THREE.RingGeometry(0.5, 1.0, 32);
-    const ringMat = new THREE.MeshBasicMaterial({
-      color, transparent: true, opacity: 0.9, side: THREE.DoubleSide,
-    });
-    const ring = new THREE.Mesh(ringGeo, ringMat);
-    ring.rotation.x = -Math.PI / 2;
-    group.add(ring);
-
-    // --- Second ring (vertical) ---
-    const ring2 = new THREE.Mesh(ringGeo, ringMat.clone());
-    group.add(ring2);
-
-    // --- Spark particles (small, bright, fast) ---
-    if (!this._sharedSparkGeo) {
-      this._sharedSparkGeo = new THREE.BoxGeometry(0.15, 0.15, 0.6);
-    }
-    if (!this._sharedDebrisGeo) {
-      this._sharedDebrisGeo = new THREE.BoxGeometry(0.3, 0.3, 0.3);
-    }
-
-    const particles = [];
-
-    // Outer sparks — fast, small, elongated
-    for (let i = 0; i < 50; i++) {
-      const bright = c.clone().lerp(new THREE.Color(0xffffff), 0.4 + Math.random() * 0.4);
-      const mat = new THREE.MeshBasicMaterial({
-        color: bright, transparent: true, opacity: 1,
-      });
-      const p = new THREE.Mesh(this._sharedSparkGeo, mat);
-      const theta = Math.random() * Math.PI * 2;
-      const phi = (Math.random() - 0.5) * Math.PI;
-      const spd = 20 + Math.random() * 25;
-      const vx = Math.cos(theta) * Math.cos(phi) * spd;
-      const vy = Math.sin(phi) * spd * 0.6 + Math.random() * 8;
-      const vz = Math.sin(theta) * Math.cos(phi) * spd;
-      // Orient spark along velocity
-      p.lookAt(vx, vy, vz);
-      group.add(p);
-      particles.push({ mesh: p, vx, vy, vz, isSpark: true });
-    }
-
-    // Chunky debris — slower, heavier
-    for (let i = 0; i < 20; i++) {
-      const mat = new THREE.MeshBasicMaterial({
-        color, transparent: true, opacity: 1,
-      });
-      const p = new THREE.Mesh(this._sharedDebrisGeo, mat);
-      const scale = 0.5 + Math.random() * 1.5;
-      p.scale.setScalar(scale);
-      const vx = (Math.random() - 0.5) * 20;
-      const vy = 5 + Math.random() * 15;
-      const vz = (Math.random() - 0.5) * 20;
-      group.add(p);
-      particles.push({ mesh: p, vx, vy, vz, spin: (Math.random() - 0.5) * 10 });
-    }
-
-    this.scene.add(group);
-    this._activeExplosions.push({
-      group, flash, light, particles, elapsed: 0,
-      isGoal: true, ring, ring2,
-    });
-  }
 
   // ========== SINGLE-PLAYER COUNTDOWN ==========
 
@@ -1063,15 +898,19 @@ export class Game {
 
     let count = GAME.COUNTDOWN_DURATION;
     this.hud.showCountdown(count);
+    audioManager.playCountdownBeep(false);
 
     this._countdownInterval = setInterval(() => {
       count--;
       if (count > 0) {
         this.hud.showCountdown(count);
+        audioManager.playCountdownBeep(false);
       } else {
         this.hud.showCountdown(0);
+        audioManager.playCountdownBeep(true);
         clearInterval(this._countdownInterval);
         this.state = 'playing';
+        audioManager.startCrowdAmbiance();
       }
     }, 1000);
   }
@@ -1095,6 +934,14 @@ export class Game {
       this._loopMultiplayer(dt, inputState);
     }
 
+    // Update tutorial if active
+    if (this.tutorial) {
+      this.tutorial.update(dt);
+      if (this.tutorial._dismissed) {
+        this.tutorial = null;
+      }
+    }
+
     // Camera always updates (except during replay — replay player drives camera)
     if (this.cameraController && this.state !== 'replay') {
       this.cameraController.update(dt, inputState.ballCam, inputState.lookX);
@@ -1104,6 +951,7 @@ export class Game {
     if (this.playerCar) {
       this.hud.updateBoost(this.playerCar.boost);
       this.hud.updateSpeed(this.playerCar.getSpeed(), CAR_CONST.BOOST_MAX_SPEED);
+      audioManager.setEngineSpeed(this.playerCar.getSpeed(), CAR_CONST.MAX_SPEED);
     }
 
     // Live scoreboard (hold Tab / LB) — skip in freeplay (no opponents to score against)
@@ -1124,6 +972,19 @@ export class Game {
     // Update car nameplates
     this._updateNameplates();
 
+    // Quick-chat system update
+    if (this.quickChat && this.allCars) {
+      this.quickChat.update(dt, this.allCars);
+    }
+
+    // Off-screen ball indicator
+    if (this.ballIndicator) {
+      this.ballIndicator.update(inputState.ballCam);
+    }
+
+    // Gamepad-aware controls hint
+    this._updateControlsHint();
+
     this.composer.render();
   }
 
@@ -1133,7 +994,7 @@ export class Game {
     // During replay, drive meshes from recorded frames (physics paused)
     if (this.state === 'replay') {
       this._updateReplay(dt);
-      this._updateExplosions(dt);
+      this.explosionManager.updateExplosions(dt);
       if (this._checkReplaySkipInput()) this._skipReplay();
       return;
     }
@@ -1163,7 +1024,7 @@ export class Game {
       };
       this.playerCar.update(celebInput, dt);
       for (const car of this.allCars) car._syncMesh();
-      this._updateExplosions(dt);
+      this.explosionManager.updateExplosions(dt);
       return;
     }
 
@@ -1179,7 +1040,7 @@ export class Game {
       }
 
       if (this.mode !== 'freeplay') {
-        this._updateAI(dt);
+        if (this.aiController) this.aiController.update(dt);
       }
 
       // Update demolition respawns for all cars
@@ -1228,7 +1089,9 @@ export class Game {
       }
     }
 
-    this._updateExplosions(dt);
+    this.explosionManager.updateExplosions(dt);
+    this.explosionManager.checkLandingEffects(this.allCars);
+    this.explosionManager.updateLandingRings(dt);
   }
 
   // ========== MULTIPLAYER LOOP ==========
@@ -1243,7 +1106,7 @@ export class Game {
     // During replay, drive meshes from recorded frames (physics paused)
     if (this.state === 'replay') {
       this._updateReplay(dt);
-      this._updateExplosions(dt);
+      this.explosionManager.updateExplosions(dt);
       if (this._checkReplaySkipInput()) this._skipReplay();
       return;
     }
@@ -1251,7 +1114,7 @@ export class Game {
     // Goal celebration: let explosion play, then start replay
     if (this.state === 'goal_celebration') {
       this._celebrationTimer -= dt;
-      this._updateExplosions(dt);
+      this.explosionManager.updateExplosions(dt);
       // Allow skipping celebration + replay entirely
       if (this._checkReplaySkipInput()) {
         this._replaySkipped = true;
@@ -1291,7 +1154,7 @@ export class Game {
       for (const car of this.allCars) {
         if (car) car._syncMesh();
       }
-      this._updateExplosions(dt);
+      this.explosionManager.updateExplosions(dt);
       return;
     }
 
@@ -1377,7 +1240,9 @@ export class Game {
     // Animate boost pads (visual only)
     this.boostPads.update(dt, []);
 
-    this._updateExplosions(dt);
+    this.explosionManager.updateExplosions(dt);
+    this.explosionManager.checkLandingEffects(this.allCars);
+    this.explosionManager.updateLandingRings(dt);
   }
 
   // ========== RECONCILIATION ==========
@@ -1526,6 +1391,15 @@ export class Game {
       }
 
       if (pad.active !== shouldBeActive) {
+        // Play pickup sound when pad just collected near the local player
+        if (pad.active && !shouldBeActive && this.playerCar) {
+          const cp = this.playerCar.body.position;
+          const dx = cp.x - pad.position.x;
+          const dz = cp.z - pad.position.z;
+          if (Math.sqrt(dx * dx + dz * dz) < pad.radius * 2) {
+            audioManager.playBoostPickup(pad.isLarge);
+          }
+        }
         pad.active = shouldBeActive;
         pad.mesh.visible = shouldBeActive;
       }
@@ -1546,6 +1420,7 @@ export class Game {
         this.hud.showOvertime();
       } else {
         this.state = 'ended';
+        audioManager.stopAll();
         this._showEndStats();
       }
     }
@@ -1570,8 +1445,9 @@ export class Game {
     const ballPos = this.ball.body.position;
     const goalColor = goalSide === 1 ? COLORS.GOAL_ORANGE : COLORS.GOAL_BLUE;
     const goalPos = { x: ballPos.x, y: ballPos.y, z: ballPos.z };
-    this._spawnGoalExplosion(goalPos, goalColor);
+    this.explosionManager.spawnGoalExplosion(goalPos, goalColor);
     this.replayBuffer.addEvent({ type: 'goal', x: goalPos.x, y: goalPos.y, z: goalPos.z, color: goalColor });
+    if (this.cameraController) this.cameraController.shakeGoal();
     // Flush the event into the buffer — no more frames are recorded after this
     this.replayBuffer.record(this.ball, this.allCars, this.boostPads);
 
@@ -1584,6 +1460,7 @@ export class Game {
     }
 
     this.hud.updateScore(this.scores.blue, this.scores.orange);
+    audioManager.playGoalHorn();
 
     // Save scorer name for replay banner
     this._lastScorerName = scorerName;
@@ -1608,7 +1485,8 @@ export class Game {
     // Quick explosion
     const ballPos = this.ball.body.position;
     const goalColor = goalSide === 1 ? COLORS.GOAL_ORANGE : COLORS.GOAL_BLUE;
-    this._spawnGoalExplosion({ x: ballPos.x, y: ballPos.y, z: ballPos.z }, goalColor);
+    this.explosionManager.spawnGoalExplosion({ x: ballPos.x, y: ballPos.y, z: ballPos.z }, goalColor);
+    if (this.cameraController) this.cameraController.shakeGoal();
 
     if (goalSide === 1) {
       this.scores.orange++;
@@ -1618,6 +1496,7 @@ export class Game {
       this.hud.showGoalScored('blue');
     }
     this.hud.updateScore(this.scores.blue, this.scores.orange);
+    audioManager.playGoalHorn();
 
     // Quick reset — just reposition ball and car
     this.ball.reset();
@@ -1634,6 +1513,7 @@ export class Game {
     if (this._goalWasOvertime) {
       setTimeout(() => {
         this.state = 'ended';
+        audioManager.stopAll();
         this._showEndStats();
       }, GAME.GOAL_RESET_TIME * 1000);
     }
@@ -1671,9 +1551,9 @@ export class Game {
         if (!evts) continue;
         for (const e of evts) {
           if (e.type === 'goal') {
-            this._spawnGoalExplosion(e, e.color);
+            this.explosionManager.spawnGoalExplosion(e, e.color);
           } else if (e.type === 'demolish') {
-            this._spawnExplosion(e, e.color);
+            this.explosionManager.spawnExplosion(e, e.color);
           }
         }
       }
@@ -1762,6 +1642,7 @@ export class Game {
   _applyCountdown(data) {
     this.state = 'countdown';
     this.hud.showCountdown(data.count);
+    audioManager.playCountdownBeep(data.count === 0);
     this._correctionOffset.x = 0;
     this._correctionOffset.y = 0;
     this._correctionOffset.z = 0;
@@ -1781,6 +1662,7 @@ export class Game {
 
     if (data.count === 0) {
       this.state = 'playing';
+      audioManager.startCrowdAmbiance();
     }
   }
 
@@ -1819,6 +1701,19 @@ export class Game {
     } else {
       this.hud.showMatchEnd(this.scores.blue, this.scores.orange);
     }
+
+    // Record progression (player is always slot 0 in singleplayer)
+    if (this.mode === 'singleplayer') {
+      const stats = this.perfTracker.getStats();
+      const playerStats = stats[0];
+      const playerWon = (this.myTeam === 'blue' && this.scores.blue > this.scores.orange) ||
+                        (this.myTeam === 'orange' && this.scores.orange > this.scores.blue);
+      const xpResult = progression.endMatch(playerStats, playerWon, 0);
+      if (xpResult) {
+        progression.showXPScreen(xpResult);
+      }
+    }
+
     this._setupCelebration();
   }
 
@@ -1929,363 +1824,10 @@ export class Game {
     return inputState;
   }
 
-  // ========== AI (single-player only) ==========
-
-  _getAIParams() {
-    switch (this.aiDifficulty) {
-      case 'rookie':
-        return {
-          approachOffset: 14,
-          attackAngle: 0.6,       // wider cone → less precise shots
-          defenseZ: 25,           // reacts later to defense
-          clearDist: 18,
-          steerDeadzone: 0.15,    // sloppier steering
-          maxThrottle: 0.75,      // slower overall
-          rotateSlowAngle: 0.8,
-          rotateThrottle: 0.4,
-          useBoost: false,        // never boosts
-          handbrakeAngle: 1.5,    // rarely handbrakes
-          handbrakeSpeed: 15,
-          jumpBall: false,        // never jumps for aerials
-          dodgeBall: false,       // never dodge-hits
-          reactionDelay: 0.15,    // 150ms delayed reads
-          aimJitter: 3.0,         // position error added to target
-        };
-      case 'allstar':
-        return {
-          approachOffset: 7,      // tighter approaches
-          attackAngle: 0.25,      // precise shot cone
-          defenseZ: 40,           // reacts very early
-          clearDist: 10,          // clears sooner
-          steerDeadzone: 0.02,    // precise steering
-          maxThrottle: 1,
-          rotateSlowAngle: 1.4,
-          rotateThrottle: 0.8,    // fast rotations
-          useBoost: true,
-          handbrakeAngle: 0.8,    // handbrakes more readily
-          handbrakeSpeed: 6,
-          jumpBall: true,
-          jumpHeight: 2.0,        // jumps for lower balls
-          jumpDist: 14,           // jumps from farther
-          dodgeBall: true,
-          dodgeDist: 7,           // dodge-hits from farther
-          reactionDelay: 0,
-          aimJitter: 0,
-          leadBall: true,
-          leadTime: 0.6,          // better prediction
-          aerialBoost: true,      // boost toward aerial balls
-          shadowDefense: true,    // shadow ball position on defense
-          boostForSpeed: true,    // use boost for supersonic speed
-        };
-      default: // pro
-        return {
-          approachOffset: 12,
-          attackAngle: 0.4,
-          defenseZ: 30,
-          clearDist: 15,
-          steerDeadzone: 0.05,
-          maxThrottle: 1,
-          rotateSlowAngle: 1.0,
-          rotateThrottle: 0.5,
-          useBoost: true,
-          handbrakeAngle: 1.2,
-          handbrakeSpeed: 10,
-          jumpBall: true,
-          jumpHeight: 3,
-          jumpDist: 8,
-          dodgeBall: false,
-          reactionDelay: 0,
-          aimJitter: 0,
-          leadBall: false,
-        };
-    }
-  }
-
-  _updateAI(dt) {
-    // In 2v2, assign roles: on each team, car closest to ball = attacker, farther = support
-    let roles = null;
-    if (this.aiMode === '2v2') {
-      const rawBallPos = this.ball.getPosition();
-      roles = new Map();
-      // Blue team AI cars (indices >= 1 that are < half)
-      // Orange team AI cars (indices >= half)
-      const half = Math.floor(this.allCars.length / 2);
-      // Group AI cars by team
-      const blueAI = [];
-      const orangeAI = [];
-      for (const car of this.aiCars) {
-        const idx = this.allCars.indexOf(car);
-        if (idx < half) blueAI.push(car);
-        else orangeAI.push(car);
-      }
-      // Assign roles per team
-      for (const team of [blueAI, orangeAI]) {
-        if (team.length <= 1) {
-          for (const c of team) roles.set(c, 'attacker');
-          continue;
-        }
-        // Sort by distance to ball
-        const sorted = [...team].sort((a, b) => {
-          const ap = a.getPosition();
-          const bp = b.getPosition();
-          const da = (ap.x - rawBallPos.x) ** 2 + (ap.z - rawBallPos.z) ** 2;
-          const db = (bp.x - rawBallPos.x) ** 2 + (bp.z - rawBallPos.z) ** 2;
-          return da - db;
-        });
-        roles.set(sorted[0], 'attacker');
-        for (let i = 1; i < sorted.length; i++) roles.set(sorted[i], 'support');
-      }
-    }
-
-    for (const car of this.aiCars) {
-      if (car.demolished) continue;
-      const idx = this.allCars.indexOf(car);
-      const half = Math.floor(this.allCars.length / 2);
-      const teamDir = idx < half ? 1 : -1;
-      const role = roles ? roles.get(car) : 'attacker';
-      this._updateAICar(car, teamDir, role, dt);
-    }
-  }
-
-  _updateAICar(car, teamDir, role, dt) {
-    const p = this._getAIParams();
-    // teamDir: 1 = blue (attacks toward +Z), -1 = orange (attacks toward -Z)
-    const ENEMY_GOAL_Z = teamDir === 1 ? ARENA_CONST.LENGTH / 2 : -ARENA_CONST.LENGTH / 2;
-    const OWN_GOAL_Z = teamDir === 1 ? -ARENA_CONST.LENGTH / 2 : ARENA_CONST.LENGTH / 2;
-
-    let ballPos = this.ball.getPosition();
-    const ballVel = this.ball.body.velocity;
-    const carPos = car.getPosition();
-
-    // All-Star: lead the ball by predicting its future position
-    if (p.leadBall) {
-      const t = p.leadTime;
-      ballPos = {
-        x: ballPos.x + ballVel.x * t,
-        y: ballPos.y + ballVel.y * t,
-        z: ballPos.z + ballVel.z * t,
-      };
-    }
-
-    // Rookie: add jitter to ball position (simulates imprecise reads)
-    if (p.aimJitter > 0) {
-      const jitterSeed = Math.floor(performance.now() / 200);
-      const jx = (Math.sin(jitterSeed * 1.7) * p.aimJitter);
-      const jz = (Math.cos(jitterSeed * 2.3) * p.aimJitter);
-      ballPos = { x: ballPos.x + jx, y: ballPos.y, z: ballPos.z + jz };
-    }
-
-    // Rookie: reaction delay — use slightly stale ball position
-    if (p.reactionDelay > 0) {
-      const t = -p.reactionDelay;
-      ballPos = {
-        x: ballPos.x + ballVel.x * t,
-        y: ballPos.y,
-        z: ballPos.z + ballVel.z * t,
-      };
-    }
-
-    const toBallX = ballPos.x - carPos.x;
-    const toBallZ = ballPos.z - carPos.z;
-    const distToBall = Math.sqrt(toBallX * toBallX + toBallZ * toBallZ);
-
-    // Ideal hit direction: ball → enemy goal (flip for team direction)
-    const goalDx = 0 - ballPos.x;
-    const goalDz = ENEMY_GOAL_Z - ballPos.z;
-    const goalDist = Math.sqrt(goalDx * goalDx + goalDz * goalDz) || 1;
-    const idealDirX = goalDx / goalDist;
-    const idealDirZ = goalDz / goalDist;
-
-    // Car→ball direction (normalized)
-    const toBallDist = distToBall || 1;
-    const toBallNX = toBallX / toBallDist;
-    const toBallNZ = toBallZ / toBallDist;
-
-    const approachDot = toBallNX * idealDirX + toBallNZ * idealDirZ;
-
-    // Support role: position between ball and own goal instead of chasing ball
-    if (role === 'support') {
-      const midX = ballPos.x * 0.3;
-      const midZ = (ballPos.z + OWN_GOAL_Z) * 0.5;
-      const sDx = midX - carPos.x;
-      const sDz = midZ - carPos.z;
-      const sAngle = Math.atan2(sDx, sDz);
-      car.body.quaternion.toEuler(_aiEuler);
-      let sAngleDiff = sAngle - _aiEuler.y;
-      while (sAngleDiff > Math.PI) sAngleDiff -= 2 * Math.PI;
-      while (sAngleDiff < -Math.PI) sAngleDiff += 2 * Math.PI;
-      const sAbsAngle = Math.abs(sAngleDiff);
-      const sDist = Math.sqrt(sDx * sDx + sDz * sDz);
-
-      const sSteer = sAngleDiff > 0.05 ? 1 : sAngleDiff < -0.05 ? -1 : 0;
-      const sThrottle = sDist > 5 ? p.maxThrottle : 0.3;
-      const sBoost = p.useBoost && sDist > 30 && sAbsAngle < 0.3;
-      const sHandbrake = sAbsAngle > p.handbrakeAngle && car.body.velocity.length() > p.handbrakeSpeed;
-
-      car.update({
-        throttle: sThrottle, steer: sSteer, jump: false, jumpPressed: false,
-        boost: sBoost, ballCam: true, airRoll: 0, pitchUp: false, pitchDown: false,
-        handbrake: sHandbrake, dodgeForward: 0, dodgeSteer: 0,
-      }, dt);
-      return;
-    }
-
-    // Decide mode — use teamDir to determine defense zone
-    let mode;
-    let targetX, targetZ;
-
-    // Defense zone is on own-goal side
-    const ballOnOwnSide = teamDir === 1
-      ? ballPos.z < -p.defenseZ
-      : ballPos.z > p.defenseZ;
-    const ballMovingToOwnGoal = teamDir === 1
-      ? ballVel.z < 5
-      : ballVel.z > -5;
-
-    if (ballOnOwnSide && ballMovingToOwnGoal) {
-      mode = 'defend';
-    } else if (approachDot > Math.cos(p.attackAngle)) {
-      mode = 'attack';
-    } else {
-      mode = 'rotate';
-    }
-
-    // Compute target position per mode
-    if (mode === 'attack') {
-      targetX = ballPos.x;
-      targetZ = ballPos.z;
-    } else if (mode === 'defend') {
-      const sideSign = ballPos.x > 0 ? 1 : -1;
-      if (distToBall < p.clearDist) {
-        // Close to ball: clear it to the side and upfield
-        targetX = ballPos.x + sideSign * 5;
-        targetZ = ballPos.z + teamDir * 3;
-      } else if (p.shadowDefense) {
-        // Shadow defense: match ball's X, stay between ball and own goal
-        targetX = ballPos.x * 0.8;
-        targetZ = ballPos.z + (OWN_GOAL_Z - ballPos.z) * 0.3;
-      } else {
-        targetX = ballPos.x;
-        targetZ = (ballPos.z + OWN_GOAL_Z) / 2;
-      }
-    } else {
-      const fromGoalX = ballPos.x;
-      const fromGoalZ = ballPos.z - ENEMY_GOAL_Z;
-      const fromGoalDist = Math.sqrt(fromGoalX * fromGoalX + fromGoalZ * fromGoalZ) || 1;
-      targetX = ballPos.x + (fromGoalX / fromGoalDist) * p.approachOffset;
-      targetZ = ballPos.z + (fromGoalZ / fromGoalDist) * p.approachOffset;
-    }
-
-    // Steering
-    const steerDx = targetX - carPos.x;
-    const steerDz = targetZ - carPos.z;
-    const targetAngle = Math.atan2(steerDx, steerDz);
-    car.body.quaternion.toEuler(_aiEuler);
-    let angleDiff = targetAngle - _aiEuler.y;
-    while (angleDiff > Math.PI) angleDiff -= 2 * Math.PI;
-    while (angleDiff < -Math.PI) angleDiff += 2 * Math.PI;
-    const absAngle = Math.abs(angleDiff);
-
-    // Throttle
-    let throttle = p.maxThrottle;
-    if (mode === 'rotate' && absAngle > p.rotateSlowAngle) {
-      throttle = p.rotateThrottle;
-    }
-
-    // Steer (deadzone)
-    const dz = p.steerDeadzone;
-    const steer = angleDiff > dz ? 1 : angleDiff < -dz ? -1 : 0;
-
-    // Boost
-    let boost = false;
-    if (p.useBoost) {
-      if (mode === 'attack' && absAngle < 0.3) {
-        boost = true;
-      } else if (mode === 'rotate' && distToBall > 30) {
-        boost = true;
-      } else if (mode === 'defend') {
-        const distToOwnGoal = Math.abs(ballPos.z - OWN_GOAL_Z);
-        if (distToOwnGoal < 25) boost = true;
-      }
-      // Boost for supersonic speed when approaching ball
-      if (p.boostForSpeed && mode === 'attack' && absAngle < 0.5 && distToBall > 20) {
-        boost = true;
-      }
-    }
-
-    // Handbrake
-    const speed = car.body.velocity.length();
-    const handbrake = absAngle > p.handbrakeAngle && speed > p.handbrakeSpeed;
-
-    // Jump for aerial balls
-    let jumpPressed = false;
-    const jumpHeight = p.jumpHeight || 3;
-    const jumpDist = p.jumpDist || 8;
-    if (p.jumpBall && mode === 'attack' && distToBall < jumpDist && ballPos.y > jumpHeight && car.isGrounded) {
-      jumpPressed = true;
-    }
-
-    // All-Star: aerial boost — hold boost while in air moving toward ball
-    if (p.aerialBoost && !car.isGrounded && ballPos.y > 3 && distToBall < 25) {
-      boost = true;
-    }
-
-    // All-Star: dodge into ball for powerful hits
-    let dodgeForward = 0;
-    let dodgeSteer = 0;
-    if (p.dodgeBall && mode === 'attack' && distToBall < (p.dodgeDist || 5)
-        && !car.isGrounded && car.canDoubleJump && !car.isDodging
-        && ballPos.y < 5) {
-      jumpPressed = true;
-      dodgeForward = toBallNZ > 0 ? -1 : 1;
-      dodgeSteer = toBallNX > 0.3 ? 1 : toBallNX < -0.3 ? -1 : 0;
-    }
-
-    const aiInput = {
-      throttle,
-      steer,
-      jump: false,
-      jumpPressed,
-      boost,
-      ballCam: true,
-      airRoll: 0,
-      pitchUp: false,
-      pitchDown: false,
-      handbrake,
-      dodgeForward,
-      dodgeSteer,
-    };
-
-    car.update(aiInput, dt);
-  }
-
   // ========== TRAINING MODE ==========
 
   _initTraining() {
-    const opts = this.trainingOpts;
-    const pack = TRAINING_PACKS[opts.type]?.[opts.difficulty];
-    if (!pack || pack.length === 0) {
-      console.error('Invalid training pack:', opts);
-      return;
-    }
-
-    this._trainingPack = pack;
-    this._trainingShotIndex = 0;
-    this._trainingScore = { hit: 0, total: pack.length };
-    this._trainingShotTimer = 0;
-    this._trainingShotActive = false;
-    this._trainingShotResult = null; // 'success' | 'fail' | null
-    this._trainingResultTimer = 0;
-    this._trainingType = opts.type;
-    this._trainingBallTouched = false;
-    this._trainingBallFrozen = false; // aerial rookie: ball frozen until touched
-    this._trainingResults = new Array(pack.length).fill(null);
-    this._trainingComplete = false;
-
-    // For goalie: track if ball entered blue goal
-    this._trainingGoalieFailed = false;
-
-    // Init scene like freeplay — single car, no opponents
+    // Init scene like freeplay -- single car, no opponents
     this._initScene();
     this.cameraController = new CameraController(this.camera);
     this.cameraController.setTarget(this.playerCar);
@@ -2295,470 +1837,44 @@ export class Game {
     this.state = 'playing';
     this.matchTime = Infinity;
 
-    // Build training HUD
-    this._buildTrainingHUD();
-
-    // Load first shot
-    this._loadTrainingShot(0);
-  }
-
-  _buildTrainingHUD() {
-    const type = this._trainingType;
-    const diff = this.trainingOpts.difficulty;
-    const labels = { striker: 'STRIKER', goalie: 'GOALIE', aerial: 'AERIAL' };
-    const diffLabels = { rookie: 'ROOKIE', pro: 'PRO', allstar: 'ALL-STAR' };
-
-    // Title bar
-    this.hud.timerEl.textContent = `${labels[type] || type} — ${diffLabels[diff] || diff}`;
-    this.hud.timerEl.style.color = '#00ffff';
-    this.hud.timerEl.style.textShadow = '0 0 16px rgba(0, 255, 255, 0.6)';
-
-    // Shot counter (replaces scoreboard)
-    this.hud.scoreBlueEl.parentElement.style.display = 'none';
-
-    // Training overlay
-    this._trainingOverlay = document.createElement('div');
-    this._trainingOverlay.id = 'training-overlay';
-    Object.assign(this._trainingOverlay.style, {
-      position: 'absolute',
-      top: '50px',
-      left: '50%',
-      transform: 'translateX(-50%)',
-      textAlign: 'center',
-      zIndex: '200',
-      pointerEvents: 'none',
-      fontFamily: "'Orbitron', sans-serif",
+    // Create TrainingMode controller
+    this.trainingMode = new TrainingMode({
+      trainingOpts: this.trainingOpts,
+      hud: this.hud,
+      arena: this.arena,
+      ball: this.ball,
+      playerCar: this.playerCar,
+      allCars: this.allCars,
+      boostPads: this.boostPads,
+      explosionManager: this.explosionManager,
+      applyAimAssist: (input) => this._applyAimAssist(input),
     });
 
-    // Shot counter
-    this._trainingShotLabel = document.createElement('div');
-    Object.assign(this._trainingShotLabel.style, {
-      fontSize: '16px',
-      fontWeight: '700',
-      color: 'rgba(255,255,255,0.6)',
-      letterSpacing: '2px',
-      marginBottom: '4px',
-    });
-
-    // Score display
-    this._trainingScoreLabel = document.createElement('div');
-    Object.assign(this._trainingScoreLabel.style, {
-      fontSize: '14px',
-      fontWeight: '600',
-      color: '#00ffff',
-      letterSpacing: '1px',
-    });
-
-    // Timer display
-    this._trainingTimerLabel = document.createElement('div');
-    Object.assign(this._trainingTimerLabel.style, {
-      fontSize: '22px',
-      fontWeight: '800',
-      color: '#fff',
-      letterSpacing: '2px',
-      marginTop: '4px',
-    });
-
-    // Result flash
-    this._trainingResultLabel = document.createElement('div');
-    Object.assign(this._trainingResultLabel.style, {
-      fontSize: '48px',
-      fontWeight: '900',
-      letterSpacing: '6px',
-      opacity: '0',
-      transition: 'opacity 0.3s',
-      position: 'fixed',
-      top: '40%',
-      left: '50%',
-      transform: 'translate(-50%, -50%)',
-      zIndex: '210',
-      pointerEvents: 'none',
-      textShadow: '0 0 30px currentColor',
-    });
-    document.body.appendChild(this._trainingResultLabel);
-
-    // Controls hint
-    this._trainingHint = document.createElement('div');
-    Object.assign(this._trainingHint.style, {
-      fontSize: '11px',
-      color: 'rgba(255,255,255,0.3)',
-      letterSpacing: '1px',
-      marginTop: '6px',
-    });
-    this._trainingHint.textContent = 'R — Reset Shot | [ ] — Prev/Next';
-
-    this._trainingOverlay.appendChild(this._trainingShotLabel);
-    this._trainingOverlay.appendChild(this._trainingScoreLabel);
-    this._trainingOverlay.appendChild(this._trainingTimerLabel);
-    this._trainingOverlay.appendChild(this._trainingHint);
-
-    document.getElementById('game-container').appendChild(this._trainingOverlay);
-
-    this._updateTrainingHUD();
-
-    // Key listeners for training controls
-    this._trainingKeyHandler = (e) => {
-      if (e.code === 'KeyR') {
-        this._resetTrainingShot();
-      } else if (e.code === 'BracketRight') {
-        this._nextTrainingShot();
-      } else if (e.code === 'BracketLeft') {
-        this._prevTrainingShot();
-      }
-    };
-    window.addEventListener('keydown', this._trainingKeyHandler);
-  }
-
-  _updateTrainingHUD() {
-    const idx = this._trainingShotIndex;
-    const total = this._trainingPack.length;
-    this._trainingShotLabel.textContent = `SHOT ${idx + 1} / ${total}`;
-    this._trainingScoreLabel.textContent = `${this._trainingScore.hit} / ${this._trainingScore.total}`;
-
-    const t = Math.ceil(this._trainingShotTimer);
-    this._trainingTimerLabel.textContent = this._trainingShotActive ? `${t}s` : '';
-  }
-
-  _loadTrainingShot(index) {
-    if (index < 0 || index >= this._trainingPack.length) return;
-
-    this._trainingShotIndex = index;
-    const shot = this._trainingPack[index];
-
-    // Reset car
-    this.playerCar.reset(shot.carPos, shot.carDir);
-    this.playerCar.boost = 100; // full boost in training
-
-    // Position ball — aerial allstar delays launch by 1s so player can orient
-    this.ball.body.position.set(shot.ballPos.x, shot.ballPos.y, shot.ballPos.z);
-    this.ball.body.angularVelocity.set(0, 0, 0);
-    this.ball._spinQuat.identity();
-
-    const useLaunchDelay = (this._trainingType === 'aerial' && this.trainingOpts.difficulty === 'allstar')
-      || this._trainingType === 'goalie';
-    if (useLaunchDelay) {
-      // Hold ball still so player can orient, then launch
-      this.ball.body.velocity.set(0, 0, 0);
-      this._trainingLaunchDelay = this._trainingType === 'goalie' ? 1.5 : 1.0;
-      this._trainingPendingVel = { x: shot.ballVel.x, y: shot.ballVel.y, z: shot.ballVel.z };
-    } else {
-      this.ball.body.velocity.set(shot.ballVel.x, shot.ballVel.y, shot.ballVel.z);
-      this._trainingLaunchDelay = 0;
-      this._trainingPendingVel = null;
+    if (this.trainingMode.isValid) {
+      this.trainingMode.init();
     }
-
-    // Reset shot state
-    this._trainingShotTimer = 11; // 10s play + 1s delay for allstar
-    this._trainingShotActive = true;
-    this._trainingShotResult = null;
-    this._trainingResultTimer = 0;
-    this._trainingBallTouched = false;
-    this._trainingGoalieFailed = false;
-
-    // Aerial rookie/pro: freeze ball in air until player touches it
-    this._trainingBallFrozen = (this._trainingType === 'aerial' && (this.trainingOpts.difficulty === 'rookie' || this.trainingOpts.difficulty === 'pro'));
-
-    this._updateTrainingHUD();
-  }
-
-  _resetTrainingShot() {
-    this._loadTrainingShot(this._trainingShotIndex);
-  }
-
-  _nextTrainingShot() {
-    const next = (this._trainingShotIndex + 1) % this._trainingPack.length;
-    this._loadTrainingShot(next);
-  }
-
-  _prevTrainingShot() {
-    const prev = (this._trainingShotIndex - 1 + this._trainingPack.length) % this._trainingPack.length;
-    this._loadTrainingShot(prev);
-  }
-
-  _showTrainingResult(result) {
-    this._trainingShotResult = result;
-    this._trainingResultTimer = 1.5;
-    this._trainingShotActive = false;
-    this._trainingResults[this._trainingShotIndex] = result;
-
-    if (result === 'success') {
-      this._trainingScore.hit++;
-      this._trainingResultLabel.textContent = this._trainingType === 'goalie' ? 'SAVE!' : 'NICE SHOT!';
-      this._trainingResultLabel.style.color = '#00ff88';
-    } else {
-      this._trainingResultLabel.textContent = this._trainingType === 'goalie' ? 'GOAL' : 'MISS';
-      this._trainingResultLabel.style.color = '#ff4444';
-    }
-    this._trainingResultLabel.style.opacity = '1';
-    this._updateTrainingHUD();
-  }
-
-  _showTrainingComplete() {
-    this._trainingComplete = true;
-    this._trainingShotActive = false;
-
-    const hits = this._trainingResults.filter(r => r === 'success').length;
-    const total = this._trainingResults.length;
-    const pct = Math.round((hits / total) * 100);
-
-    const labels = { striker: 'STRIKER', goalie: 'GOALIE', aerial: 'AERIAL' };
-    const diffLabels = { rookie: 'ROOKIE', pro: 'PRO', allstar: 'ALL-STAR' };
-    const typeName = labels[this._trainingType] || this._trainingType;
-    const diffName = diffLabels[this.trainingOpts.difficulty] || this.trainingOpts.difficulty;
-
-    // Grade
-    let grade, gradeColor;
-    if (pct === 100) { grade = 'PERFECT!'; gradeColor = '#ffd700'; }
-    else if (pct >= 80) { grade = 'GREAT!'; gradeColor = '#00ff88'; }
-    else if (pct >= 50) { grade = 'GOOD'; gradeColor = '#00ccff'; }
-    else { grade = 'KEEP PRACTICING'; gradeColor = '#ff8844'; }
-
-    // Build completion overlay
-    this._trainingCompleteOverlay = document.createElement('div');
-    Object.assign(this._trainingCompleteOverlay.style, {
-      position: 'absolute',
-      top: '0', left: '0', width: '100%', height: '100%',
-      display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center',
-      background: 'radial-gradient(ellipse at center, rgba(0,0,0,0.85) 0%, rgba(0,0,0,0.95) 100%)',
-      zIndex: '500',
-      fontFamily: "'Orbitron', sans-serif",
-      animation: 'fadeIn 0.4s ease',
-    });
-
-    // Title
-    const title = document.createElement('div');
-    Object.assign(title.style, {
-      fontSize: '20px', color: '#00ffff', letterSpacing: '3px', marginBottom: '8px',
-      textShadow: '0 0 20px rgba(0,255,255,0.5)',
-    });
-    title.textContent = `${typeName} — ${diffName}`;
-
-    // "TRAINING COMPLETE"
-    const heading = document.createElement('div');
-    Object.assign(heading.style, {
-      fontSize: '36px', fontWeight: '800', color: '#fff', letterSpacing: '4px',
-      marginBottom: '24px', textShadow: '0 0 30px rgba(255,255,255,0.3)',
-    });
-    heading.textContent = 'TRAINING COMPLETE';
-
-    // Score
-    const scoreEl = document.createElement('div');
-    Object.assign(scoreEl.style, {
-      fontSize: '48px', fontWeight: '800', color: gradeColor, marginBottom: '8px',
-      textShadow: `0 0 30px ${gradeColor}80`,
-    });
-    scoreEl.textContent = `${hits} / ${total}`;
-
-    // Grade label
-    const gradeEl = document.createElement('div');
-    Object.assign(gradeEl.style, {
-      fontSize: '24px', fontWeight: '700', color: gradeColor, letterSpacing: '3px',
-      marginBottom: '24px', textShadow: `0 0 20px ${gradeColor}60`,
-    });
-    gradeEl.textContent = grade;
-
-    // Shot results grid
-    const grid = document.createElement('div');
-    Object.assign(grid.style, {
-      display: 'flex', gap: '8px', marginBottom: '32px', flexWrap: 'wrap', justifyContent: 'center',
-    });
-    this._trainingResults.forEach((r, i) => {
-      const dot = document.createElement('div');
-      const isHit = r === 'success';
-      Object.assign(dot.style, {
-        width: '36px', height: '36px', borderRadius: '6px',
-        display: 'flex', alignItems: 'center', justifyContent: 'center',
-        fontSize: '14px', fontWeight: '700', fontFamily: "'Orbitron', sans-serif",
-        background: isHit ? 'rgba(0,255,136,0.2)' : 'rgba(255,68,68,0.2)',
-        border: `2px solid ${isHit ? '#00ff88' : '#ff4444'}`,
-        color: isHit ? '#00ff88' : '#ff4444',
-      });
-      dot.textContent = i + 1;
-      grid.appendChild(dot);
-    });
-
-    // Continue button
-    const btn = document.createElement('button');
-    Object.assign(btn.style, {
-      padding: '12px 40px', fontSize: '16px', fontWeight: '700',
-      fontFamily: "'Orbitron', sans-serif", letterSpacing: '2px',
-      background: 'linear-gradient(135deg, #00ccff, #0088ff)',
-      color: '#fff', border: 'none', borderRadius: '8px', cursor: 'pointer',
-      boxShadow: '0 0 20px rgba(0,136,255,0.4)',
-      transition: 'transform 0.15s, box-shadow 0.15s',
-    });
-    btn.textContent = 'BACK TO MENU';
-    btn.onmouseenter = () => { btn.style.transform = 'scale(1.05)'; btn.style.boxShadow = '0 0 30px rgba(0,136,255,0.6)'; };
-    btn.onmouseleave = () => { btn.style.transform = 'scale(1)'; btn.style.boxShadow = '0 0 20px rgba(0,136,255,0.4)'; };
-    btn.onclick = () => {
-      if (this.hud.onBackToLobby) this.hud.onBackToLobby();
-    };
-
-    this._trainingCompleteOverlay.appendChild(title);
-    this._trainingCompleteOverlay.appendChild(heading);
-    this._trainingCompleteOverlay.appendChild(scoreEl);
-    this._trainingCompleteOverlay.appendChild(gradeEl);
-    this._trainingCompleteOverlay.appendChild(grid);
-    this._trainingCompleteOverlay.appendChild(btn);
-
-    document.getElementById('game-container').appendChild(this._trainingCompleteOverlay);
-
-    // Also allow Escape to return
-    this._trainingCompleteKeyHandler = (e) => {
-      if (e.key === 'Escape' || e.key === 'Enter') {
-        if (this.hud.onBackToLobby) this.hud.onBackToLobby();
-      }
-    };
-    window.addEventListener('keydown', this._trainingCompleteKeyHandler);
   }
 
   _loopTraining(dt, inputState) {
-    // Physics
-    this.accumulator += dt;
-    while (this.accumulator >= PHYSICS.TIMESTEP) {
-      this.world.step(PHYSICS.TIMESTEP);
-      this.accumulator -= PHYSICS.TIMESTEP;
-    }
-
-    for (const car of this.allCars) car._syncMesh();
-    this.ball.update(dt);
-
-    // Update explosions
-    this._updateExplosions(dt);
-
-    // Player car input
-    if (!this.playerCar.demolished) {
-      const assisted = this._applyAimAssist(inputState);
-      this.playerCar.update(assisted, dt);
-    }
-
-    // Boost pads
-    this.boostPads.update(dt, this.allCars);
-
-    // Aerial allstar: hold ball at spawn for 1s delay then launch
-    if (this._trainingLaunchDelay > 0) {
-      this._trainingLaunchDelay -= dt;
-      const shot = this._trainingPack[this._trainingShotIndex];
-      this.ball.body.position.set(shot.ballPos.x, shot.ballPos.y, shot.ballPos.z);
-      this.ball.body.velocity.set(0, 0, 0);
-      this.ball.body.angularVelocity.set(0, 0, 0);
-      if (this._trainingLaunchDelay <= 0 && this._trainingPendingVel) {
-        this.ball.body.velocity.set(this._trainingPendingVel.x, this._trainingPendingVel.y, this._trainingPendingVel.z);
-        this._trainingPendingVel = null;
-      }
-    }
-
-    // Aerial rookie/pro: hold ball in place until player touches it
-    if (this._trainingBallFrozen) {
-      const shot = this._trainingPack[this._trainingShotIndex];
-      this.ball.body.position.set(shot.ballPos.x, shot.ballPos.y, shot.ballPos.z);
-      this.ball.body.velocity.set(0, 0, 0);
-      this.ball.body.angularVelocity.set(0, 0, 0);
-
-      // Check if player touched the frozen ball
-      const cp = this.playerCar.body.position;
-      const bp = this.ball.body.position;
-      const ddx = bp.x - cp.x, ddy = bp.y - cp.y, ddz = bp.z - cp.z;
-      if (Math.sqrt(ddx * ddx + ddy * ddy + ddz * ddz) < BALL_CONST.RADIUS + 3.5) {
-        this._trainingBallFrozen = false;
-      }
-    }
-
-    // Result display timer
-    if (this._trainingShotResult) {
-      this._trainingResultTimer -= dt;
-      if (this._trainingResultTimer <= 0) {
-        this._trainingResultLabel.style.opacity = '0';
-        this._trainingShotResult = null;
-        // Check if all shots attempted
-        if (this._trainingResults.every(r => r !== null)) {
-          this._showTrainingComplete();
-          return;
-        }
-        // Auto-advance to next shot
-        this._nextTrainingShot();
-      }
-      return;
-    }
-
-    if (this._trainingComplete) return;
-
-    if (!this._trainingShotActive) return;
-
-    // Shot timer countdown
-    this._trainingShotTimer -= dt;
-    this._updateTrainingHUD();
-
-    // Detect ball-car contact for goalie mode
-    if (this._trainingType === 'goalie') {
-      // Check if ball touched car (simple distance check)
-      const carPos = this.playerCar.body.position;
-      const ballPos = this.ball.body.position;
-      const dx = ballPos.x - carPos.x;
-      const dy = ballPos.y - carPos.y;
-      const dz = ballPos.z - carPos.z;
-      const dist = Math.sqrt(dx * dx + dy * dy + dz * dz);
-      if (dist < BALL_CONST.RADIUS + 3.5) {
-        this._trainingBallTouched = true;
-      }
-    }
-
-    // Check success/failure based on training type
-    if (this._trainingType === 'striker' || this._trainingType === 'aerial') {
-      // Success: ball enters orange goal (goalSide === 2 means z > +HL → scored on orange side?
-      // Actually looking at arena.isInGoal: goalSide 1 = z < -HL (blue goal back), 2 = z > +HL (orange goal back)
-      // Wait — we need to check carefully. The orange goal is at z > LENGTH/2.
-      const goalSide = this.arena.isInGoal(this.ball.body.position);
-      if (goalSide === 2) {
-        // Scored in orange goal
-        const ballPos = this.ball.body.position;
-        this._spawnGoalExplosion({ x: ballPos.x, y: ballPos.y, z: ballPos.z }, COLORS.GOAL_ORANGE);
-        this._showTrainingResult('success');
-        return;
-      }
-      // Fail: timer expired
-      if (this._trainingShotTimer <= 0) {
-        this._showTrainingResult('fail');
-        return;
-      }
-    } else if (this._trainingType === 'goalie') {
-      // Check if ball entered blue goal
-      const goalSide = this.arena.isInGoal(this.ball.body.position);
-      if (goalSide === 1) {
-        // Ball entered blue goal — player failed to save
-        const ballPos = this.ball.body.position;
-        this._spawnGoalExplosion({ x: ballPos.x, y: ballPos.y, z: ballPos.z }, COLORS.GOAL_BLUE);
-        this._showTrainingResult('fail');
-        return;
-      }
-
-      // Success: ball touched and now heading away from goal (positive z velocity)
-      if (this._trainingBallTouched) {
-        const vz = this.ball.body.velocity.z;
-        if (vz > 2) {
-          // Ball deflected away from goal — save!
-          this._showTrainingResult('success');
-          return;
-        }
-      }
-
-      // Timer expired without goal — saved
-      if (this._trainingShotTimer <= 0) {
-        this._showTrainingResult('success');
-        return;
-      }
-    }
-
-    // Ball out of bounds reset (fell through floor, etc)
-    if (this.ball.body.position.y < -20) {
-      this._resetTrainingShot();
-    }
+    if (!this.trainingMode || !this.trainingMode.isValid) return;
+    this.accumulator = this.trainingMode.update(dt, inputState, this.world, this.accumulator);
   }
 
   // ========== CLEANUP ==========
 
   destroy() {
     this._destroyed = true;
+
+    // Clean up tutorial
+    if (this.tutorial) {
+      this.tutorial.destroy();
+      this.tutorial = null;
+    }
+
+    // Clean up HUD level badge
+    if (this._hudLevelBadge && this._hudLevelBadge.parentNode) {
+      this._hudLevelBadge.remove();
+    }
 
     // Stop RAF loop
     if (this._rafId !== null) {
@@ -2784,21 +1900,12 @@ export class Game {
       window.removeEventListener('resize', this._onResize);
     }
 
-    // Clean up training HUD
-    if (this._trainingOverlay) {
-      this._trainingOverlay.remove();
-    }
-    if (this._trainingResultLabel) {
-      this._trainingResultLabel.remove();
-    }
-    if (this._trainingKeyHandler) {
-      window.removeEventListener('keydown', this._trainingKeyHandler);
-    }
-    if (this._trainingCompleteOverlay) {
-      this._trainingCompleteOverlay.remove();
-    }
-    if (this._trainingCompleteKeyHandler) {
-      window.removeEventListener('keydown', this._trainingCompleteKeyHandler);
+    // Stop ALL continuous audio
+    audioManager.stopAll();
+
+    // Clean up training mode
+    if (this.trainingMode) {
+      this.trainingMode.destroy();
     }
 
     // Clean up nameplates
@@ -2854,8 +1961,10 @@ export class Game {
       }
     }
 
-    // Clear explosions
-    this._activeExplosions = [];
+    // Clear explosions and landing rings
+    if (this.explosionManager) {
+      this.explosionManager.clear();
+    }
 
     // Null out references
     this.playerCar = null;

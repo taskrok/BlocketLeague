@@ -14,9 +14,11 @@ export class NetworkManager {
     this.seq = 0;
     this.playerNumber = -1;
 
-    // Snapshot buffer for interpolation (most recent 30)
-    this.snapshots = [];
+    // Snapshot ring buffer for interpolation (fixed-size, O(1) push)
     this.maxSnapshots = 30;
+    this._snapshotBuf = new Array(this.maxSnapshots).fill(null);
+    this._snapshotHead = 0;  // next write index
+    this._snapshotCount = 0; // number of valid entries
 
     // Pending input buffer for client-side prediction reconciliation
     this.pendingInputs = [];
@@ -60,6 +62,7 @@ export class NetworkManager {
     this.socket.on('gameState', (data) => {
       // Decode binary protocol (or pass through if already object)
       const snapshot = decodeGameState(data);
+      if (!snapshot) return; // version mismatch or decode failure
 
       // Tag with local receive time for interpolation
       snapshot.localTime = performance.now();
@@ -67,11 +70,11 @@ export class NetworkManager {
       // Update adaptive interpolation delay
       this._updateJitter(snapshot.localTime);
 
-      this.snapshots.push(snapshot);
-
-      // Keep buffer bounded
-      if (this.snapshots.length > this.maxSnapshots) {
-        this.snapshots.shift();
+      // Ring buffer push (O(1), no shifting)
+      this._snapshotBuf[this._snapshotHead] = snapshot;
+      this._snapshotHead = (this._snapshotHead + 1) % this.maxSnapshots;
+      if (this._snapshotCount < this.maxSnapshots) {
+        this._snapshotCount++;
       }
 
       this._emit('gameState', snapshot);
@@ -97,6 +100,18 @@ export class NetworkManager {
       this._emit('playerLeft', data);
     });
 
+    this.socket.on('playerDisconnected', (data) => {
+      this._emit('playerDisconnected', data);
+    });
+
+    this.socket.on('matchFound', (data) => {
+      this._emit('matchFound', data);
+    });
+
+    this.socket.on('queueUpdate', (data) => {
+      this._emit('queueUpdate', data);
+    });
+
     this.socket.on('roomCreated', (data) => {
       this._emit('roomCreated', data);
     });
@@ -111,6 +126,10 @@ export class NetworkManager {
 
     this.socket.on('roomExpired', (data) => {
       this._emit('roomExpired', data);
+    });
+
+    this.socket.on('quickChat', (data) => {
+      this._emit('quickChat', data);
     });
 
     this.socket.on('pong_measure', () => {
@@ -140,9 +159,15 @@ export class NetworkManager {
     }
   }
 
-  quickMatch(variantConfig, playerName) {
+  quickMatch(variantConfig, playerName, mode) {
     if (this.socket) {
-      this.socket.emit('quickMatch', { variantConfig, playerName });
+      this.socket.emit('quickMatch', { variantConfig, playerName, mode: mode || '1v1' });
+    }
+  }
+
+  cancelQueue() {
+    if (this.socket) {
+      this.socket.emit('cancelQueue');
     }
   }
 
@@ -180,29 +205,40 @@ export class NetworkManager {
     return input;
   }
 
+  // ========== RING BUFFER ACCESS ==========
+
+  // Get snapshot by logical index (0 = oldest, count-1 = newest)
+  _getSnapshot(logicalIndex) {
+    const start = (this._snapshotHead - this._snapshotCount + this.maxSnapshots) % this.maxSnapshots;
+    return this._snapshotBuf[(start + logicalIndex) % this.maxSnapshots];
+  }
+
   // ========== INTERPOLATION (with SLERP + adaptive delay) ==========
 
   getInterpolatedState() {
+    const count = this._snapshotCount;
     const renderTime = performance.now() - this._adaptiveDelay;
 
-    if (this.snapshots.length < 2) {
-      return this.snapshots.length > 0 ? this.snapshots[this.snapshots.length - 1] : null;
+    if (count < 2) {
+      return count > 0 ? this._getSnapshot(count - 1) : null;
     }
 
     // Find the two snapshots bracketing renderTime
     let before = null;
     let after = null;
 
-    for (let i = 0; i < this.snapshots.length - 1; i++) {
-      if (this.snapshots[i].localTime <= renderTime && this.snapshots[i + 1].localTime >= renderTime) {
-        before = this.snapshots[i];
-        after = this.snapshots[i + 1];
+    for (let i = 0; i < count - 1; i++) {
+      const a = this._getSnapshot(i);
+      const b = this._getSnapshot(i + 1);
+      if (a.localTime <= renderTime && b.localTime >= renderTime) {
+        before = a;
+        after = b;
         break;
       }
     }
 
     if (!before || !after) {
-      return this.snapshots[this.snapshots.length - 1];
+      return this._getSnapshot(count - 1);
     }
 
     const range = after.localTime - before.localTime;
@@ -340,7 +376,7 @@ export class NetworkManager {
   }
 
   getLatestSnapshot() {
-    return this.snapshots.length > 0 ? this.snapshots[this.snapshots.length - 1] : null;
+    return this._snapshotCount > 0 ? this._getSnapshot(this._snapshotCount - 1) : null;
   }
 
   // ========== EVENT SYSTEM ==========
@@ -366,7 +402,9 @@ export class NetworkManager {
       this.socket = null;
     }
     this._callbacks = {};
-    this.snapshots = [];
+    this._snapshotBuf.fill(null);
+    this._snapshotHead = 0;
+    this._snapshotCount = 0;
     this.pendingInputs = [];
     this._packetIntervals = [];
   }

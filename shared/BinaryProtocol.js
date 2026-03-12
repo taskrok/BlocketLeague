@@ -3,6 +3,8 @@
 // ~80% smaller than JSON, works in Node.js + browser
 // ============================================
 
+export const PROTOCOL_VERSION = 1;
+
 const QUAT_SCALE = 30000;
 const AV_SCALE = 5000;
 const ANALOG_SCALE = 127;
@@ -29,7 +31,7 @@ export function encodeGameState(gs, playerCount) {
   let o = 0;
 
   // Header
-  v.setUint8(o, 1); o += 1;                              // version
+  v.setUint8(o, PROTOCOL_VERSION); o += 1;                 // version
   v.setUint32(o, gs.tick, true); o += 4;                  // tick
   v.setUint8(o, STATE_TO_ID[gs.state] || 0); o += 1;     // state
   v.setUint8(o, playerCount); o += 1;                     // playerCount
@@ -95,7 +97,10 @@ export function decodeGameState(data) {
   let o = 0;
 
   // Header
-  /* const version = */ v.getUint8(o); o += 1;
+  const version = v.getUint8(o); o += 1;
+  if (version !== PROTOCOL_VERSION) {
+    return null; // version mismatch — incompatible binary protocol
+  }
   const tick = v.getUint32(o, true); o += 4;
   const stateId = v.getUint8(o); o += 1;
   const playerCount = v.getUint8(o); o += 1;

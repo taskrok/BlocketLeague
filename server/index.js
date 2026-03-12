@@ -44,8 +44,8 @@ app.get('*', (req, res) => {
 
 // ========== ROOM MANAGEMENT ==========
 
-const rooms = new Map();     // code → GameRoom
-const playerRooms = new Map(); // socketId → GameRoom
+const rooms = new Map();     // code -> GameRoom
+const playerRooms = new Map(); // socketId -> GameRoom
 
 const ROOM_CODE_CHARS = 'ABCDEFGHJKLMNPQRSTUVWXYZ'; // exclude I, O
 const ROOM_EXPIRY_MS = 5 * 60 * 1000; // 5 minutes
@@ -59,6 +59,142 @@ function generateRoomCode() {
     }
   } while (rooms.has(code));
   return code;
+}
+
+// ========== MATCHMAKING QUEUE ==========
+
+// Map keyed by mode ('1v1', '2v2'), value is array of queue entries
+const matchmakingQueue = new Map([
+  ['1v1', []],
+  ['2v2', []],
+]);
+
+// Map socketId -> mode (to remove on disconnect/cancel)
+const playerQueues = new Map();
+
+// Queue timeout timers: Map socketId -> timeoutId
+const queueTimeouts = new Map();
+
+const QUEUE_TIMEOUT_MS = 30 * 1000; // 30 seconds before filling with bots
+
+function addToQueue(socket, mode, variantConfig, playerName) {
+  const queue = matchmakingQueue.get(mode);
+  if (!queue) return;
+
+  // Don't double-queue
+  if (playerQueues.has(socket.id)) return;
+
+  const entry = {
+    socketId: socket.id,
+    socket,
+    variantConfig: variantConfig || {},
+    playerName: playerName || '',
+    timestamp: Date.now(),
+  };
+
+  queue.push(entry);
+  playerQueues.set(socket.id, mode);
+
+  const requiredPlayers = mode === '2v2' ? 4 : 2;
+
+  // Broadcast queue update to all waiting players in this mode
+  broadcastQueueUpdate(mode);
+
+  // Check if we have enough players to start
+  if (queue.length >= requiredPlayers) {
+    const matched = queue.splice(0, requiredPlayers);
+    startMatchedGame(matched, mode);
+  } else {
+    // Set timeout: after 30s, fill with bots and start
+    const timeoutId = setTimeout(() => {
+      // Player might have left queue already
+      if (!playerQueues.has(socket.id)) return;
+      // Start with however many players are queued (fill rest with bots)
+      const currentQueue = matchmakingQueue.get(mode);
+      // Find entries that include this socket (could have been matched already)
+      const stillQueued = currentQueue.filter(e => playerQueues.has(e.socketId));
+      if (stillQueued.length > 0) {
+        // Remove all these entries from queue
+        const toStart = stillQueued.splice(0, stillQueued.length);
+        // Clear from matchmaking queue
+        const remaining = currentQueue.filter(e => !toStart.find(t => t.socketId === e.socketId));
+        matchmakingQueue.set(mode, remaining);
+        startMatchedGame(toStart, mode);
+      }
+    }, QUEUE_TIMEOUT_MS);
+
+    queueTimeouts.set(socket.id, timeoutId);
+  }
+}
+
+function removeFromQueue(socketId) {
+  const mode = playerQueues.get(socketId);
+  if (!mode) return;
+
+  playerQueues.delete(socketId);
+
+  const queue = matchmakingQueue.get(mode);
+  if (queue) {
+    const idx = queue.findIndex(e => e.socketId === socketId);
+    if (idx !== -1) queue.splice(idx, 1);
+    broadcastQueueUpdate(mode);
+  }
+
+  // Clear timeout
+  const timeoutId = queueTimeouts.get(socketId);
+  if (timeoutId) {
+    clearTimeout(timeoutId);
+    queueTimeouts.delete(socketId);
+  }
+}
+
+function broadcastQueueUpdate(mode) {
+  const queue = matchmakingQueue.get(mode);
+  if (!queue) return;
+
+  const requiredPlayers = mode === '2v2' ? 4 : 2;
+  queue.forEach((entry, index) => {
+    entry.socket.emit('queueUpdate', {
+      position: index + 1,
+      playersInQueue: queue.length,
+      playersNeeded: requiredPlayers,
+      mode,
+    });
+  });
+}
+
+function startMatchedGame(players, mode) {
+  const maxPlayers = mode === '2v2' ? 4 : 2;
+  const code = generateRoomCode();
+  const room = new GameRoom(io, code, maxPlayers);
+  rooms.set(code, room);
+
+  // Add real players
+  for (const entry of players) {
+    // Clear their queue state
+    playerQueues.delete(entry.socketId);
+    const timeoutId = queueTimeouts.get(entry.socketId);
+    if (timeoutId) {
+      clearTimeout(timeoutId);
+      queueTimeouts.delete(entry.socketId);
+    }
+
+    room.addPlayer(entry.socket, entry.variantConfig, entry.playerName);
+    playerRooms.set(entry.socketId, room);
+  }
+
+  // Notify matched players
+  for (const entry of players) {
+    entry.socket.emit('matchFound', { code, mode });
+  }
+
+  // Fill remaining slots with bots
+  const filledSlots = players.length;
+  if (filledSlots < maxPlayers) {
+    room.fillWithBots(filledSlots);
+  }
+
+  console.log(`Quick match started: room ${code} (${mode}) with ${filledSlots} players + ${maxPlayers - filledSlots} bots`);
 }
 
 // ========== SOCKET HANDLERS ==========
@@ -119,45 +255,15 @@ io.on('connection', (socket) => {
   socket.on('quickMatch', (data) => {
     const variantConfig = data && data.variantConfig ? data.variantConfig : {};
     const playerName = (data && data.playerName) || '';
+    const mode = (data && data.mode === '2v2') ? '2v2' : '1v1';
 
-    // Find an existing waiting room (1v1) that isn't full
-    let found = null;
-    for (const [code, room] of rooms) {
-      if (!room.isFull() && room.maxPlayers === 2 && room.state === 'waiting') {
-        found = { code, room };
-        break;
-      }
-    }
+    addToQueue(socket, mode, variantConfig, playerName);
+    console.log(`Player ${socket.id} queued for ${mode} quick match`);
+  });
 
-    if (found) {
-      found.room.addPlayer(socket, variantConfig, playerName);
-      playerRooms.set(socket.id, found.room);
-      console.log(`Quick match: ${socket.id} joined room ${found.code}`);
-    } else {
-      // Create a new room
-      const code = generateRoomCode();
-      const room = new GameRoom(io, code, 2);
-      rooms.set(code, room);
-
-      room.addPlayer(socket, variantConfig, playerName);
-      playerRooms.set(socket.id, room);
-
-      socket.emit('roomCreated', { code, mode: '1v1' });
-      console.log(`Quick match: ${socket.id} created room ${code}`);
-
-      // Expire unfilled rooms after 5 minutes
-      setTimeout(() => {
-        if (rooms.has(code) && !rooms.get(code).isFull()) {
-          const r = rooms.get(code);
-          r.players.filter(p => p).forEach(p => {
-            p.socket.emit('roomExpired', {});
-          });
-          r._stopLoops();
-          rooms.delete(code);
-          console.log(`Room ${code} expired`);
-        }
-      }, ROOM_EXPIRY_MS);
-    }
+  socket.on('cancelQueue', () => {
+    removeFromQueue(socket.id);
+    console.log(`Player ${socket.id} cancelled queue`);
   });
 
   socket.on('switchTeam', () => {
@@ -190,14 +296,35 @@ io.on('connection', (socket) => {
     }
   });
 
+  // Quick-chat relay: broadcast to all players in the room
+  socket.on('quickChat', (data) => {
+    const room = playerRooms.get(socket.id);
+    if (!room) return;
+    // Find the player's slot index
+    const playerIdx = room.players.findIndex(p => p && p.socket && p.socket.id === socket.id);
+    if (playerIdx < 0) return;
+    const msgIndex = typeof data === 'object' ? data.msgIndex : data;
+    if (typeof msgIndex !== 'number' || msgIndex < 0 || msgIndex > 11) return;
+    // Broadcast to all players in the room (including sender for consistency)
+    room.players.forEach(p => {
+      if (p && p.socket) {
+        p.socket.emit('quickChat', { msgIndex, playerIdx });
+      }
+    });
+  });
+
   socket.on('disconnect', () => {
     console.log(`Player disconnected: ${socket.id}`);
+
+    // Remove from matchmaking queue if queued
+    removeFromQueue(socket.id);
+
     const room = playerRooms.get(socket.id);
     if (room) {
       room.removePlayer(socket.id);
       playerRooms.delete(socket.id);
 
-      // Clean up empty rooms
+      // Clean up empty rooms (check all players including bots)
       if (room.isEmpty()) {
         rooms.delete(room.roomId);
         console.log(`Removed empty room: ${room.roomId}`);

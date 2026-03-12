@@ -953,7 +953,8 @@ body {
 #ai-mode-selector,
 #difficulty-selector,
 #training-type-selector,
-#training-diff-selector {
+#training-diff-selector,
+#quickmatch-mode-selector {
   display: flex;
   flex-direction: column;
   align-items: center;
@@ -1067,6 +1068,83 @@ body {
   color: #00ffff;
   background: rgba(0, 255, 255, 0.08);
   box-shadow: 0 0 16px rgba(0, 255, 255, 0.25);
+}
+
+/* ===== Queue Searching ===== */
+
+#queue-searching {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 16px;
+}
+
+.queue-spinner {
+  width: 48px;
+  height: 48px;
+  border: 3px solid rgba(255, 204, 0, 0.15);
+  border-top-color: #ffcc00;
+  border-radius: 50%;
+  animation: queueSpin 1s linear infinite;
+}
+
+@keyframes queueSpin {
+  to { transform: rotate(360deg); }
+}
+
+.queue-status-text {
+  font-size: 18px;
+  font-weight: 700;
+  letter-spacing: 2px;
+  color: #ffcc00;
+  text-shadow: 0 0 16px rgba(255, 204, 0, 0.4);
+  text-transform: uppercase;
+}
+
+.queue-timer {
+  font-family: 'Orbitron', sans-serif;
+  font-size: 28px;
+  font-weight: 800;
+  color: rgba(255, 255, 255, 0.6);
+  letter-spacing: 4px;
+}
+
+.queue-info {
+  font-size: 13px;
+  font-weight: 600;
+  letter-spacing: 1px;
+  color: rgba(255, 255, 255, 0.4);
+  min-height: 18px;
+}
+
+/* ===== Player Disconnected Toast ===== */
+
+.disconnect-toast {
+  position: fixed;
+  top: 80px;
+  left: 50%;
+  transform: translateX(-50%);
+  z-index: 400;
+  background: rgba(255, 50, 50, 0.85);
+  border: 1px solid rgba(255, 100, 100, 0.5);
+  border-radius: 8px;
+  padding: 12px 24px;
+  font-family: 'Orbitron', sans-serif;
+  font-size: 13px;
+  font-weight: 700;
+  letter-spacing: 1px;
+  color: #fff;
+  text-shadow: 0 1px 4px rgba(0, 0, 0, 0.5);
+  backdrop-filter: blur(8px);
+  pointer-events: none;
+  animation: toastFadeInOut 4s ease forwards;
+}
+
+@keyframes toastFadeInOut {
+  0% { opacity: 0; transform: translateX(-50%) translateY(-10px); }
+  10% { opacity: 1; transform: translateX(-50%) translateY(0); }
+  80% { opacity: 1; transform: translateX(-50%) translateY(0); }
+  100% { opacity: 0; transform: translateX(-50%) translateY(-10px); }
 }
 
 /* ===== Touch Controls ===== */

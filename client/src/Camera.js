@@ -36,6 +36,10 @@ export class CameraController {
     // Camera swivel (right stick / J,L keys)
     this.maxSwivel = Math.PI * 0.8; // ~144° max rotation
     this._swivelAngle = 0;          // current smoothed swivel angle
+
+    // Camera shake system
+    this._shakes = [];              // active shake instances
+    this._shakeOffset = new THREE.Vector3();
   }
 
   setTarget(car) {
@@ -67,6 +71,60 @@ export class CameraController {
     if (settings.distance !== undefined) this.distance = settings.distance;
     if (settings.height !== undefined) this.height = settings.height;
     if (settings.smoothness !== undefined) this.smoothSpeed = settings.smoothness;
+  }
+
+  // --- Camera Shake System ---
+
+  /**
+   * Add a shake with given intensity and duration.
+   * Multiple shakes stack additively.
+   */
+  shake(intensity, duration) {
+    this._shakes.push({
+      intensity,
+      duration,
+      elapsed: 0,
+      frequency: 25 + Math.random() * 10,  // slightly randomized for organic feel
+      decay: 5 / duration,                  // decay constant scaled to duration
+      // random axis bias so shakes feel different each time
+      axisX: 0.5 + Math.random() * 0.5,
+      axisY: 0.8 + Math.random() * 0.4,
+      axisZ: 0.3 + Math.random() * 0.3,
+    });
+  }
+
+  /** Heavy shake for goal events */
+  shakeGoal() {
+    this.shake(0.8, 0.6);
+  }
+
+  /** Medium shake for demolition */
+  shakeDemolition() {
+    this.shake(0.4, 0.3);
+  }
+
+  /** Light shake scaled with ball hit speed */
+  shakeHit(speed) {
+    const t = Math.min(speed / 60, 1); // normalize speed
+    const intensity = 0.1 + t * 0.2;   // 0.1 to 0.3
+    this.shake(intensity, 0.15);
+  }
+
+  /** Compute combined shake offset from all active shakes */
+  _updateShake(dt) {
+    this._shakeOffset.set(0, 0, 0);
+    for (let i = this._shakes.length - 1; i >= 0; i--) {
+      const s = this._shakes[i];
+      s.elapsed += dt;
+      if (s.elapsed >= s.duration) {
+        this._shakes.splice(i, 1);
+        continue;
+      }
+      const amp = s.intensity * Math.sin(s.elapsed * s.frequency) * Math.exp(-s.decay * s.elapsed);
+      this._shakeOffset.x += amp * s.axisX;
+      this._shakeOffset.y += amp * s.axisY;
+      this._shakeOffset.z += amp * s.axisZ;
+    }
   }
 
   update(dt, ballCamEnabled, lookX = 0) {
@@ -196,8 +254,12 @@ export class CameraController {
     // Keep camera above ground
     this.currentPos.y = Math.max(1, this.currentPos.y);
 
+    // Apply shake offset
+    this._updateShake(dt);
+
     // Apply
     this.camera.position.copy(this.currentPos);
+    this.camera.position.add(this._shakeOffset);
     this.camera.lookAt(this.currentLookAt);
   }
 
@@ -231,6 +293,7 @@ export class CameraController {
     this.currentPos.y = Math.max(2, this.currentPos.y);
 
     this.camera.position.copy(this.currentPos);
+    this.camera.position.add(this._shakeOffset);
     this.camera.lookAt(this.currentLookAt);
   }
 }

@@ -212,6 +212,15 @@ export const DEMOLITION = {
   PARTICLE_LIFETIME: 0.8,
 };
 
+// Random name pool (shared between lobby and AI naming)
+export const RANDOM_NAMES = [
+  'Donut','Penguin','Stumpy','Whicker','Shadow','Howard','Wilshire','Darling',
+  'Disco','Jack','The Bear','Sneak','The Big L','Whisp','Wheezy','Crazy',
+  'Goat','Pirate','Saucy','Hambone','Butcher','Walla Walla','Snake','Caboose',
+  'Sleepy','Killer','Stompy','Mopey','Dopey','Weasel','Ghost','Dasher',
+  'Grumpy','Hollywood','Tooth','Noodle','King','Cupid','Prancer',
+];
+
 // Player spawn positions
 export const SPAWNS = {
   // 1v1 (centered)

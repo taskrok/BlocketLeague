@@ -20,6 +20,12 @@ export class Ball {
     this._spinQuat = new THREE.Quaternion();
     this._rollAxis = new THREE.Vector3();
     this._deltaQuat = new THREE.Quaternion();
+
+    // Impact flash state
+    this._flashIntensity = 0;
+    this._flashDecayRate = 0;
+    this._originalEmissiveColor = new THREE.Color(COLORS.BALL);
+    this._flashColor = new THREE.Color(0xffffff);
   }
 
   _createPhysics() {
@@ -104,6 +110,16 @@ export class Ball {
     this.scene.add(this.mesh);
   }
 
+  /**
+   * Trigger a visual flash on ball impact.
+   * @param {number} impactSpeed - speed of the impact (used to scale intensity)
+   */
+  flash(impactSpeed) {
+    const t = Math.min(impactSpeed / 80, 1);  // normalize
+    this._flashIntensity = 1.0 + t * 1.5;     // 1.0 to 2.5
+    this._flashDecayRate = this._flashIntensity / 0.1; // fully decay over ~100ms
+  }
+
   update(dt) {
     // Clamp ball speed
     const vel = this.body.velocity;
@@ -148,7 +164,18 @@ export class Ball {
       : 0.8 + Math.min(curSpeed * 0.05, 1.5);   // desktop: full glow
 
     // Emissive intensity based on speed
-    const intensity = 0.3 + Math.min(curSpeed * 0.02, 0.8);
+    let intensity = 0.3 + Math.min(curSpeed * 0.02, 0.8);
+
+    // Impact flash: blend emissive toward white and boost intensity
+    if (this._flashIntensity > 0) {
+      this._flashIntensity -= this._flashDecayRate * dt;
+      if (this._flashIntensity < 0) this._flashIntensity = 0;
+      const flashT = this._flashIntensity / 2.5; // 0 to 1
+      this.sphere.material.emissive.copy(this._originalEmissiveColor).lerp(this._flashColor, flashT);
+      intensity += this._flashIntensity;
+    } else {
+      this.sphere.material.emissive.copy(this._originalEmissiveColor);
+    }
     this.sphere.material.emissiveIntensity = intensity;
 
     // Update shadow indicator position (always on ground below ball)

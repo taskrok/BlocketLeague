@@ -17,7 +17,7 @@ export function createArenaMaterial(theme = null) {
     color: new THREE.Color(floorColor),
     roughness: 0.8,
     metalness: 0.2,
-    side: THREE.DoubleSide,
+    side: THREE.FrontSide,
     transparent: true,
     opacity: 1.0,
     depthWrite: false,

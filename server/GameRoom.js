@@ -5,20 +5,23 @@
 // ============================================
 
 import * as CANNON from 'cannon-es';
+import { performance } from 'perf_hooks';
 import {
   PHYSICS, BALL as BALL_CONST, SPAWNS, GAME,
   NETWORK, COLLISION_GROUPS, CAR as CAR_CONST, DEMOLITION,
 } from '../shared/constants.js';
 import { computeBallHitImpulse } from '../shared/BallHitImpulse.js';
 import { encodeGameState } from '../shared/BinaryProtocol.js';
+import { checkDemolition } from '../shared/Demolition.js';
 import { ServerArena } from './ServerArena.js';
 import { ServerBall } from './ServerBall.js';
 import { ServerCar } from './ServerCar.js';
 import { ServerBoostPads } from './ServerBoostPads.js';
 import { PerformanceTracker } from '../shared/PerformanceTracker.js';
+import { computeAIInput } from './ServerAI.js';
 
 export class GameRoom {
-  constructor(io, roomId, maxPlayers = 2) {
+  constructor(io, roomId, maxPlayers = 2, onCleanup = null) {
     this.io = io;
     this.roomId = roomId;
     this.maxPlayers = maxPlayers;
@@ -31,9 +34,21 @@ export class GameRoom {
     this.tick = 0;
 
     this._physicsInterval = null;
+    this._physicsTimer = null;
     this._broadcastInterval = null;
     this._countdownInterval = null;
+    this._forceCleanupTimeout = null;
+    this._onCleanup = onCleanup;
     this.playerPings = new Array(maxPlayers).fill(0);
+
+    // Cache spawn arrays to avoid re-creating every call
+    this._cachedSpawns = null;
+
+    // Body-to-car-index Map for O(1) collision lookups
+    this.bodyToCarIndex = new Map();
+
+    // Slots controlled by server-side AI bots (Set of slot indices)
+    this.botSlots = new Set();
   }
 
   // ========== TEAM HELPERS ==========
@@ -47,10 +62,54 @@ export class GameRoom {
   }
 
   _getSpawns() {
+    if (this._cachedSpawns) return this._cachedSpawns;
     if (this.maxPlayers === 2) {
-      return [SPAWNS.PLAYER1, SPAWNS.PLAYER2];
+      this._cachedSpawns = [SPAWNS.PLAYER1, SPAWNS.PLAYER2];
+    } else {
+      this._cachedSpawns = [...SPAWNS.TEAM_BLUE, ...SPAWNS.TEAM_ORANGE];
     }
-    return [...SPAWNS.TEAM_BLUE, ...SPAWNS.TEAM_ORANGE];
+    return this._cachedSpawns;
+  }
+
+  /**
+   * Determine AI role for a bot slot: attacker (closest to ball) or support.
+   * In 1v1 bots always attack. In 2v2, the bot closest to ball attacks.
+   */
+  _getAIRole(idx) {
+    if (this.maxPlayers <= 2) return 'attacker';
+    if (!this.ball) return 'attacker';
+
+    const half = this.maxPlayers / 2;
+    const isBlue = idx < half;
+    const teamStart = isBlue ? 0 : half;
+    const teamEnd = isBlue ? half : this.maxPlayers;
+
+    // Find all bot slots on same team
+    const teamBots = [];
+    for (let i = teamStart; i < teamEnd; i++) {
+      if (this.botSlots.has(i) && this.cars[i]) {
+        teamBots.push(i);
+      }
+    }
+
+    if (teamBots.length <= 1) return 'attacker';
+
+    // Closest bot to ball is attacker
+    const bp = this.ball.body.position;
+    let closestIdx = teamBots[0];
+    let closestDist = Infinity;
+    for (const i of teamBots) {
+      const cp = this.cars[i].body.position;
+      const dx = cp.x - bp.x;
+      const dz = cp.z - bp.z;
+      const dist = dx * dx + dz * dz;
+      if (dist < closestDist) {
+        closestDist = dist;
+        closestIdx = i;
+      }
+    }
+
+    return idx === closestIdx ? 'attacker' : 'support';
   }
 
   // ========== PLAYER MANAGEMENT ==========
@@ -83,29 +142,68 @@ export class GameRoom {
   }
 
   removePlayer(socketId) {
-    this._stopLoops();
-
     const idx = this.players.findIndex(p => p && p.socketId === socketId);
-    if (idx !== -1) {
-      this.players[idx].socket.leave(this.roomId);
-      this.players[idx] = null;
+    if (idx === -1) return;
+
+    const playerName = this.players[idx].playerName || `Player ${idx + 1}`;
+    this.players[idx].socket.leave(this.roomId);
+
+    // If game is in progress, replace with AI bot instead of removing
+    if (this.state !== 'waiting') {
+      // Mark slot as bot-controlled, keep the player entry for name/variant display
+      this.players[idx].socketId = null;
+      this.players[idx].socket = null;
+      this.players[idx].isBot = true;
+      this.players[idx].playerName = playerName + ' (Bot)';
+      this.botSlots.add(idx);
+
+      // Notify remaining human players
+      const remaining = this.players.filter(p => p && p.socket);
+      remaining.forEach(p => {
+        p.socket.emit('playerDisconnected', {
+          slot: idx,
+          name: playerName,
+          message: `${playerName} disconnected - replaced by bot`,
+        });
+      });
+
+      // If no human players remain, stop the game loops
+      if (remaining.length === 0) {
+        this._stopLoops();
+      }
+      return;
     }
 
-    // Notify remaining players
-    const remaining = this.players.filter(p => p !== null);
-    if (this.state === 'waiting') {
-      this._broadcastLobbyState();
-    } else {
-      remaining.forEach(p => {
-        p.socket.emit('playerLeft', { slot: idx });
-      });
-    }
+    // In waiting state, just remove the player
+    this._stopLoops();
+    this.players[idx] = null;
+    this._broadcastLobbyState();
   }
 
   receiveInput(socketId, input) {
     const player = this.players.find(p => p && p.socketId === socketId);
     if (!player) return;
+
+    // Validate seq is a reasonable number
+    if (typeof input.seq !== 'number' || !isFinite(input.seq) || input.seq < 0 || input.seq > 1e9) return;
     if (input.seq <= player.lastProcessedInput) return;
+
+    // Sanitize analog values: clamp to [-1, 1]
+    const clamp = (v, lo, hi) => Math.max(lo, Math.min(hi, typeof v === 'number' && isFinite(v) ? v : 0));
+    input.throttle = clamp(input.throttle, -1, 1);
+    input.steer = clamp(input.steer, -1, 1);
+    input.airRoll = clamp(input.airRoll, -1, 1);
+    input.dodgeForward = clamp(input.dodgeForward, -1, 1);
+    input.dodgeSteer = clamp(input.dodgeSteer, -1, 1);
+
+    // Coerce booleans
+    input.jump = !!input.jump;
+    input.jumpPressed = !!input.jumpPressed;
+    input.boost = !!input.boost;
+    input.handbrake = !!input.handbrake;
+    input.pitchUp = !!input.pitchUp;
+    input.pitchDown = !!input.pitchDown;
+
     player.latestInput = input;
   }
 
@@ -114,7 +212,36 @@ export class GameRoom {
   }
 
   isEmpty() {
-    return this.players.every(p => p === null);
+    // Room is empty only if no human players remain (bots don't count)
+    return this.players.every(p => p === null || p.isBot);
+  }
+
+  /**
+   * Fill remaining empty slots with AI bots and start the game.
+   * Called by matchmaking when timeout fires with fewer players than needed.
+   */
+  fillWithBots(filledSlots) {
+    for (let i = 0; i < this.maxPlayers; i++) {
+      if (this.players[i] === null) {
+        this.players[i] = {
+          socket: null,
+          socketId: null,
+          variantConfig: {},
+          playerName: `Bot ${i + 1}`,
+          latestInput: this._emptyInput(),
+          lastProcessedInput: 0,
+          isBot: true,
+        };
+        this.botSlots.add(i);
+      }
+    }
+
+    // Now all slots are filled, init physics and start
+    if (this.players.every(p => p !== null)) {
+      this._initPhysics();
+      this._notifyJoined();
+      this._startCountdown();
+    }
   }
 
   switchTeam(socketId) {
@@ -146,10 +273,11 @@ export class GameRoom {
       team: this._getTeam(i),
       filled: p !== null,
       name: p ? p.playerName : '',
+      isBot: p ? !!p.isBot : false,
     }));
 
     for (const p of this.players) {
-      if (!p) continue;
+      if (!p || !p.socket) continue;
       const mySlot = this.players.indexOf(p);
       const personalSlots = slots.map(s => ({
         ...s,
@@ -216,13 +344,15 @@ export class GameRoom {
     this.ball = new ServerBall(this.world);
     this.ball.body.material = ballMaterial; // Must use same instance as contact materials
 
-    // Create cars for all players
+    // Create cars for all players and build body-to-index lookup map
     const spawns = this._getSpawns();
     this.cars = [];
+    this.bodyToCarIndex.clear();
     for (let i = 0; i < this.maxPlayers; i++) {
       const car = new ServerCar(this.world, spawns[i], this._getDirection(i));
       car.body.material = this.carMaterial;
       this.cars.push(car);
+      this.bodyToCarIndex.set(car.body, i);
     }
 
     // Psyonix-style ball hit impulse on car-ball collision
@@ -230,7 +360,7 @@ export class GameRoom {
       const other = e.body;
       if (!(other.collisionFilterGroup & COLLISION_GROUPS.CAR)) return;
 
-      const carIdx = this.cars.findIndex(c => c.body === other);
+      const carIdx = this.bodyToCarIndex.has(other) ? this.bodyToCarIndex.get(other) : -1;
       const car = carIdx >= 0 ? this.cars[carIdx] : null;
       const ballPos = this.ball.body.position;
       const ballVel = this.ball.body.velocity;
@@ -263,12 +393,11 @@ export class GameRoom {
     for (let i = 0; i < this.cars.length; i++) {
       this.cars[i].body.addEventListener('collide', (e) => {
         if (!(e.body.collisionFilterGroup & COLLISION_GROUPS.CAR)) return;
-        const otherCar = this.cars.find(c => c.body === e.body);
-        if (!otherCar) return;
-        const otherIdx = this.cars.indexOf(otherCar);
+        const otherIdx = this.bodyToCarIndex.has(e.body) ? this.bodyToCarIndex.get(e.body) : -1;
+        if (otherIdx < 0) return;
         // Only demolish across teams
         if (this._getTeam(i) !== this._getTeam(otherIdx)) {
-          this._handleCarDemolition(this.cars[i], otherCar);
+          this._handleCarDemolition(this.cars[i], this.cars[otherIdx]);
         }
       });
     }
@@ -278,46 +407,13 @@ export class GameRoom {
   }
 
   _handleCarDemolition(carA, carB) {
-    if (carA.demolished || carB.demolished) return;
+    const result = checkDemolition(carA, carB);
+    if (!result) return;
 
-    const speedA = carA.getSpeed();
-    const speedB = carB.getSpeed();
-
-    let attacker = null;
-    let victim = null;
-
-    // Only demolish if attacker is driving INTO the victim (dot > 0.5, ~60° cone)
-    // Side-by-side or same-direction travel won't demolish
-    if (speedA >= CAR_CONST.SUPERSONIC_THRESHOLD && speedA > speedB) {
-      const va = carA.body.velocity;
-      const dx = carB.body.position.x - carA.body.position.x;
-      const dy = carB.body.position.y - carA.body.position.y;
-      const dz = carB.body.position.z - carA.body.position.z;
-      const dLen = Math.sqrt(dx * dx + dy * dy + dz * dz) || 1;
-      const dot = (va.x * dx + va.y * dy + va.z * dz) / (speedA * dLen);
-      if (dot > 0.5) {
-        attacker = carA;
-        victim = carB;
-      }
-    }
-    if (!victim && speedB >= CAR_CONST.SUPERSONIC_THRESHOLD && speedB > speedA) {
-      const vb = carB.body.velocity;
-      const dx = carA.body.position.x - carB.body.position.x;
-      const dy = carA.body.position.y - carB.body.position.y;
-      const dz = carA.body.position.z - carB.body.position.z;
-      const dLen = Math.sqrt(dx * dx + dy * dy + dz * dz) || 1;
-      const dot = (vb.x * dx + vb.y * dy + vb.z * dz) / (speedB * dLen);
-      if (dot > 0.5) {
-        attacker = carB;
-        victim = carA;
-      }
-    }
-
-    if (!victim) return;
-
+    const { attacker, victim } = result;
     const pos = { x: victim.body.position.x, y: victim.body.position.y, z: victim.body.position.z };
-    const victimIdx = this.cars.indexOf(victim);
-    const attackerIdx = this.cars.indexOf(attacker);
+    const victimIdx = this.bodyToCarIndex.get(victim.body);
+    const attackerIdx = this.bodyToCarIndex.get(attacker.body);
     victim.demolish();
 
     this.perfTracker.recordDemolition(attackerIdx);
@@ -332,11 +428,16 @@ export class GameRoom {
   _notifyJoined() {
     const spawns = this._getSpawns();
     this.players.forEach((player, idx) => {
+      // Skip bot players (they have no socket)
+      if (!player || !player.socket) return;
+
       const otherPlayers = this.players
         .map((p, i) => ({
           slot: i,
           variantConfig: p.variantConfig,
           team: this._getTeam(i),
+          isBot: !!p.isBot,
+          playerName: p.playerName || '',
         }))
         .filter((_, i) => i !== idx);
 
@@ -384,10 +485,40 @@ export class GameRoom {
     this._broadcastTickCounter = 0;
     this._broadcastEveryNTicks = Math.round(NETWORK.TICK_RATE / NETWORK.SEND_RATE); // 60/30 = 2
 
-    this._physicsInterval = setInterval(() => this._physicsTick(), physicsMs);
+    // High-resolution timer loop using setImmediate + time accumulation
+    // This prevents drift that setInterval suffers from under load
+    this._physicsRunning = true;
+    this._physicsLastTime = performance.now();
+    this._physicsAccumulator = 0;
+
+    const physicsLoop = () => {
+      if (!this._physicsRunning) return;
+
+      const now = performance.now();
+      const elapsed = (now - this._physicsLastTime) / 1000; // seconds
+      this._physicsLastTime = now;
+
+      // Cap accumulated time to prevent spiral of death (max 5 frames of catch-up)
+      this._physicsAccumulator += Math.min(elapsed, physicsMs * 5 / 1000);
+
+      const dt = PHYSICS.TIMESTEP;
+      while (this._physicsAccumulator >= dt) {
+        this._physicsTick();
+        this._physicsAccumulator -= dt;
+      }
+
+      this._physicsTimer = setImmediate(physicsLoop);
+    };
+
+    this._physicsTimer = setImmediate(physicsLoop);
   }
 
   _stopLoops() {
+    this._physicsRunning = false;
+    if (this._physicsTimer) {
+      clearImmediate(this._physicsTimer);
+      this._physicsTimer = null;
+    }
     if (this._physicsInterval) {
       clearInterval(this._physicsInterval);
       this._physicsInterval = null;
@@ -398,6 +529,33 @@ export class GameRoom {
     }
   }
 
+  // ========== ROOM CLEANUP ==========
+
+  /**
+   * Force cleanup of this room: stops all loops, clears timeouts, and
+   * invokes the cleanup callback to remove from the rooms Map.
+   */
+  forceCleanup() {
+    this._stopLoops();
+    if (this._forceCleanupTimeout) {
+      clearTimeout(this._forceCleanupTimeout);
+      this._forceCleanupTimeout = null;
+    }
+    // Notify and disconnect remaining players (skip bots with no socket)
+    for (const p of this.players) {
+      if (p && p.socket) {
+        p.socket.emit('roomExpired', {});
+        p.socket.leave(this.roomId);
+      }
+    }
+    this.players.fill(null);
+    this.botSlots.clear();
+    this.bodyToCarIndex.clear();
+    if (this._onCleanup) {
+      this._onCleanup(this.roomId);
+    }
+  }
+
   // ========== PHYSICS TICK (60Hz) ==========
 
   _physicsTick() {
@@ -405,9 +563,17 @@ export class GameRoom {
 
     const dt = PHYSICS.TIMESTEP;
 
-    // Apply inputs to cars
+    // Apply inputs to cars (human players + AI bots)
     this.players.forEach((player, idx) => {
       if (!player) return;
+
+      // Compute AI input for bot-controlled slots
+      if (this.botSlots.has(idx) && (this.state === 'playing' || this.state === 'overtime')) {
+        const teamDir = this._getDirection(idx);
+        const role = this._getAIRole(idx);
+        player.latestInput = computeAIInput(this.cars[idx], this.ball, teamDir, role);
+      }
+
       const input = player.latestInput;
 
       if (this.state === 'playing' || this.state === 'overtime') {
@@ -495,6 +661,7 @@ export class GameRoom {
           mvpIdx,
         });
         this._stopLoops();
+        this._scheduleForceCleanup();
       }, 9 * 1000); // match goal reset time for replay
     }
   }
@@ -520,8 +687,21 @@ export class GameRoom {
           mvpIdx,
         });
         this._stopLoops();
+        this._scheduleForceCleanup();
       }
     }
+  }
+
+  /**
+   * After a game ends, schedule a 30-second timeout to forcibly clean up
+   * the room if players haven't already disconnected.
+   */
+  _scheduleForceCleanup() {
+    if (this._forceCleanupTimeout) return;
+    this._forceCleanupTimeout = setTimeout(() => {
+      console.log(`Force cleaning up room ${this.roomId} (30s post-game timeout)`);
+      this.forceCleanup();
+    }, 30 * 1000);
   }
 
   _resetAfterGoal() {
@@ -581,6 +761,10 @@ export class GameRoom {
     };
 
     // Binary encode + volatile emit (drops packets under pressure instead of queuing)
+    // Only emit if there are human players to receive it
+    const hasHumans = this.players.some(p => p && p.socket);
+    if (!hasHumans) return;
+
     const buffer = encodeGameState(gameState, this.maxPlayers);
     this.io.to(this.roomId).volatile.emit('gameState', buffer);
 

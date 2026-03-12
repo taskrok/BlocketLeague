@@ -8,9 +8,11 @@ import { NetworkManager } from './NetworkManager.js';
 import { generateCarVariant } from './CarVariants.js';
 import { buildCarMesh } from './CarMeshBuilder.js';
 import { modelLoader } from './ModelLoader.js';
-import { COLORS } from '../../shared/constants.js';
+import { COLORS, RANDOM_NAMES } from '../../shared/constants.js';
 import { getGeneralSettings } from './GameSettings.js';
 import { ARENA_THEMES } from './ArenaThemes.js';
+import { audioManager } from './AudioManager.js';
+import { progression } from './Progression.js';
 
 window.addEventListener('DOMContentLoaded', async () => {
   const canvas = document.getElementById('game-canvas');
@@ -37,15 +39,6 @@ window.addEventListener('DOMContentLoaded', async () => {
   const arenaNameEl = document.getElementById('arena-name');
   let currentArenaIndex = 0;
   arenaNameEl.textContent = ARENA_THEMES[0].name;
-
-  // Random name pool
-  const RANDOM_NAMES = [
-    'Donut','Penguin','Stumpy','Whicker','Shadow','Howard','Wilshire','Darling',
-    'Disco','Jack','The Bear','Sneak','The Big L','Whisp','Wheezy','Crazy',
-    'Goat','Pirate','Saucy','Hambone','Butcher','Walla Walla','Snake','Caboose',
-    'Sleepy','Killer','Stompy','Mopey','Dopey','Weasel','Ghost','Dasher',
-    'Grumpy','Hollywood','Tooth','Noodle','King','Cupid','Prancer',
-  ];
 
   function pickRandomName() {
     return RANDOM_NAMES[Math.floor(Math.random() * RANDOM_NAMES.length)];
@@ -79,10 +72,19 @@ window.addEventListener('DOMContentLoaded', async () => {
   const changelogPanel = document.getElementById('changelog-panel');
   const btnChangelogClose = document.getElementById('btn-changelog-close');
   const settingAutoFullscreen = document.getElementById('setting-auto-fullscreen');
+  const settingSfxMute = document.getElementById('setting-sfx-mute');
+  const settingSfxVolume = document.getElementById('setting-sfx-volume');
 
   // Init lobby settings from stored values
   const initGeneralSettings = getGeneralSettings();
   settingAutoFullscreen.checked = initGeneralSettings.autoFullscreen;
+
+  // Init SFX settings from stored values
+  try {
+    const audioSettings = JSON.parse(localStorage.getItem('blocket-audio-settings') || '{}');
+    if (audioSettings.sfxMuted) settingSfxMute.checked = true;
+    if (typeof audioSettings.sfxVolume === 'number') settingSfxVolume.value = audioSettings.sfxVolume;
+  } catch {}
 
   // Room lobby elements
   const roomLobby = document.getElementById('room-lobby');
@@ -102,6 +104,18 @@ window.addEventListener('DOMContentLoaded', async () => {
   const orangeSlots = document.getElementById('orange-slots');
   const btnRoomBack = document.getElementById('btn-room-back');
   const btnCopyCode = document.getElementById('btn-copy-code');
+
+  // Quick match mode selector elements
+  const quickmatchModeSelector = document.getElementById('quickmatch-mode-selector');
+  const btnQM1v1 = document.getElementById('btn-qm-1v1');
+  const btnQM2v2 = document.getElementById('btn-qm-2v2');
+  const btnQMModeBack = document.getElementById('btn-qm-mode-back');
+
+  // Queue searching elements
+  const queueSearching = document.getElementById('queue-searching');
+  const queueTimerEl = document.getElementById('queue-timer');
+  const queueInfoEl = document.getElementById('queue-info');
+  const btnCancelQueue = document.getElementById('btn-cancel-queue');
 
   // Training selector elements
   const trainingTypeSelector = document.getElementById('training-type-selector');
@@ -142,6 +156,7 @@ window.addEventListener('DOMContentLoaded', async () => {
   let currentModelIndex = 0;
   let availableModelIds = [];
   let activeGame = null;
+  let matchEndTimeoutId = null;
 
   // Persist car selection
   const CAR_MODEL_KEY = 'blocket-car-model';
@@ -244,6 +259,29 @@ window.addEventListener('DOMContentLoaded', async () => {
   };
   document.addEventListener('click', startMusic);
 
+  // Init audio manager on first user interaction (browser autoplay policy)
+  let audioInited = false;
+  const initAudio = () => {
+    if (!audioInited) {
+      audioManager.init();
+      // Restore mute preference from localStorage
+      try {
+        const audioSettings = JSON.parse(localStorage.getItem('blocket-audio-settings') || '{}');
+        if (audioSettings.sfxMuted) {
+          audioManager.setMuted(true);
+        }
+        if (typeof audioSettings.sfxVolume === 'number') {
+          audioManager.setMasterVolume(audioSettings.sfxVolume);
+        }
+      } catch {}
+      audioInited = true;
+      document.removeEventListener('click', initAudio);
+      document.removeEventListener('keydown', initAudio);
+    }
+  };
+  document.addEventListener('click', initAudio);
+  document.addEventListener('keydown', initAudio);
+
   // Lobby music controls
   lobbySkipBtn.addEventListener('click', (e) => {
     e.stopPropagation();
@@ -261,9 +299,12 @@ window.addEventListener('DOMContentLoaded', async () => {
 
   // Room lobby state
   let selectedRoomMode = null; // '1v1' | '2v2'
+  let selectedQMMode = null; // quick match mode: '1v1' | '2v2'
   let roomCode = null;
   let isRoomCreator = false;
   let networkManager = null;
+  let queueTimerInterval = null;
+  let queueStartTime = null;
 
   // --- 3D Preview state ---
   let previewRenderer = null;
@@ -342,6 +383,13 @@ window.addEventListener('DOMContentLoaded', async () => {
   lobbyButtons.style.display = '';
   lobbyTitle.style.display = '';
 
+  // --- Progression: lobby XP display ---
+  const lobbyXPDisplay = progression.createLobbyXPDisplay();
+  const nameInput = document.getElementById('player-name-input');
+  if (nameInput && nameInput.parentNode) {
+    nameInput.parentNode.insertBefore(lobbyXPDisplay, nameInput);
+  }
+
   // --- Screen transition helper ---
   function showScreen(el, displayType = 'flex') {
     el.style.display = displayType;
@@ -400,9 +448,19 @@ window.addEventListener('DOMContentLoaded', async () => {
 
   function updateModelLabel() {
     if (availableModelIds.length > 0 && chosenVariant && chosenVariant.modelId) {
-      carModelName.textContent = modelLoader.getModelName(chosenVariant.modelId);
+      const name = modelLoader.getModelName(chosenVariant.modelId);
+      const isLocked = !progression.isCarUnlocked(currentModelIndex, availableModelIds.length);
+      if (isLocked) {
+        const unlockLevel = progression.getUnlockLevel(currentModelIndex);
+        carModelName.textContent = name + ' (Lvl ' + unlockLevel + ')';
+        carModelName.style.color = '#888';
+      } else {
+        carModelName.textContent = name;
+        carModelName.style.color = '';
+      }
     } else {
       carModelName.textContent = 'Procedural';
+      carModelName.style.color = '';
     }
   }
 
@@ -486,6 +544,11 @@ window.addEventListener('DOMContentLoaded', async () => {
     showScreen(lobbyButtons);
     selectedMode = null;
     chosenVariant = null;
+    // Clear quick match state if backing out
+    if (roomCode === '__quickmatch__') {
+      roomCode = null;
+      selectedQMMode = null;
+    }
   }
 
   function destroyActiveGame() {
@@ -496,7 +559,20 @@ window.addEventListener('DOMContentLoaded', async () => {
     }
   }
 
+  function stopQueueTimer() {
+    if (queueTimerInterval) {
+      clearInterval(queueTimerInterval);
+      queueTimerInterval = null;
+    }
+    queueStartTime = null;
+  }
+
   function returnToLobby() {
+    if (matchEndTimeoutId) {
+      clearTimeout(matchEndTimeoutId);
+      matchEndTimeoutId = null;
+    }
+    stopQueueTimer();
     destroyActiveGame();
     if (networkManager) {
       networkManager.disconnect();
@@ -514,9 +590,15 @@ window.addEventListener('DOMContentLoaded', async () => {
     howtoplayPanel.style.display = 'none';
     lobbySettingsPanel.style.display = 'none';
     changelogPanel.style.display = 'none';
+    quickmatchModeSelector.style.display = 'none';
+    queueSearching.style.display = 'none';
     roomCode = null;
     selectedRoomMode = null;
+    selectedQMMode = null;
     isRoomCreator = false;
+
+    // Update lobby progression display
+    progression.updateLobbyDisplay();
 
     // Restart particle animation if stopped
     if (!particleRafId) animateParticles();
@@ -543,6 +625,8 @@ window.addEventListener('DOMContentLoaded', async () => {
     showScreen(roomLobby);
     roomLobbyOptions.style.display = 'none';
     modeSelector.style.display = 'none';
+    quickmatchModeSelector.style.display = 'none';
+    queueSearching.style.display = 'none';
     showScreen(waitingRoom);
     roomCodeDisplay.textContent = code;
     btnCopyCode.style.display = hideCode ? 'none' : '';
@@ -635,7 +719,7 @@ window.addEventListener('DOMContentLoaded', async () => {
     if (selectedMode === 'singleplayer') {
       lobby.style.display = 'none';
       requestFullscreen();
-      const game = new Game(canvas, 'singleplayer', null, chosenVariant, null, selectedDifficulty, selectedAIMode, null, selectedArena);
+      const game = new Game(canvas, { mode: 'singleplayer', playerVariant: chosenVariant, aiDifficulty: selectedDifficulty, aiMode: selectedAIMode, arenaTheme: selectedArena });
       game.hud.onBackToLobby = () => returnToLobby();
       activeGame = game;
       window.game = game;
@@ -645,7 +729,7 @@ window.addEventListener('DOMContentLoaded', async () => {
     if (selectedMode === 'freeplay') {
       lobby.style.display = 'none';
       requestFullscreen();
-      const game = new Game(canvas, 'freeplay', null, chosenVariant, null, 'pro', '1v1', null, selectedArena);
+      const game = new Game(canvas, { mode: 'freeplay', playerVariant: chosenVariant, arenaTheme: selectedArena });
       game.hud.onBackToLobby = () => returnToLobby();
       activeGame = game;
       window.game = game;
@@ -655,10 +739,7 @@ window.addEventListener('DOMContentLoaded', async () => {
     if (selectedMode === 'training') {
       lobby.style.display = 'none';
       requestFullscreen();
-      const game = new Game(canvas, 'training', null, chosenVariant, null, 'pro', '1v1', {
-        type: selectedTrainingType,
-        difficulty: selectedTrainingDifficulty,
-      }, selectedArena);
+      const game = new Game(canvas, { mode: 'training', playerVariant: chosenVariant, trainingOpts: { type: selectedTrainingType, difficulty: selectedTrainingDifficulty }, arenaTheme: selectedArena });
       game.hud.onBackToLobby = () => returnToLobby();
       activeGame = game;
       window.game = game;
@@ -667,8 +748,29 @@ window.addEventListener('DOMContentLoaded', async () => {
 
     // Multiplayer: show connecting state immediately, then connect
     const isQuickMatch = roomCode === '__quickmatch__';
-    showWaitingRoom(isQuickMatch ? 'Searching...' : (isRoomCreator ? '...' : roomCode), isQuickMatch);
-    roomStatus.textContent = isQuickMatch ? 'Finding a match...' : 'Connecting...';
+
+    if (isQuickMatch) {
+      // Show queue searching UI
+      lobbyButtons.style.display = 'none';
+      showScreen(roomLobby);
+      roomLobbyOptions.style.display = 'none';
+      modeSelector.style.display = 'none';
+      waitingRoom.style.display = 'none';
+      quickmatchModeSelector.style.display = 'none';
+      showScreen(queueSearching);
+      queueTimerEl.textContent = '0:00';
+      queueInfoEl.textContent = '';
+      queueStartTime = Date.now();
+      queueTimerInterval = setInterval(() => {
+        const elapsed = Math.floor((Date.now() - queueStartTime) / 1000);
+        const mins = Math.floor(elapsed / 60);
+        const secs = elapsed % 60;
+        queueTimerEl.textContent = `${mins}:${secs.toString().padStart(2, '0')}`;
+      }, 1000);
+    } else {
+      showWaitingRoom(isRoomCreator ? '...' : roomCode, false);
+      roomStatus.textContent = 'Connecting...';
+    }
 
     const network = new NetworkManager();
     networkManager = network;
@@ -677,8 +779,8 @@ window.addEventListener('DOMContentLoaded', async () => {
       const variant = chosenVariant || generateCarVariant(COLORS.CYAN, availableModelIds);
       const name = getPlayerName();
 
-      if (roomCode === '__quickmatch__') {
-        network.quickMatch(variant, name);
+      if (isQuickMatch) {
+        network.quickMatch(variant, name, selectedQMMode || '1v1');
       } else if (isRoomCreator) {
         network.createRoom(selectedRoomMode, variant, name);
       } else {
@@ -692,7 +794,27 @@ window.addEventListener('DOMContentLoaded', async () => {
       roomStatus.textContent = 'Waiting for players...';
     });
 
+    network.on('queueUpdate', (data) => {
+      queueInfoEl.textContent = `${data.playersInQueue}/${data.playersNeeded} players found`;
+    });
+
+    network.on('matchFound', () => {
+      // Match found! The server will follow up with a 'joined' event.
+      // Stop the timer, update the status text.
+      stopQueueTimer();
+      queueSearching.querySelector('.queue-status-text').textContent = 'Match found!';
+      queueInfoEl.textContent = 'Starting game...';
+    });
+
     network.on('lobbyUpdate', (data) => {
+      // If we were in queue searching, switch to waiting room view
+      if (queueSearching.style.display !== 'none') {
+        stopQueueTimer();
+        queueSearching.style.display = 'none';
+      }
+      if (waitingRoom.style.display === 'none' && !isQuickMatch) {
+        showScreen(waitingRoom);
+      }
       roomStatus.textContent = `Waiting for players... (${data.playerCount}/${data.maxPlayers})`;
       if (data.mode) {
         roomModeLabel.textContent = data.mode;
@@ -703,30 +825,43 @@ window.addEventListener('DOMContentLoaded', async () => {
     });
 
     network.on('joinError', (data) => {
+      stopQueueTimer();
       alert(data.message);
       returnToLobby();
     });
 
     network.on('roomExpired', () => {
+      stopQueueTimer();
       alert('Room expired');
       returnToLobby();
     });
 
     network.on('joined', (data) => {
-      // All players are in — launch the game
+      // All players are in - launch the game
+      stopQueueTimer();
       lobby.style.display = 'none';
       requestFullscreen();
-      const game = new Game(canvas, 'multiplayer', network, chosenVariant, data, 'pro', '1v1', null, selectedArena);
+      const game = new Game(canvas, { mode: 'multiplayer', networkManager: network, playerVariant: chosenVariant, joinedData: data, arenaTheme: selectedArena });
       game.hud.onBackToLobby = () => returnToLobby();
       game.onMatchEnd = () => {
-        setTimeout(() => returnToLobby(), 4000);
+        matchEndTimeoutId = setTimeout(() => returnToLobby(), 4000);
       };
       activeGame = game;
       window.game = game;
       networkManager = null; // Game owns the network now
     });
 
+    network.on('playerDisconnected', (data) => {
+      // Show a toast notification that a player was replaced by a bot
+      const toast = document.createElement('div');
+      toast.className = 'disconnect-toast';
+      toast.textContent = data.message || 'A player disconnected';
+      document.body.appendChild(toast);
+      setTimeout(() => toast.remove(), 4500);
+    });
+
     network.on('disconnected', () => {
+      stopQueueTimer();
       if (!activeGame) {
         returnToLobby();
       }
@@ -852,13 +987,34 @@ window.addEventListener('DOMContentLoaded', async () => {
     roomCodeInput.value = '';
   });
 
-  // "Quick Match" → connect and auto-find a room
+  // "Quick Match" -> show mode selector for quick match
   btnQuickMatch.addEventListener('click', () => {
+    roomLobbyOptions.style.display = 'none';
+    showScreen(quickmatchModeSelector);
+  });
+
+  // Quick match mode selection
+  btnQM1v1.addEventListener('click', () => {
+    selectedQMMode = '1v1';
+    quickmatchModeSelector.style.display = 'none';
     isRoomCreator = false;
     selectedRoomMode = '1v1';
-    showCarSelector('multiplayer');
-    // Will emit quickMatch on connect instead of joinRoom
     roomCode = '__quickmatch__';
+    showCarSelector('multiplayer');
+  });
+
+  btnQM2v2.addEventListener('click', () => {
+    selectedQMMode = '2v2';
+    quickmatchModeSelector.style.display = 'none';
+    isRoomCreator = false;
+    selectedRoomMode = '2v2';
+    roomCode = '__quickmatch__';
+    showCarSelector('multiplayer');
+  });
+
+  btnQMModeBack.addEventListener('click', () => {
+    quickmatchModeSelector.style.display = 'none';
+    roomLobbyOptions.style.display = 'flex';
   });
 
   // "Create Room" → show mode selector
@@ -893,8 +1049,20 @@ window.addEventListener('DOMContentLoaded', async () => {
     roomCodeInput.value = roomCodeInput.value.toUpperCase().replace(/[^A-Z]/g, '');
   });
 
+  // Cancel queue button
+  btnCancelQueue.addEventListener('click', () => {
+    stopQueueTimer();
+    if (networkManager) {
+      networkManager.cancelQueue();
+      networkManager.disconnect();
+      networkManager = null;
+    }
+    returnToLobby();
+  });
+
   // Room lobby back button
   btnRoomBack.addEventListener('click', () => {
+    stopQueueTimer();
     if (networkManager) {
       networkManager.disconnect();
       networkManager = null;
@@ -903,6 +1071,7 @@ window.addEventListener('DOMContentLoaded', async () => {
     showScreen(lobbyButtons);
     roomCode = null;
     selectedRoomMode = null;
+    selectedQMMode = null;
   });
 
   // How to Play
@@ -952,13 +1121,62 @@ window.addEventListener('DOMContentLoaded', async () => {
     localStorage.setItem('blocket-general-settings', JSON.stringify(settings));
   });
 
+  // SFX mute toggle
+  settingSfxMute.addEventListener('change', () => {
+    const muted = settingSfxMute.checked;
+    audioManager.setMuted(muted);
+    try {
+      const audioSettings = JSON.parse(localStorage.getItem('blocket-audio-settings') || '{}');
+      audioSettings.sfxMuted = muted;
+      localStorage.setItem('blocket-audio-settings', JSON.stringify(audioSettings));
+    } catch {}
+  });
+
+  // SFX volume slider
+  settingSfxVolume.addEventListener('input', () => {
+    const v = parseFloat(settingSfxVolume.value);
+    audioManager.setMasterVolume(v);
+    try {
+      const audioSettings = JSON.parse(localStorage.getItem('blocket-audio-settings') || '{}');
+      audioSettings.sfxVolume = v;
+      localStorage.setItem('blocket-audio-settings', JSON.stringify(audioSettings));
+    } catch {}
+  });
+
   // Prev/Next model buttons
+  // Engine rev preview state
+  let _enginePreviewTimeout = null;
+  let _enginePreviewActive = false;
+
+  function previewCarEngine(modelId) {
+    // Switch engine profile and do a brief rev: idle → mid RPM → back to idle
+    audioManager.setCarModel(modelId);
+
+    // Clear any pending rev-down
+    if (_enginePreviewTimeout) clearTimeout(_enginePreviewTimeout);
+
+    // Rev up to ~60% immediately
+    audioManager.setEngineSpeed(28, 46);
+    _enginePreviewActive = true;
+
+    // After 400ms, ramp back down to idle
+    _enginePreviewTimeout = setTimeout(() => {
+      audioManager.setEngineSpeed(5, 46);
+      // Settle to idle after another 600ms
+      _enginePreviewTimeout = setTimeout(() => {
+        audioManager.setEngineSpeed(0, 46);
+        _enginePreviewActive = false;
+      }, 600);
+    }, 400);
+  }
+
   btnPrevModel.addEventListener('click', () => {
     if (availableModelIds.length === 0) return;
     currentModelIndex = (currentModelIndex - 1 + availableModelIds.length) % availableModelIds.length;
     chosenVariant.modelId = availableModelIds[currentModelIndex];
     setPreviewCar(chosenVariant);
     updateModelLabel();
+    previewCarEngine(chosenVariant.modelId);
   });
 
   btnNextModel.addEventListener('click', () => {
@@ -967,6 +1185,7 @@ window.addEventListener('DOMContentLoaded', async () => {
     chosenVariant.modelId = availableModelIds[currentModelIndex];
     setPreviewCar(chosenVariant);
     updateModelLabel();
+    previewCarEngine(chosenVariant.modelId);
   });
 
   btnPrevArena.addEventListener('click', () => {
@@ -980,6 +1199,14 @@ window.addEventListener('DOMContentLoaded', async () => {
   });
 
   btnLetsGo.addEventListener('click', () => {
+    // Prevent starting with a locked car
+    if (availableModelIds.length > 0 && !progression.isCarUnlocked(currentModelIndex, availableModelIds.length)) {
+      const unlockLevel = progression.getUnlockLevel(currentModelIndex);
+      carModelName.textContent = 'Unlocks at Level ' + unlockLevel + '!';
+      carModelName.style.color = '#ff4444';
+      setTimeout(() => updateModelLabel(), 1500);
+      return;
+    }
     startGame();
   });
 

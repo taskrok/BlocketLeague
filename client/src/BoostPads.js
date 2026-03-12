@@ -4,6 +4,7 @@
 
 import * as THREE from 'three';
 import { ARENA, BOOST_PAD, BOOST_PAD_LAYOUT, COLORS } from '../../shared/constants.js';
+import { audioManager } from './AudioManager.js';
 
 export class BoostPads {
   constructor(scene, isRemote = false) {
@@ -181,6 +182,9 @@ export class BoostPads {
           if (dist < pad.radius) {
             if (car.boost < 100 || pad.isLarge) {
               car.addBoost(pad.amount);
+              if (car.isLocalPlayer) {
+                audioManager.playBoostPickup(pad.isLarge);
+              }
               pad.active = false;
               pad.mesh.visible = false;
               pad.respawnTimer = pad.respawnTime;
