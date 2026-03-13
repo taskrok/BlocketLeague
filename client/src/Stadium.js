@@ -62,9 +62,9 @@ export class Stadium {
       depthWrite: false,
       fog: false,
       uniforms: {
-        topColor:    { value: new THREE.Color(0x020010) },
-        bottomColor: { value: new THREE.Color(0x0a0820) },
-        horizonColor:{ value: new THREE.Color(0x100c30) },
+        topColor:    { value: new THREE.Color(0x060828) },
+        bottomColor: { value: new THREE.Color(0x141040) },
+        horizonColor:{ value: new THREE.Color(0x201858) },
         offset:      { value: 20 },
         exponent:    { value: 0.8 },
       },
@@ -115,8 +115,8 @@ export class Stadium {
 
     const groundMat = new THREE.ShaderMaterial({
       uniforms: {
-        baseColor: { value: new THREE.Color(0x0a0a12) },
-        lineColor: { value: new THREE.Color(0x151520) },
+        baseColor: { value: new THREE.Color(0x141428) },
+        lineColor: { value: new THREE.Color(0x222238) },
       },
       vertexShader: `
         varying vec2 vWorldXZ;
@@ -170,7 +170,9 @@ export class Stadium {
     // Concrete tiers (large slabs per tier per section)
     const tierGeo = new THREE.BoxGeometry(1, 1, 1);
     const tierMat = new THREE.MeshStandardMaterial({
-      color: 0x1a1a2e,
+      color: 0x2a2a4e,
+      emissive: 0x111122,
+      emissiveIntensity: 0.6,
       roughness: 0.9,
       metalness: 0.1,
     });
@@ -288,6 +290,8 @@ export class Stadium {
     const bodyMat = new THREE.MeshStandardMaterial({
       roughness: 0.7,
       metalness: 0.0,
+      emissive: 0x222233,
+      emissiveIntensity: 0.5,
     });
     this.disposables.push(bodyGeo, bodyMat);
 
@@ -299,6 +303,8 @@ export class Stadium {
     const headMat = new THREE.MeshStandardMaterial({
       color: 0xddccbb,
       roughness: 0.8,
+      emissive: 0x332211,
+      emissiveIntensity: 0.4,
     });
     this.disposables.push(headGeo, headMat);
     const headMesh = new THREE.InstancedMesh(headGeo, headMat, fanCount);
@@ -381,7 +387,9 @@ export class Stadium {
   _buildPillars() {
     const pillarGeo = new THREE.BoxGeometry(3, 1, 3);
     const pillarMat = new THREE.MeshStandardMaterial({
-      color: STRUCT_COLOR,
+      color: 0x282840,
+      emissive: 0x0e0e1e,
+      emissiveIntensity: 0.5,
       roughness: 0.6,
       metalness: 0.4,
     });
@@ -441,7 +449,9 @@ export class Stadium {
 
     const rimGeo = new THREE.BoxGeometry(1, 1, 1);
     const rimMat = new THREE.MeshStandardMaterial({
-      color: STRUCT_ACCENT,
+      color: 0x1a1a30,
+      emissive: 0x0a0a18,
+      emissiveIntensity: 0.5,
       roughness: 0.5,
       metalness: 0.5,
     });
@@ -497,9 +507,9 @@ export class Stadium {
     // Light rig bars along the underside of the rim — glowing strips
     const rigGeo = new THREE.BoxGeometry(1, 0.4, 1);
     const rigMat = new THREE.MeshStandardMaterial({
-      color: 0x222244,
-      emissive: 0x334466,
-      emissiveIntensity: 0.5,
+      color: 0x445577,
+      emissive: 0x5577aa,
+      emissiveIntensity: 1.0,
       roughness: 0.3,
       metalness: 0.7,
     });
@@ -572,7 +582,9 @@ export class Stadium {
     // Poles
     const poleGeo = new THREE.CylinderGeometry(0.8, 1.2, poleHeight, 6);
     const poleMat = new THREE.MeshStandardMaterial({
-      color: 0x222233,
+      color: 0x333348,
+      emissive: 0x111118,
+      emissiveIntensity: 0.4,
       roughness: 0.4,
       metalness: 0.6,
     });
@@ -622,7 +634,7 @@ export class Stadium {
       this.meshes.push(lens);
 
       // Actual point light aiming toward the arena
-      const light = new THREE.PointLight(0xfff0dd, 0.4, 350, 1.5);
+      const light = new THREE.PointLight(0xfff0dd, 2.0, 500, 1.0);
       light.position.set(cx, poleHeight + 2, cz);
       this.scene.add(light);
       this.meshes.push(light);
