@@ -51,8 +51,15 @@ export class Stadium {
     this._buildNeonAccents();
 
     // Render stadium before the arena shell (which has depthWrite:false)
-    // so the transparent grid composites on top of the stadium
-    this.meshes.forEach(m => { if (m.isObject3D) m.renderOrder = -2; });
+    // so the transparent grid composites on top of the stadium.
+    // Disable fog on all stadium materials — the scene fog would black them out
+    // since the stadium is beyond the fog distance.
+    this.meshes.forEach(m => {
+      if (m.isObject3D) {
+        m.renderOrder = -2;
+        if (m.material) m.material.fog = false;
+      }
+    });
   }
 
   // ==========================================================
