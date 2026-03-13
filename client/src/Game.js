@@ -268,7 +268,7 @@ export class Game {
     this.camera.position.set(0, 15, -30);
 
     this.arena = new Arena(this.scene, this.world, this.arenaTheme);
-    this.stadium = new Stadium(this.scene);
+    if (getDisplaySettings().stadium) this.stadium = new Stadium(this.scene);
 
     this.world.bodies.forEach(b => {
       if (b.type === CANNON.Body.STATIC && !b.material) {
@@ -530,7 +530,7 @@ export class Game {
     this.camera.position.set(0, 15, -30);
 
     this.arena = new Arena(this.scene, this.world, this.arenaTheme);
-    this.stadium = new Stadium(this.scene);
+    if (getDisplaySettings().stadium) this.stadium = new Stadium(this.scene);
 
     this.world.bodies.forEach(b => {
       if (b.type === CANNON.Body.STATIC && !b.material) {

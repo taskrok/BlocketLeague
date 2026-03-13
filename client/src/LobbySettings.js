@@ -416,6 +416,7 @@ export function buildLobbySettings(container) {
 
   const displayChecks = [
     { key: 'autoFullscreen', label: 'Auto-fullscreen on start', isGeneral: true },
+    { key: 'stadium', label: 'Stadium exterior' },
     { key: 'bloom', label: 'Bloom (glow effects)' },
     { key: 'antialias', label: 'Anti-aliasing (restart required)' },
     { key: 'nameplates', label: 'Car nameplates' },

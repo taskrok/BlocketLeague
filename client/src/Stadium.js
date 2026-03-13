@@ -49,6 +49,10 @@ export class Stadium {
     this._buildStructure();
     this._buildFloodLights();
     this._buildNeonAccents();
+
+    // Render stadium before the arena shell (which has depthWrite:false)
+    // so the transparent grid composites on top of the stadium
+    this.meshes.forEach(m => { if (m.isObject3D) m.renderOrder = -2; });
   }
 
   // ==========================================================
@@ -745,37 +749,7 @@ export class Stadium {
   // ==========================================================
 
   update(dt) {
-    this._time += dt;
-
-    // Animate crowd — bob up and down with sine wave
-    const dummy = new THREE.Object3D();
-    this.fanInstances.forEach(({ body, head, phaseArray, baseY, count, positions }) => {
-      for (let i = 0; i < count; i++) {
-        const phase = phaseArray[i];
-        const bob = Math.sin(this._time * 2.5 + phase) * 0.6;
-        // Only positive bob (fans stand up from seated, never sink below seat)
-        const yOffset = Math.max(0, bob);
-
-        const px = positions[i * 3];
-        const py = baseY[i] + yOffset;
-        const pz = positions[i * 3 + 2];
-
-        // Body
-        dummy.position.set(px, py, pz);
-        dummy.scale.setScalar(1);
-        dummy.rotation.set(0, 0, 0);
-        dummy.updateMatrix();
-        body.setMatrixAt(i, dummy.matrix);
-
-        // Head
-        dummy.position.set(px, py + 1.3, pz);
-        dummy.updateMatrix();
-        head.setMatrixAt(i, dummy.matrix);
-      }
-
-      body.instanceMatrix.needsUpdate = true;
-      head.instanceMatrix.needsUpdate = true;
-    });
+    // No per-frame animation — fans are static for performance
   }
 
   // ==========================================================

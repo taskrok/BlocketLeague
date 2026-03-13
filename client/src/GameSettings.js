@@ -12,6 +12,7 @@ const DISPLAY_STORAGE_KEY = 'blocket-display-settings';
 
 export const DISPLAY_DEFAULTS = {
   bloom: true,
+  stadium: true,
   antialias: true,
   nameplates: true,
   particles: true,
