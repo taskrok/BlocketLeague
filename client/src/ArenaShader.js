@@ -21,6 +21,7 @@ export function createArenaMaterial(theme = null) {
     transparent: true,
     opacity: 1.0,
     depthWrite: false,
+    alphaTest: 0.01,
   });
 
   material.onBeforeCompile = (shader) => {
