@@ -126,12 +126,19 @@ export class NetworkManager {
     }
   }
 
-  connect() {
-    this.socket = io({ transports: ['websocket'] });
+  connect(playerId, playerName) {
+    const query = {};
+    if (playerId) query.playerId = playerId;
+    if (playerName) query.playerName = playerName;
+    this.socket = io({ transports: ['websocket'], query });
 
     this.socket.on('connect', () => {
       this._startPing();
       this._emit('connected');
+    });
+
+    this.socket.on('playerId', (data) => {
+      this._emit('playerId', data);
     });
 
     this.socket.on('waiting', (data) => {

@@ -44,6 +44,10 @@ window.addEventListener('DOMContentLoaded', async () => {
     return RANDOM_NAMES[Math.floor(Math.random() * RANDOM_NAMES.length)];
   }
 
+  // Persistent player ID for server stats
+  const PLAYER_ID_KEY = 'blocket-player-id';
+  let localPlayerId = localStorage.getItem(PLAYER_ID_KEY) || '';
+
   // Player name
   const playerNameInput = document.getElementById('player-name-input');
   const PLAYER_NAME_KEY = 'blocket-player-name';
@@ -860,6 +864,13 @@ window.addEventListener('DOMContentLoaded', async () => {
       setTimeout(() => toast.remove(), 4500);
     });
 
+    network.on('playerId', (data) => {
+      if (data && data.playerId) {
+        localPlayerId = data.playerId;
+        localStorage.setItem(PLAYER_ID_KEY, data.playerId);
+      }
+    });
+
     network.on('disconnected', () => {
       stopQueueTimer();
       if (!activeGame) {
@@ -867,7 +878,7 @@ window.addEventListener('DOMContentLoaded', async () => {
       }
     });
 
-    network.connect();
+    network.connect(localPlayerId, playerNameInput.value.trim());
   }
 
   // --- Button handlers ---

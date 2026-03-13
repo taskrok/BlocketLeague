@@ -9,6 +9,10 @@ import { fileURLToPath } from 'url';
 import { dirname, join } from 'path';
 import { GameRoom } from './GameRoom.js';
 import { decodeInput } from '../shared/BinaryProtocol.js';
+import {
+  initDatabase, generatePlayerId, ensurePlayer,
+  getPlayerStats, getLeaderboard, getMatchHistory,
+} from './database.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
@@ -94,6 +98,7 @@ function addToQueue(socket, mode, variantConfig, playerName) {
   const entry = {
     socketId: socket.id,
     socket,
+    playerId: playerIds.get(socket.id) || null,
     variantConfig: variantConfig || {},
     playerName: playerName || '',
     timestamp: Date.now(),
@@ -186,7 +191,7 @@ function startMatchedGame(players, mode) {
       queueTimeouts.delete(entry.socketId);
     }
 
-    room.addPlayer(entry.socket, entry.variantConfig, entry.playerName);
+    room.addPlayer(entry.socket, entry.variantConfig, entry.playerName, entry.playerId);
     playerRooms.set(entry.socketId, room);
   }
 
@@ -204,10 +209,27 @@ function startMatchedGame(players, mode) {
   console.log(`Quick match started: room ${code} (${mode}) with ${filledSlots} players + ${maxPlayers - filledSlots} bots`);
 }
 
+// ========== PLAYER ID TRACKING ==========
+
+// Map socketId -> playerId (persistent UUID)
+const playerIds = new Map();
+
 // ========== SOCKET HANDLERS ==========
 
 io.on('connection', (socket) => {
   console.log(`Player connected: ${socket.id}`);
+
+  // Resolve persistent player ID from handshake query
+  let playerId = socket.handshake.query.playerId;
+  if (!playerId || typeof playerId !== 'string' || playerId.length < 10) {
+    playerId = generatePlayerId();
+  }
+  playerIds.set(socket.id, playerId);
+
+  // Ensure player exists in database and send back ID
+  const playerName = socket.handshake.query.playerName || '';
+  ensurePlayer(playerId, playerName);
+  socket.emit('playerId', { playerId });
 
   socket.on('createRoom', (data) => {
     const mode = data && data.mode === '2v2' ? '2v2' : '1v1';
@@ -219,7 +241,7 @@ io.on('connection', (socket) => {
     const room = new GameRoom(io, code, maxPlayers);
     rooms.set(code, room);
 
-    room.addPlayer(socket, variantConfig, playerName);
+    room.addPlayer(socket, variantConfig, playerName, playerIds.get(socket.id));
     playerRooms.set(socket.id, room);
 
     socket.emit('roomCreated', { code, mode });
@@ -254,7 +276,7 @@ io.on('connection', (socket) => {
       return;
     }
 
-    room.addPlayer(socket, variantConfig, playerName);
+    room.addPlayer(socket, variantConfig, playerName, playerIds.get(socket.id));
     playerRooms.set(socket.id, room);
     console.log(`Player ${socket.id} joined room ${code}`);
   });
@@ -325,6 +347,41 @@ io.on('connection', (socket) => {
     });
   });
 
+  // --- Stats API ---
+
+  socket.on('getStats', (_, callback) => {
+    const pid = playerIds.get(socket.id);
+    if (!pid) return;
+    const stats = getPlayerStats(pid);
+    if (typeof callback === 'function') {
+      callback(stats);
+    } else {
+      socket.emit('playerStats', stats);
+    }
+  });
+
+  socket.on('getLeaderboard', (data, callback) => {
+    const limit = (data && typeof data.limit === 'number') ? data.limit : 20;
+    const board = getLeaderboard(limit);
+    if (typeof callback === 'function') {
+      callback(board);
+    } else {
+      socket.emit('leaderboard', board);
+    }
+  });
+
+  socket.on('getMatchHistory', (data, callback) => {
+    const pid = playerIds.get(socket.id);
+    if (!pid) return;
+    const limit = (data && typeof data.limit === 'number') ? data.limit : 10;
+    const history = getMatchHistory(pid, limit);
+    if (typeof callback === 'function') {
+      callback(history);
+    } else {
+      socket.emit('matchHistory', history);
+    }
+  });
+
   socket.on('disconnect', () => {
     console.log(`Player disconnected: ${socket.id}`);
 
@@ -342,8 +399,13 @@ io.on('connection', (socket) => {
         console.log(`Removed empty room: ${room.roomId}`);
       }
     }
+
+    playerIds.delete(socket.id);
   });
 });
+
+// Initialize database (lazy — server still starts if DB fails)
+initDatabase();
 
 server.listen(PORT, () => {
   console.log(`Blocket League server running on port ${PORT}`);

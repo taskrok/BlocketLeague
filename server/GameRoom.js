@@ -19,6 +19,7 @@ import { ServerCar } from './ServerCar.js';
 import { ServerBoostPads } from './ServerBoostPads.js';
 import { PerformanceTracker } from '../shared/PerformanceTracker.js';
 import { computeAIInput } from './ServerAI.js';
+import { saveMatch } from './database.js';
 
 export class GameRoom {
   constructor(io, roomId, maxPlayers = 2, onCleanup = null) {
@@ -120,7 +121,7 @@ export class GameRoom {
 
   // ========== PLAYER MANAGEMENT ==========
 
-  addPlayer(socket, variantConfig, playerName) {
+  addPlayer(socket, variantConfig, playerName, playerId) {
     // Find first available slot
     const slot = this.players.findIndex(p => p === null);
     if (slot === -1) return -1;
@@ -128,6 +129,7 @@ export class GameRoom {
     this.players[slot] = {
       socket,
       socketId: socket.id,
+      playerId: playerId || null,
       variantConfig: variantConfig || {},
       playerName: playerName || '',
       latestInput: this._emptyInput(),
@@ -705,12 +707,14 @@ export class GameRoom {
         this.state = 'ended';
         const winningTeam = this.scores.blue > this.scores.orange ? 'blue' : 'orange';
         const mvpIdx = this.perfTracker.computeMVP(winningTeam);
+        const stats = this.perfTracker.getStats();
         this.io.to(this.roomId).emit('gameOver', {
           blueScore: this.scores.blue,
           orangeScore: this.scores.orange,
-          stats: this.perfTracker.getStats(),
+          stats,
           mvpIdx,
         });
+        this._saveMatchToDatabase(stats, mvpIdx);
         this._stopLoops();
         this._scheduleForceCleanup();
       }, 9 * 1000); // match goal reset time for replay
@@ -731,12 +735,14 @@ export class GameRoom {
         this.state = 'ended';
         const winningTeam = this.scores.blue > this.scores.orange ? 'blue' : 'orange';
         const mvpIdx = this.perfTracker.computeMVP(winningTeam);
+        const stats = this.perfTracker.getStats();
         this.io.to(this.roomId).emit('gameOver', {
           blueScore: this.scores.blue,
           orangeScore: this.scores.orange,
-          stats: this.perfTracker.getStats(),
+          stats,
           mvpIdx,
         });
+        this._saveMatchToDatabase(stats, mvpIdx);
         this._stopLoops();
         this._scheduleForceCleanup();
       }
@@ -854,6 +860,50 @@ export class GameRoom {
     // Broadcast pings ~1Hz (every 30th broadcast at 30Hz)
     if (this.tick % 60 === 0) {
       this.io.to(this.roomId).volatile.emit('playerPings', this.playerPings);
+    }
+  }
+
+  // ========== DATABASE ==========
+
+  _saveMatchToDatabase(stats, mvpIdx) {
+    try {
+      const mode = this.maxPlayers === 4 ? '2v2' : '1v1';
+      const durationSeconds = Math.round(GAME.MATCH_DURATION - this.matchTime);
+      const blueWon = this.scores.blue > this.scores.orange;
+
+      const players = [];
+      for (let i = 0; i < this.maxPlayers; i++) {
+        const p = this.players[i];
+        if (!p || !p.playerId) continue; // skip bots
+
+        const team = this._getTeam(i);
+        const won = (team === 'blue' && blueWon) || (team === 'orange' && !blueWon);
+        const s = stats[i] || {};
+
+        players.push({
+          playerId: p.playerId,
+          team,
+          goals: s.goals || 0,
+          assists: s.assists || 0,
+          saves: s.saves || 0,
+          shots: s.shots || 0,
+          demos: s.demos || 0,
+          mvp: i === mvpIdx,
+          won,
+        });
+      }
+
+      if (players.length > 0) {
+        saveMatch({
+          mode,
+          durationSeconds,
+          blueScore: this.scores.blue,
+          orangeScore: this.scores.orange,
+          players,
+        });
+      }
+    } catch (err) {
+      console.error('Failed to save match to database:', err.message);
     }
   }
 
