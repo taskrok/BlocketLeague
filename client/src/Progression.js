@@ -58,13 +58,15 @@ export class Progression {
       const raw = localStorage.getItem(STORAGE_KEY);
       if (raw) {
         const parsed = JSON.parse(raw);
-        // Merge with defaults in case new fields were added
         const defaults = getDefaultData();
+        // XP/level come from server now — only use cached values
+        // if they were set by syncFromServer (not legacy localStorage)
         return {
           stats: { ...defaults.stats, ...parsed.stats },
-          xp: parsed.xp || 0,
-          level: parsed.level || 0,
-          unlockedCars: parsed.unlockedCars || defaults.unlockedCars,
+          xp: parsed._serverSynced ? (parsed.xp || 0) : 0,
+          level: parsed._serverSynced ? (parsed.level || 0) : 0,
+          unlockedCars: defaults.unlockedCars,
+          _serverSynced: parsed._serverSynced || false,
         };
       }
     } catch {}
@@ -89,6 +91,7 @@ export class Progression {
     if (typeof serverData.level === 'number') {
       this._data.level = serverData.level;
     }
+    this._data._serverSynced = true;
     this._data.unlockedCars = this.getUnlockedCarIndices(100);
     this._save();
     this.updateLobbyDisplay();
