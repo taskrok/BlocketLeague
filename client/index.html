@@ -132,48 +132,108 @@
         <div class="howtoplay-content">
           <div class="changelog-list">
             <div class="howtoplay-section">
-              <h4>Competitive Ranking</h4>
+              <h4>Competitive Ranking (New)</h4>
               <ul>
                 <li>8-tier ranking system: Scrap, Iron, Bronze, Silver, Gold, Platinum, Diamond, Champion</li>
-                <li>3 divisions per rank with MMR-based matchmaking</li>
+                <li>3 divisions per rank with MMR-based matchmaking (1v1 and 2v2)</li>
                 <li>Rank change screen after online matches with division progress bar</li>
                 <li>Placement matches with accelerated MMR gains</li>
-                <li>Win/loss streak modifiers</li>
+                <li>Win/loss streak modifiers for faster climbing or falling</li>
               </ul>
             </div>
             <div class="howtoplay-section">
-              <h4>Progression</h4>
+              <h4>Progression System (New)</h4>
               <ul>
                 <li>Server-side XP and level tracking via SQLite database</li>
                 <li>Persistent player identity (UUID) tied to username</li>
                 <li>Bonus XP: hat trick, playmaker, savior, MVP, overtime win</li>
                 <li>Rebalanced level curve and 15 level titles (Rookie to Rocketeer)</li>
-                <li>Rank badge with color and glow in lobby</li>
+                <li>Rank badge with color and champion glow in lobby</li>
+                <li>Match history and leaderboard tracking</li>
               </ul>
             </div>
             <div class="howtoplay-section">
-              <h4>Multiplayer Fixes</h4>
+              <h4>Audio System (New)</h4>
               <ul>
-                <li>Fixed game sync/lag issues (binary protocol, interpolation, prediction)</li>
-                <li>Car and ball now reset to spawn positions after goal replay</li>
-                <li>Replay skip works properly in online play</li>
-                <li>Fixed boost/engine audio persisting during goal celebration and replay</li>
+                <li>Full sound system: engine loop, boost, ball hits, demos, impacts, landing</li>
+                <li>Proper Rocket League boost pad pickup sounds</li>
+                <li>Lobby music with 3-track shuffle playlist, skip button, and volume slider</li>
+                <li>Now-playing toast for current song</li>
+                <li>Music pauses during gameplay, resumes on return to lobby</li>
               </ul>
             </div>
             <div class="howtoplay-section">
-              <h4>Gameplay</h4>
+              <h4>Arena &amp; Physics</h4>
               <ul>
-                <li>Dodge/flip now works correctly on curved arena surfaces</li>
+                <li>RocketSim-accurate arena collision mesh (4468 verts, 8020 tris)</li>
+                <li>RL-accurate boost pad layout (6 large + 28 small = 34 pads)</li>
+                <li>RL-spec ball physics: radius, mass, restitution, drag</li>
+                <li>Psyonix-style ball hit impulse (replaces velocity on car contact)</li>
+                <li>RL-accurate air control, self-righting, and drift mechanics</li>
+                <li>Goal explosions with camera shake</li>
+                <li>Field markings on arena floor</li>
+                <li>4 arena themes to choose from</li>
+              </ul>
+            </div>
+            <div class="howtoplay-section">
+              <h4>AI &amp; Game Modes</h4>
+              <ul>
+                <li>3 AI difficulty levels: Rookie, Pro, All-Star</li>
+                <li>All-Star AI with aerials, dodges, and team play</li>
+                <li>2v2 vs AI — play with an AI teammate against 2 AI opponents</li>
+                <li>Training packs: Goalie and Aerial at 3 difficulty levels</li>
+                <li>Car nameplates showing player/bot names and team color</li>
+                <li>Post-game celebration phase (jump, flip, and boost after match)</li>
+              </ul>
+            </div>
+            <div class="howtoplay-section">
+              <h4>Multiplayer</h4>
+              <ul>
+                <li>Quick match queue with 30s timeout (fills with bots)</li>
+                <li>Binary network protocol (132 bytes vs 1KB+ JSON)</li>
+                <li>100% server-authoritative ball in online play</li>
+                <li>Smooth reconciliation with visual correction offset</li>
+                <li>Car bump physics on collisions</li>
+                <li>Demolition with angle check and respawn timer</li>
+                <li>Quick chat system</li>
+                <li>Replay skip works properly in multiplayer</li>
+                <li>Car and ball reset to spawn after goal replay</li>
+              </ul>
+            </div>
+            <div class="howtoplay-section">
+              <h4>Controls &amp; Camera</h4>
+              <ul>
+                <li>Gamepad lobby navigation with d-pad and buttons</li>
+                <li>LT air roll — left trigger + left stick for air roll control</li>
+                <li>Camera swivel with right stick / J,L keys</li>
+                <li>Mobile touch controls with aim assist</li>
+                <li>Ball cam height limit — car stays visible when ball is high</li>
+                <li>Camera follows ball when demolished</li>
+              </ul>
+            </div>
+            <div class="howtoplay-section">
+              <h4>Settings &amp; Display</h4>
+              <ul>
+                <li>Bloom toggle in both lobby and in-game settings (live, no restart)</li>
+                <li>Anti-aliasing, particles, nameplates, FPS counter toggles</li>
+                <li>Camera settings: FOV, distance, height, smoothness sliders</li>
+                <li>Audio settings: SFX volume, music volume, mute toggles</li>
+                <li>Improved iOS fullscreen support</li>
+                <li>Rebindable keyboard and gamepad controls</li>
+              </ul>
+            </div>
+            <div class="howtoplay-section">
+              <h4>Bug Fixes</h4>
+              <ul>
+                <li>Fixed game sync/lag issues in multiplayer</li>
+                <li>Fixed dodge/flip not working on curved arena surfaces</li>
                 <li>Ball can no longer tunnel through floor or walls</li>
-                <li>Ball cam no longer loses sight of car when ball is high</li>
-                <li>Proper boost pad pickup sounds from Rocket League audio</li>
-              </ul>
-            </div>
-            <div class="howtoplay-section">
-              <h4>Settings</h4>
-              <ul>
-                <li>Bloom toggle in both lobby and in-game settings (live toggle, no restart)</li>
-                <li>Improved iOS fullscreen support (webkit fallback)</li>
+                <li>Fixed boost/engine audio persisting during replays</li>
+                <li>Fixed blue goal surface detection being skipped</li>
+                <li>Fixed cars stuck in replay position during countdown</li>
+                <li>Fixed memory leaks causing progressive lag</li>
+                <li>Fixed controller not working in-game when used from lobby</li>
+                <li>Fixed WebGL context loss handling on iOS</li>
               </ul>
             </div>
           </div>
