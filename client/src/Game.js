@@ -10,6 +10,7 @@ import { RenderPass } from 'three/examples/jsm/postprocessing/RenderPass.js';
 import { UnrealBloomPass } from 'three/examples/jsm/postprocessing/UnrealBloomPass.js';
 
 import { Arena } from './Arena.js';
+import { Stadium } from './Stadium.js';
 import { Car } from './Car.js';
 import { generateCarVariant } from './CarVariants.js';
 import { modelLoader } from './ModelLoader.js';
@@ -267,6 +268,7 @@ export class Game {
     this.camera.position.set(0, 15, -30);
 
     this.arena = new Arena(this.scene, this.world, this.arenaTheme);
+    this.stadium = new Stadium(this.scene);
 
     this.world.bodies.forEach(b => {
       if (b.type === CANNON.Body.STATIC && !b.material) {
@@ -528,6 +530,7 @@ export class Game {
     this.camera.position.set(0, 15, -30);
 
     this.arena = new Arena(this.scene, this.world, this.arenaTheme);
+    this.stadium = new Stadium(this.scene);
 
     this.world.bodies.forEach(b => {
       if (b.type === CANNON.Body.STATIC && !b.material) {
@@ -998,6 +1001,9 @@ export class Game {
 
     // Gamepad-aware controls hint
     this._updateControlsHint();
+
+    // Animate stadium crowd
+    if (this.stadium) this.stadium.update(dt);
 
     this.composer.render();
   }
@@ -2017,6 +2023,11 @@ export class Game {
     }
     if (this.hud) {
       this.hud.reset();
+    }
+
+    // Dispose stadium
+    if (this.stadium) {
+      this.stadium.dispose();
     }
 
     // Disconnect network
