@@ -89,6 +89,7 @@ export class Game {
 
     // Smooth reconciliation: visual correction offset decays over time
     this._correctionOffset = { x: 0, y: 0, z: 0 };
+    this._pendingReconciliation = null;
 
     // Server-authoritative ball target for smooth visual interpolation (multiplayer)
     this._ballTarget = null;
@@ -572,8 +573,9 @@ export class Game {
 
     this.network.on('gameState', (snapshot) => {
       if (this.state === 'playing' || this.state === 'overtime') {
-        // Active gameplay: full reconciliation with prediction replay
-        this._reconcile(snapshot);
+        // Queue snapshot — reconciliation happens at start of next render frame
+        // to avoid snapping position mid-frame from async event handler
+        this._pendingReconciliation = snapshot;
       } else if (this.state === 'countdown') {
         // During countdown: snap player car to server position (no prediction needed)
         const myState = snapshot.players[this.playerNumber];
@@ -1175,6 +1177,12 @@ export class Game {
       return;
     }
 
+    // Apply deferred reconciliation at the start of the frame (not mid-frame from event handler)
+    if (this._pendingReconciliation) {
+      this._reconcile(this._pendingReconciliation);
+      this._pendingReconciliation = null;
+    }
+
     if (this.state === 'playing' || this.state === 'overtime') {
       // Apply aim assist for touch users before sending/applying
       const assisted = this._applyAimAssist(inputState);
@@ -1235,12 +1243,12 @@ export class Game {
     }
 
     // Decay correction offset for smooth reconciliation (frame-rate independent).
-    // The decay rate adapts to network conditions: higher RTT means corrections
-    // are larger but should blend out faster to avoid persistent visual drift.
-    // Base rate 12 produces ~58ms half-life. With RTT > 100ms, rate increases
-    // to blend corrections out before the next server update arrives.
+    // On low RTT (localhost/LAN), prediction is nearly perfect so corrections
+    // are tiny — decay them very fast (~8ms half-life) to avoid visible drift.
+    // On high RTT, corrections are larger — decay slower (~40ms half-life)
+    // so they blend out smoothly before the next server update arrives.
     const rtt = this.network ? this.network.getRTT() : 0;
-    const decayRate = 12 + Math.max(0, rtt - 50) * 0.1; // scale up for high latency
+    const decayRate = rtt < 30 ? 80 : (20 + Math.max(0, 100 - rtt) * 0.3);
     const decay = Math.exp(-decayRate * dt);
     this._correctionOffset.x *= decay;
     this._correctionOffset.y *= decay;

@@ -433,16 +433,18 @@ export class NetworkManager {
         }
         const jitter = Math.sqrt(varSum / this._jitterCount);
 
-        // Target delay: 2 packet intervals + 2x jitter margin for safety
-        const target = avg * 2 + jitter * 2;
+        // Target delay: 1.5 packet intervals + 1.5x jitter margin
+        // On stable connections (low jitter), this keeps delay tight (~50ms at 30Hz)
+        // On unstable connections, jitter term grows to absorb variation
+        const target = avg * 1.5 + jitter * 1.5;
         const clamped = target < NETWORK.MIN_INTERPOLATION_DELAY
           ? NETWORK.MIN_INTERPOLATION_DELAY
           : target > NETWORK.MAX_INTERPOLATION_DELAY
             ? NETWORK.MAX_INTERPOLATION_DELAY
             : target;
 
-        // Slow ramp-up (increase delay quickly), slow ramp-down (decrease cautiously)
-        const rate = clamped > this._adaptiveDelay ? 0.15 : 0.03;
+        // Ramp up delay quickly to absorb jitter, ramp down faster than before
+        const rate = clamped > this._adaptiveDelay ? 0.15 : 0.08;
         this._adaptiveDelay += (clamped - this._adaptiveDelay) * rate;
       }
     }
