@@ -509,20 +509,28 @@ export class GameSettings {
     pane.className = 'gs-pane';
     pane.dataset.pane = 'display';
 
-    // Fullscreen toggle button
+    // Fullscreen toggle button (with iOS fallback)
     const fsBtn = document.createElement('button');
     fsBtn.className = 'cs-reset';
-    fsBtn.textContent = document.fullscreenElement ? 'Exit Fullscreen' : 'Enter Fullscreen';
+    const _isFS = () => !!(document.fullscreenElement || document.webkitFullscreenElement);
+    fsBtn.textContent = _isFS() ? 'Exit Fullscreen' : 'Enter Fullscreen';
     fsBtn.addEventListener('click', () => {
-      if (document.fullscreenElement) {
-        document.exitFullscreen().catch(() => {});
+      if (_isFS()) {
+        (document.exitFullscreen || document.webkitExitFullscreen || (() => {})).call(document);
       } else {
-        document.documentElement.requestFullscreen().catch(() => {});
+        const el = document.documentElement;
+        const rfs = el.requestFullscreen || el.webkitRequestFullscreen;
+        if (rfs) {
+          const r = rfs.call(el);
+          if (r && r.catch) r.catch(() => {});
+        }
       }
     });
-    document.addEventListener('fullscreenchange', () => {
-      fsBtn.textContent = document.fullscreenElement ? 'Exit Fullscreen' : 'Enter Fullscreen';
-    });
+    const _onFSChange = () => {
+      fsBtn.textContent = _isFS() ? 'Exit Fullscreen' : 'Enter Fullscreen';
+    };
+    document.addEventListener('fullscreenchange', _onFSChange);
+    document.addEventListener('webkitfullscreenchange', _onFSChange);
     pane.appendChild(fsBtn);
 
     // Auto-fullscreen on game start checkbox
@@ -548,6 +556,34 @@ export class GameSettings {
     afRow.appendChild(afCheck);
     afRow.appendChild(afLabel);
     pane.appendChild(afRow);
+
+    // Bloom toggle
+    const displaySettings = getDisplaySettings();
+    const bloomRow = document.createElement('div');
+    bloomRow.className = 'cs-row';
+    bloomRow.style.marginTop = '8px';
+    bloomRow.style.cursor = 'pointer';
+    const bloomCheck = document.createElement('input');
+    bloomCheck.type = 'checkbox';
+    bloomCheck.checked = displaySettings.bloom;
+    bloomCheck.id = 'gs-bloom';
+    bloomCheck.style.accentColor = '#00ffff';
+    bloomCheck.style.cursor = 'pointer';
+    const bloomLabel = document.createElement('label');
+    bloomLabel.className = 'cs-label';
+    bloomLabel.textContent = 'Bloom (glow effects)';
+    bloomLabel.htmlFor = 'gs-bloom';
+    bloomLabel.style.cursor = 'pointer';
+    bloomCheck.addEventListener('change', () => {
+      const ds = getDisplaySettings();
+      ds.bloom = bloomCheck.checked;
+      try { localStorage.setItem(DISPLAY_STORAGE_KEY, JSON.stringify(ds)); } catch {}
+      // Notify game to rebuild post-processing
+      if (this.onDisplaySettingsChanged) this.onDisplaySettingsChanged();
+    });
+    bloomRow.appendChild(bloomCheck);
+    bloomRow.appendChild(bloomLabel);
+    pane.appendChild(bloomRow);
 
     return pane;
   }

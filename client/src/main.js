@@ -613,8 +613,10 @@ window.addEventListener('DOMContentLoaded', async () => {
     const settings = getGeneralSettings();
     if (!settings.autoFullscreen) return;
     try {
+      // Already fullscreen (standard or webkit)
+      if (document.fullscreenElement || document.webkitFullscreenElement) return;
       const el = document.documentElement;
-      const rfs = el.requestFullscreen || el.webkitRequestFullscreen || el.msRequestFullscreen;
+      const rfs = el.requestFullscreen || el.webkitRequestFullscreen;
       if (rfs) {
         const result = rfs.call(el);
         if (result && result.catch) result.catch(() => {});

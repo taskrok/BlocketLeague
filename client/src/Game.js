@@ -149,6 +149,10 @@ export class Game {
     this.gameSettings.onReturnToLobby = () => {
       if (this.hud.onBackToLobby) this.hud.onBackToLobby();
     };
+    this.gameSettings.onDisplaySettingsChanged = () => {
+      if (this.composer) this.composer.dispose();
+      this._initPostProcessing();
+    };
 
     // Quick-chat system
     this.quickChat = new QuickChat({

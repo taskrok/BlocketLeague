@@ -75,7 +75,7 @@
           <span class="lobby-link-sep">|</span>
           <button id="btn-lobby-settings" class="lobby-link-btn">Settings</button>
           <span class="lobby-link-sep">|</span>
-          <button id="btn-changelog" class="lobby-link-btn">v39</button>
+          <button id="btn-changelog" class="lobby-link-btn">v57</button>
         </div>
       </div>
       <div id="howtoplay-panel" class="howtoplay-panel" style="display:none;">
@@ -128,54 +128,52 @@
         <button id="btn-lobby-settings-close" class="lobby-btn lobby-btn-back">Done</button>
       </div>
       <div id="changelog-panel" class="howtoplay-panel" style="display:none;">
-        <h3 class="howtoplay-title">v39 Changelog</h3>
+        <h3 class="howtoplay-title">v57 Changelog</h3>
         <div class="howtoplay-content">
           <div class="changelog-list">
             <div class="howtoplay-section">
-              <h4>Training Mode</h4>
+              <h4>Competitive Ranking</h4>
               <ul>
-                <li>Goalie training — save shots at 3 difficulty levels (Rookie/Pro/All-Star)</li>
-                <li>Aerial training — ball frozen in air until you touch it (Rookie/Pro), launched shots (All-Star)</li>
-                <li>Instant save detection for goalie mode</li>
-                <li>Launch delay before goalie shots so you can get ready</li>
-                <li>Completion screen with results summary and grade after all 10 shots</li>
+                <li>8-tier ranking system: Scrap, Iron, Bronze, Silver, Gold, Platinum, Diamond, Champion</li>
+                <li>3 divisions per rank with MMR-based matchmaking</li>
+                <li>Rank change screen after online matches with division progress bar</li>
+                <li>Placement matches with accelerated MMR gains</li>
+                <li>Win/loss streak modifiers</li>
               </ul>
             </div>
             <div class="howtoplay-section">
-              <h4>Music</h4>
+              <h4>Progression</h4>
               <ul>
-                <li>Lobby music with 3-track shuffle playlist</li>
-                <li>Now-playing toast shows current song name</li>
-                <li>Skip button to advance tracks</li>
-                <li>Volume slider control</li>
-                <li>Music pauses during gameplay, resumes on return to lobby</li>
+                <li>Server-side XP and level tracking via SQLite database</li>
+                <li>Persistent player identity (UUID) tied to username</li>
+                <li>Bonus XP: hat trick, playmaker, savior, MVP, overtime win</li>
+                <li>Rebalanced level curve and 15 level titles (Rookie to Rocketeer)</li>
+                <li>Rank badge with color and glow in lobby</li>
               </ul>
             </div>
             <div class="howtoplay-section">
-              <h4>New Features</h4>
+              <h4>Multiplayer Fixes</h4>
               <ul>
-                <li>2v2 vs AI — play with an AI teammate against 2 AI opponents</li>
-                <li>Arena theme selector — 4 arena styles to choose from</li>
-                <li>Gamepad lobby navigation — use controller d-pad and buttons in menus</li>
-                <li>LT air roll — left trigger + left stick for air roll control</li>
-                <li>Mobile aim assist — steering auto-correct and approach magnetism</li>
-                <li>Settings menu with auto-fullscreen toggle</li>
-                <li>Back to Lobby button on match-end scoreboard</li>
-                <li>Reduced car gravity for easier aerials</li>
+                <li>Fixed game sync/lag issues (binary protocol, interpolation, prediction)</li>
+                <li>Car and ball now reset to spawn positions after goal replay</li>
+                <li>Replay skip works properly in online play</li>
+                <li>Fixed boost/engine audio persisting during goal celebration and replay</li>
               </ul>
             </div>
             <div class="howtoplay-section">
-              <h4>Improvements</h4>
+              <h4>Gameplay</h4>
               <ul>
-                <li>Scorer banner shown during goal replay</li>
-                <li>Replay skip now fully skips (no more delay)</li>
+                <li>Dodge/flip now works correctly on curved arena surfaces</li>
+                <li>Ball can no longer tunnel through floor or walls</li>
+                <li>Ball cam no longer loses sight of car when ball is high</li>
+                <li>Proper boost pad pickup sounds from Rocket League audio</li>
               </ul>
             </div>
             <div class="howtoplay-section">
-              <h4>Bug Fixes</h4>
+              <h4>Settings</h4>
               <ul>
-                <li>Fixed boost flame persisting through countdown after goal</li>
-                <li>Removed underglow shadow planes from car models</li>
+                <li>Bloom toggle in both lobby and in-game settings (live toggle, no restart)</li>
+                <li>Improved iOS fullscreen support (webkit fallback)</li>
               </ul>
             </div>
           </div>
