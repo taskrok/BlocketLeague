@@ -21,7 +21,6 @@ export function createArenaMaterial(theme = null) {
     transparent: true,
     opacity: 1.0,
     depthWrite: false,
-    alphaTest: 0.01,
   });
 
   material.onBeforeCompile = (shader) => {
@@ -84,6 +83,11 @@ export function createArenaMaterial(theme = null) {
         vec3 gridCol = mix(gridColorBlue, gridColorRed, zBlend);
 
         totalEmissiveRadiance += gridCol * arenaGridFactor * gridEmissiveStrength;
+
+        // Discard fragments between grid lines so the stadium exterior
+        // is visible through the shell (alpha blending alone doesn't work
+        // with the post-processing pipeline)
+        if (arenaGridFactor < 0.01) discard;
       }`
     );
 
