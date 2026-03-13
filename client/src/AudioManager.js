@@ -170,22 +170,18 @@ const DEFAULT_AUDIO = { motor: 'octane', boost: 'standard' };
 
 // Universal SFX files (flat in audio/ directory, kept from existing setup)
 const UNIVERSAL_FILES = {
-  ballHit:       ['ball_hit_1.ogg', 'ball_hit_2.ogg', 'ball_hit_3.ogg'],
+  ballHit:       ['ball_hit_1.ogg'],
   goalExplosion: ['goal_explosion.ogg'],
   goalStinger:   ['goal_stinger_1.ogg', 'goal_stinger_2.ogg', 'goal_stinger_3.ogg',
                   'goal_stinger_4.ogg', 'goal_stinger_5.ogg', 'goal_stinger_6.ogg'],
   carMove:       ['car_move_1.ogg', 'car_move_2.ogg', 'car_move_3.ogg',
                   'car_move_4.ogg', 'car_move_5.ogg'],
-  demo:          ['demo_1.ogg', 'demo_2.ogg', 'demo_3.ogg',
-                  'demo_4.ogg', 'demo_5.ogg', 'demo_6.ogg'],
-  impact:        ['impact_1.ogg', 'impact_2.ogg', 'impact_3.ogg',
-                  'impact_4.ogg', 'impact_5.ogg', 'impact_6.ogg',
-                  'impact_7.ogg', 'impact_8.ogg', 'impact_9.ogg'],
+  demo:          ['demo_6.ogg'],
+  impact:        ['impact_9.ogg'],
   crowd:         ['crowd_1.ogg', 'crowd_2.ogg', 'crowd_4.ogg'],
   goalEvent:     ['goal_event_1.ogg', 'goal_event_2.ogg', 'goal_event_3.ogg',
                   'goal_event_4.ogg', 'goal_event_5.ogg'],
-  vehicle:       ['vehicle_1.ogg', 'vehicle_2.ogg', 'vehicle_3.ogg',
-                  'vehicle_4.ogg', 'vehicle_5.ogg', 'vehicle_6.ogg'],
+  boostPickup:   ['boost_pickup/pickup_3.ogg', 'boost_pickup/pickup_6.ogg'],
 };
 
 
@@ -1066,11 +1062,12 @@ class AudioManager {
   playBoostPickup(isLargePad) {
     if (!this._canPlay('boostPickup')) return;
 
-    if (this._hasBuffers('vehicle')) {
-      const buffer = this._randomBuffer('vehicle');
-      const playbackRate = isLargePad ? 1.3 : 1.0;
-      const volume = isLargePad ? 0.2 : 0.12;
-      this._playSample(buffer, { volume, playbackRate });
+    if (this._hasBuffers('boostPickup')) {
+      const bufs = this._buffers.boostPickup;
+      // pickup_3 (index 0) for small pads, pickup_6 (index 1) for large pads
+      const buffer = isLargePad ? bufs[1] || bufs[0] : bufs[0];
+      const volume = isLargePad ? 0.18 : 0.10;
+      this._playSample(buffer, { volume });
     } else {
       this._playBoostPickupProcedural(isLargePad);
     }

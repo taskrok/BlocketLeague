@@ -609,6 +609,7 @@ export class Game {
       const scorerName = data.scorerIdx >= 0 ? this.hud._getPlayerLabel(data.scorerIdx, this.maxPlayers) : null;
       this.hud.showGoalScored(data.team, scorerName);
       audioManager.playGoalHorn();
+      audioManager.stopBoost();
       this._lastScorerName = scorerName;
 
       // Reset correction offset on state transition
@@ -643,9 +644,10 @@ export class Game {
         }
       }
 
-      // Kill boost flames on all cars
+      // Kill boost flames and reset boost tracking on all cars
       for (const car of this.allCars) {
         if (car && car.boostFlame) car.boostFlame.visible = false;
+        if (car) car._wasBoosting = false;
       }
 
       // Enter celebration state before replay
@@ -951,7 +953,10 @@ export class Game {
     if (this.playerCar) {
       this.hud.updateBoost(this.playerCar.boost);
       this.hud.updateSpeed(this.playerCar.getSpeed(), CAR_CONST.BOOST_MAX_SPEED);
-      audioManager.setEngineSpeed(this.playerCar.getSpeed(), CAR_CONST.MAX_SPEED);
+      // Drop engine to idle during replay/celebration (physics body velocity is stale)
+      const engineSpeed = (this.state === 'replay' || this.state === 'goal_celebration')
+        ? 0 : this.playerCar.getSpeed();
+      audioManager.setEngineSpeed(engineSpeed, CAR_CONST.MAX_SPEED);
     }
 
     // Live scoreboard (hold Tab / LB) — skip in freeplay (no opponents to score against)
@@ -1491,6 +1496,7 @@ export class Game {
 
     this.hud.updateScore(this.scores.blue, this.scores.orange);
     audioManager.playGoalHorn();
+    audioManager.stopBoost();
 
     // Save scorer name for replay banner
     this._lastScorerName = scorerName;
@@ -1498,9 +1504,10 @@ export class Game {
     // Save overtime flag for after replay
     this._goalWasOvertime = this.isOvertime;
 
-    // Kill boost flames on all cars
+    // Kill boost flames and reset boost tracking on all cars
     for (const car of this.allCars) {
       if (car && car.boostFlame) car.boostFlame.visible = false;
+      if (car) car._wasBoosting = false;
     }
 
     // Let the goal explosion play out before starting replay
