@@ -226,10 +226,16 @@ io.on('connection', (socket) => {
   }
   playerIds.set(socket.id, playerId);
 
-  // Ensure player exists in database and send back ID
+  // Ensure player exists in database and send back ID + progression
   const playerName = socket.handshake.query.playerName || '';
   ensurePlayer(playerId, playerName);
-  socket.emit('playerId', { playerId });
+  const stats = getPlayerStats(playerId);
+  socket.emit('playerId', {
+    playerId,
+    xp: stats ? stats.xp : 0,
+    level: stats ? stats.level : 0,
+    displayName: stats ? stats.displayName : playerName,
+  });
 
   socket.on('createRoom', (data) => {
     const mode = data && data.mode === '2v2' ? '2v2' : '1v1';
@@ -347,7 +353,19 @@ io.on('connection', (socket) => {
     });
   });
 
-  // --- Stats API ---
+  // --- Stats & Progression API ---
+
+  socket.on('getProgression', (_, callback) => {
+    const pid = playerIds.get(socket.id);
+    if (!pid) return;
+    const s = getPlayerStats(pid);
+    const result = s ? { xp: s.xp, level: s.level, displayName: s.displayName } : { xp: 0, level: 0, displayName: '' };
+    if (typeof callback === 'function') {
+      callback(result);
+    } else {
+      socket.emit('progression', result);
+    }
+  });
 
   socket.on('getStats', (_, callback) => {
     const pid = playerIds.get(socket.id);

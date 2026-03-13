@@ -19,7 +19,7 @@ import { ServerCar } from './ServerCar.js';
 import { ServerBoostPads } from './ServerBoostPads.js';
 import { PerformanceTracker } from '../shared/PerformanceTracker.js';
 import { computeAIInput } from './ServerAI.js';
-import { saveMatch } from './database.js';
+import { saveMatch, getPlayerStats } from './database.js';
 
 export class GameRoom {
   constructor(io, roomId, maxPlayers = 2, onCleanup = null) {
@@ -871,6 +871,7 @@ export class GameRoom {
       const durationSeconds = Math.round(GAME.MATCH_DURATION - this.matchTime);
       const blueWon = this.scores.blue > this.scores.orange;
 
+      const playTimeMinutes = durationSeconds / 60;
       const players = [];
       for (let i = 0; i < this.maxPlayers; i++) {
         const p = this.players[i];
@@ -890,6 +891,8 @@ export class GameRoom {
           demos: s.demos || 0,
           mvp: i === mvpIdx,
           won,
+          aerialGoals: 0,
+          playTimeMinutes,
         });
       }
 
@@ -901,6 +904,19 @@ export class GameRoom {
           orangeScore: this.scores.orange,
           players,
         });
+
+        // Send updated progression to each human player
+        for (const p of this.players) {
+          if (!p || !p.playerId || !p.socket) continue;
+          const updated = getPlayerStats(p.playerId);
+          if (updated) {
+            p.socket.emit('progression', {
+              xp: updated.xp,
+              level: updated.level,
+              displayName: updated.displayName,
+            });
+          }
+        }
       }
     } catch (err) {
       console.error('Failed to save match to database:', err.message);

@@ -141,6 +141,10 @@ export class NetworkManager {
       this._emit('playerId', data);
     });
 
+    this.socket.on('progression', (data) => {
+      this._emit('progression', data);
+    });
+
     this.socket.on('waiting', (data) => {
       this._emit('waiting', data);
     });

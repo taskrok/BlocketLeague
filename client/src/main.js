@@ -868,7 +868,13 @@ window.addEventListener('DOMContentLoaded', async () => {
       if (data && data.playerId) {
         localPlayerId = data.playerId;
         localStorage.setItem(PLAYER_ID_KEY, data.playerId);
+        // Sync progression from server (source of truth)
+        progression.syncFromServer(data);
       }
+    });
+
+    network.on('progression', (data) => {
+      progression.syncFromServer(data);
     });
 
     network.on('disconnected', () => {

@@ -1,6 +1,6 @@
 // ============================================
 // Progression - Persistent player progression system
-// Tracks stats, XP, levels, and car unlocks via localStorage
+// XP/level stored server-side (SQLite), localStorage used as cache
 // ============================================
 
 const STORAGE_KEY = 'blocket-progression';
@@ -75,6 +75,23 @@ export class Progression {
     try {
       localStorage.setItem(STORAGE_KEY, JSON.stringify(this._data));
     } catch {}
+  }
+
+  /**
+   * Sync progression from server data (called on connect).
+   * Server is source of truth for XP/level.
+   */
+  syncFromServer(serverData) {
+    if (!serverData) return;
+    if (typeof serverData.xp === 'number') {
+      this._data.xp = serverData.xp;
+    }
+    if (typeof serverData.level === 'number') {
+      this._data.level = serverData.level;
+    }
+    this._data.unlockedCars = this.getUnlockedCarIndices(100);
+    this._save();
+    this.updateLobbyDisplay();
   }
 
   // --- Accessors ---

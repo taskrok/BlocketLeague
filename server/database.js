@@ -14,6 +14,28 @@ const __dirname = dirname(__filename);
 const DB_DIR = join(__dirname, 'data');
 const DB_PATH = join(DB_DIR, 'blocket.db');
 
+// XP reward values (must match client Progression.js)
+const XP_VALUES = {
+  goal: 100, assist: 75, save: 60, shot: 20,
+  win: 200, demo: 50, aerialGoal: 150, matchComplete: 50,
+};
+
+function calculateXP(p) {
+  let xp = XP_VALUES.matchComplete;
+  xp += (p.goals || 0) * XP_VALUES.goal;
+  xp += (p.assists || 0) * XP_VALUES.assist;
+  xp += (p.saves || 0) * XP_VALUES.save;
+  xp += (p.shots || 0) * XP_VALUES.shot;
+  xp += (p.demos || 0) * XP_VALUES.demo;
+  xp += (p.aerialGoals || 0) * XP_VALUES.aerialGoal;
+  if (p.won) xp += XP_VALUES.win;
+  return xp;
+}
+
+function calculateLevel(totalXP) {
+  return Math.floor(Math.sqrt(totalXP / 100));
+}
+
 let db = null;
 
 // Prepared statements (cached after init)
@@ -37,6 +59,7 @@ function getDB() {
     db.pragma('journal_mode = WAL');
     db.pragma('foreign_keys = ON');
     _initSchema();
+    _migrateSchema();
     _prepareStatements();
     console.log('Database initialized at', DB_PATH);
   } catch (err) {
@@ -93,6 +116,11 @@ function _initSchema() {
       total_shots INTEGER NOT NULL DEFAULT 0,
       total_demos INTEGER NOT NULL DEFAULT 0,
       total_mvps INTEGER NOT NULL DEFAULT 0,
+      total_matches INTEGER NOT NULL DEFAULT 0,
+      total_aerial_goals INTEGER NOT NULL DEFAULT 0,
+      play_time_minutes REAL NOT NULL DEFAULT 0,
+      xp INTEGER NOT NULL DEFAULT 0,
+      level INTEGER NOT NULL DEFAULT 0,
       mmr INTEGER NOT NULL DEFAULT 1000,
       FOREIGN KEY (player_id) REFERENCES players(id)
     );
@@ -104,6 +132,24 @@ function _initSchema() {
     CREATE INDEX IF NOT EXISTS idx_player_stats_mmr ON player_stats(mmr DESC);
     CREATE INDEX IF NOT EXISTS idx_players_last_seen ON players(last_seen);
   `);
+}
+
+function _migrateSchema() {
+  // Add columns that may not exist in older databases
+  const cols = db.prepare("PRAGMA table_info('player_stats')").all().map(c => c.name);
+  const migrations = [
+    ['total_matches', 'INTEGER NOT NULL DEFAULT 0'],
+    ['total_aerial_goals', 'INTEGER NOT NULL DEFAULT 0'],
+    ['play_time_minutes', 'REAL NOT NULL DEFAULT 0'],
+    ['xp', 'INTEGER NOT NULL DEFAULT 0'],
+    ['level', 'INTEGER NOT NULL DEFAULT 0'],
+  ];
+  for (const [col, type] of migrations) {
+    if (!cols.includes(col)) {
+      db.exec(`ALTER TABLE player_stats ADD COLUMN ${col} ${type}`);
+      console.log(`Migrated: added player_stats.${col}`);
+    }
+  }
 }
 
 function _prepareStatements() {
@@ -131,6 +177,11 @@ function _prepareStatements() {
         total_shots = total_shots + ?,
         total_demos = total_demos + ?,
         total_mvps = total_mvps + ?,
+        total_matches = total_matches + 1,
+        total_aerial_goals = total_aerial_goals + ?,
+        play_time_minutes = play_time_minutes + ?,
+        xp = xp + ?,
+        level = ?,
         mmr = MAX(0, mmr + ?)
       WHERE player_id = ?
     `),
@@ -225,6 +276,12 @@ export function saveMatch(matchData) {
           stmts.insertPlayerStats.run(p.playerId);
         }
 
+        // Calculate XP earned this match
+        const matchXP = calculateXP(p);
+        const currentStats = stmts.getPlayerStats.get(p.playerId);
+        const newTotalXP = (currentStats ? currentStats.xp : 0) + matchXP;
+        const newLevel = calculateLevel(newTotalXP);
+
         // MMR change: +25 for win, -25 for loss
         const mmrDelta = p.won ? 25 : -25;
 
@@ -237,6 +294,10 @@ export function saveMatch(matchData) {
           p.shots || 0,
           p.demos || 0,
           p.mvp ? 1 : 0,
+          p.aerialGoals || 0,
+          p.playTimeMinutes || 0,
+          matchXP,
+          newLevel,
           mmrDelta,
           p.playerId
         );
