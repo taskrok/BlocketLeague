@@ -3,19 +3,12 @@
 // XP/level stored server-side (SQLite), localStorage used as cache
 // ============================================
 
-const STORAGE_KEY = 'blocket-progression';
+import {
+  XP_VALUES, calculateLevel, xpForLevel,
+  getRankFromMMR, getLevelTitle,
+} from '../../shared/Ranks.js';
 
-// XP rewards
-const XP_VALUES = {
-  goal: 100,
-  assist: 75,
-  save: 60,
-  shot: 20,
-  win: 200,
-  demo: 50,
-  aerialGoal: 150,
-  matchComplete: 50,
-};
+const STORAGE_KEY = 'blocket-progression';
 
 // Car unlock thresholds: { level: count of additional cars unlocked at that level }
 // Total model count may vary; we define which indices are unlocked at each level.
@@ -43,6 +36,13 @@ function getDefaultData() {
     xp: 0,
     level: 0,
     unlockedCars: [0, 1, 2, 3, 4],
+    // Rank data (from server)
+    mmr_1v1: 1000,
+    mmr_2v2: 1000,
+    rank1v1: null,
+    rank2v2: null,
+    levelTitle: 'Rookie',
+    prestige: 0,
   };
 }
 
@@ -51,6 +51,7 @@ export class Progression {
     this._data = this._load();
     this._matchStartTime = null;
     this._pendingXP = []; // { label, amount } entries from current match
+    this._lastRankChange = null; // store last match rank change for display
   }
 
   _load() {
@@ -67,6 +68,12 @@ export class Progression {
           level: parsed._serverSynced ? (parsed.level || 0) : 0,
           unlockedCars: defaults.unlockedCars,
           _serverSynced: parsed._serverSynced || false,
+          mmr_1v1: parsed.mmr_1v1 || 1000,
+          mmr_2v2: parsed.mmr_2v2 || 1000,
+          rank1v1: parsed.rank1v1 || null,
+          rank2v2: parsed.rank2v2 || null,
+          levelTitle: parsed.levelTitle || 'Rookie',
+          prestige: parsed.prestige || 0,
         };
       }
     } catch {}
@@ -80,8 +87,8 @@ export class Progression {
   }
 
   /**
-   * Sync progression from server data (called on connect).
-   * Server is source of truth for XP/level.
+   * Sync progression from server data (called on connect and after match).
+   * Server is source of truth for XP/level/rank.
    */
   syncFromServer(serverData) {
     if (!serverData) return;
@@ -91,6 +98,39 @@ export class Progression {
     if (typeof serverData.level === 'number') {
       this._data.level = serverData.level;
     }
+    if (typeof serverData.mmr_1v1 === 'number') {
+      this._data.mmr_1v1 = serverData.mmr_1v1;
+    }
+    if (typeof serverData.mmr_2v2 === 'number') {
+      this._data.mmr_2v2 = serverData.mmr_2v2;
+    }
+    if (serverData.rank1v1) {
+      this._data.rank1v1 = serverData.rank1v1;
+    }
+    if (serverData.rank2v2) {
+      this._data.rank2v2 = serverData.rank2v2;
+    }
+    if (serverData.levelTitle) {
+      this._data.levelTitle = serverData.levelTitle;
+    }
+    if (typeof serverData.prestige === 'number') {
+      this._data.prestige = serverData.prestige;
+    }
+
+    // Store rank change data if present (from post-match progression emit)
+    if (serverData.mmrDelta !== null && serverData.mmrDelta !== undefined) {
+      this._lastRankChange = {
+        mmrDelta: serverData.mmrDelta,
+        mmrBefore: serverData.mmrBefore,
+        mmrAfter: serverData.mmrAfter,
+        rankBefore: serverData.rankBefore,
+        rankAfter: serverData.rankAfter,
+        rankColor: serverData.rankColor,
+        xpEarned: serverData.xpEarned,
+        matchMode: serverData.matchMode,
+      };
+    }
+
     this._data._serverSynced = true;
     this._data.unlockedCars = this.getUnlockedCarIndices(100);
     this._save();
@@ -103,37 +143,69 @@ export class Progression {
   get xp() { return this._data.xp; }
   get level() { return this._data.level; }
   get unlockedCars() { return this._data.unlockedCars; }
+  get mmr1v1() { return this._data.mmr_1v1; }
+  get mmr2v2() { return this._data.mmr_2v2; }
+  get prestige() { return this._data.prestige; }
 
   /**
    * Calculate level from total XP.
-   * Level = floor(sqrt(totalXP / 100))
+   * Level = floor(sqrt(totalXP / 200))
    */
   static calculateLevel(totalXP) {
-    return Math.floor(Math.sqrt(totalXP / 100));
+    return calculateLevel(totalXP);
   }
 
   /**
    * XP needed to reach a given level.
    */
   static xpForLevel(level) {
-    return level * level * 100;
+    return xpForLevel(level);
   }
 
   /**
    * Get progress toward next level as 0-1 fraction.
    */
   getLevelProgress() {
-    const currentLevelXP = Progression.xpForLevel(this.level);
-    const nextLevelXP = Progression.xpForLevel(this.level + 1);
+    const currentLevelXP = xpForLevel(this.level);
+    const nextLevelXP = xpForLevel(this.level + 1);
     const range = nextLevelXP - currentLevelXP;
     if (range <= 0) return 1;
     return Math.min(1, (this.xp - currentLevelXP) / range);
   }
 
   /**
+   * Get level title for current level.
+   */
+  getLevelTitle() {
+    return this._data.levelTitle || getLevelTitle(this.level);
+  }
+
+  /**
+   * Get rank display info for a given mode.
+   * @param {string} mode - '1v1' or '2v2'
+   * @returns {{ name, division, color, fullName, min, max, progress }}
+   */
+  getRankDisplay(mode = '1v1') {
+    const mmr = mode === '2v2' ? this._data.mmr_2v2 : this._data.mmr_1v1;
+    return getRankFromMMR(mmr);
+  }
+
+  /**
+   * Get the last rank change data (after a match).
+   */
+  getLastRankChange() {
+    return this._lastRankChange;
+  }
+
+  /**
+   * Clear the last rank change data (after it has been displayed).
+   */
+  clearLastRankChange() {
+    this._lastRankChange = null;
+  }
+
+  /**
    * Get unlocked car indices based on current level.
-   * @param {number} totalModelCount - Total number of available car models
-   * @returns {number[]} Array of unlocked model indices
    */
   getUnlockedCarIndices(totalModelCount) {
     let unlocked = 0;
@@ -176,6 +248,7 @@ export class Progression {
   startMatch() {
     this._matchStartTime = Date.now();
     this._pendingXP = [];
+    this._lastRankChange = null;
   }
 
   /**
@@ -183,8 +256,9 @@ export class Progression {
    * @param {object} playerStats - { goals, assists, saves, shots, demos, score }
    * @param {boolean} won - Whether the player won
    * @param {number} aerialGoals - Number of aerial goals scored
+   * @param {object} extraData - { isMVP, isOvertimeWin }
    */
-  endMatch(playerStats, won, aerialGoals = 0) {
+  endMatch(playerStats, won, aerialGoals = 0, extraData = {}) {
     if (!playerStats) return;
 
     const s = this._data.stats;
@@ -233,13 +307,30 @@ export class Progression {
     }
     this._pendingXP.push({ label: 'Match Complete', amount: XP_VALUES.matchComplete });
 
+    // Bonus XP
+    if ((playerStats.goals || 0) >= 3) {
+      this._pendingXP.push({ label: 'Hat Trick', amount: XP_VALUES.hatTrick });
+    }
+    if ((playerStats.assists || 0) >= 3) {
+      this._pendingXP.push({ label: 'Playmaker', amount: XP_VALUES.playmaker });
+    }
+    if ((playerStats.saves || 0) >= 3) {
+      this._pendingXP.push({ label: 'Savior', amount: XP_VALUES.savior });
+    }
+    if (extraData.isMVP) {
+      this._pendingXP.push({ label: 'MVP', amount: XP_VALUES.mvp });
+    }
+    if (extraData.isOvertimeWin) {
+      this._pendingXP.push({ label: 'Overtime Win', amount: XP_VALUES.overtimeWin });
+    }
+
     // Apply XP
     const totalXP = this._pendingXP.reduce((sum, e) => sum + e.amount, 0);
     this._data.xp += totalXP;
-    this._data.level = Progression.calculateLevel(this._data.xp);
+    this._data.level = calculateLevel(this._data.xp);
+    this._data.levelTitle = getLevelTitle(this._data.level);
 
     // Update unlocked cars
-    // We keep a list but it's dynamically calculated from level now
     this._data.unlockedCars = this.getUnlockedCarIndices(100); // generous max
 
     this._save();
@@ -273,7 +364,21 @@ export class Progression {
         fontFamily: "'Orbitron', sans-serif",
         opacity: '0',
         transition: 'opacity 0.4s',
+        cursor: 'pointer',
       });
+
+      // Click to skip
+      let dismissed = false;
+      const dismiss = () => {
+        if (dismissed) return;
+        dismissed = true;
+        overlay.style.opacity = '0';
+        setTimeout(() => {
+          if (overlay.parentNode) overlay.remove();
+          resolve();
+        }, 400);
+      };
+      overlay.addEventListener('click', dismiss);
 
       // Title
       const title = document.createElement('div');
@@ -324,7 +429,7 @@ export class Progression {
       totalRow.textContent = `TOTAL: +${xpResult.totalXP} XP`;
       overlay.appendChild(totalRow);
 
-      // Level + XP bar
+      // Level + title
       const levelRow = document.createElement('div');
       Object.assign(levelRow.style, {
         display: 'flex', alignItems: 'center', gap: '12px',
@@ -335,7 +440,8 @@ export class Progression {
         fontSize: '16px', fontWeight: '700', color: '#fff',
         letterSpacing: '2px',
       });
-      levelLabel.textContent = `LEVEL ${this.level}`;
+      const prestigePrefix = this.prestige > 0 ? '\u2605'.repeat(Math.min(this.prestige, 10)) + ' ' : '';
+      levelLabel.textContent = `${prestigePrefix}LEVEL ${this.level} - ${this.getLevelTitle()}`;
       levelRow.appendChild(levelLabel);
       overlay.appendChild(levelRow);
 
@@ -364,7 +470,7 @@ export class Progression {
         fontSize: '11px', color: 'rgba(255, 255, 255, 0.5)',
         marginTop: '6px', letterSpacing: '1px',
       });
-      const nextLevelXP = Progression.xpForLevel(this.level + 1);
+      const nextLevelXP = xpForLevel(this.level + 1);
       xpText.textContent = `${this.xp} / ${nextLevelXP} XP`;
       overlay.appendChild(xpText);
 
@@ -380,13 +486,199 @@ export class Progression {
       });
 
       // Auto-dismiss after 3 seconds
-      setTimeout(() => {
+      setTimeout(dismiss, 3000);
+    });
+  }
+
+  /**
+   * Show post-match rank change screen. Returns a Promise that resolves after the display.
+   * @returns {Promise}
+   */
+  showRankChangeScreen() {
+    const rankChange = this._lastRankChange;
+    if (!rankChange || rankChange.mmrDelta === null || rankChange.mmrDelta === undefined) {
+      return Promise.resolve();
+    }
+
+    return new Promise((resolve) => {
+      const container = document.getElementById('game-container') || document.body;
+
+      const overlay = document.createElement('div');
+      overlay.id = 'rank-change-screen';
+      Object.assign(overlay.style, {
+        position: 'fixed',
+        top: '0', left: '0', width: '100%', height: '100%',
+        background: 'rgba(0, 0, 0, 0.85)',
+        display: 'flex', flexDirection: 'column',
+        alignItems: 'center', justifyContent: 'center',
+        zIndex: '400',
+        fontFamily: "'Orbitron', sans-serif",
+        opacity: '0',
+        transition: 'opacity 0.4s',
+        cursor: 'pointer',
+      });
+
+      let dismissed = false;
+      const dismiss = () => {
+        if (dismissed) return;
+        dismissed = true;
         overlay.style.opacity = '0';
         setTimeout(() => {
           if (overlay.parentNode) overlay.remove();
+          this.clearLastRankChange();
           resolve();
         }, 400);
-      }, 3000);
+      };
+      overlay.addEventListener('click', dismiss);
+
+      const mode = rankChange.matchMode || '1v1';
+      const mmrAfter = rankChange.mmrAfter;
+      const rankInfo = getRankFromMMR(mmrAfter);
+      const rankColor = rankInfo.color;
+      const isRankUp = rankChange.rankBefore !== rankChange.rankAfter && rankChange.mmrDelta > 0;
+
+      // Rank up flash
+      if (isRankUp) {
+        overlay.style.background = `radial-gradient(circle, ${rankColor}22 0%, rgba(0,0,0,0.85) 70%)`;
+      }
+
+      // Rank name
+      const rankTitle = document.createElement('div');
+      Object.assign(rankTitle.style, {
+        fontSize: isRankUp ? '32px' : '24px',
+        fontWeight: '800',
+        color: rankColor,
+        letterSpacing: '4px',
+        marginBottom: '8px',
+        textShadow: `0 0 20px ${rankColor}80`,
+        transition: isRankUp ? 'transform 0.5s ease-out' : 'none',
+        transform: isRankUp ? 'scale(0)' : 'scale(1)',
+      });
+      rankTitle.textContent = rankInfo.fullName.toUpperCase();
+      overlay.appendChild(rankTitle);
+
+      // Rank up label
+      if (isRankUp) {
+        const rankUpLabel = document.createElement('div');
+        Object.assign(rankUpLabel.style, {
+          fontSize: '14px', fontWeight: '700',
+          color: '#00ff88', letterSpacing: '3px',
+          marginBottom: '16px',
+          textShadow: '0 0 12px rgba(0, 255, 136, 0.5)',
+        });
+        rankUpLabel.textContent = 'RANK UP';
+        overlay.appendChild(rankUpLabel);
+      }
+
+      // Mode label
+      const modeLabel = document.createElement('div');
+      Object.assign(modeLabel.style, {
+        fontSize: '11px', color: 'rgba(255,255,255,0.4)',
+        letterSpacing: '2px', marginBottom: '20px',
+      });
+      modeLabel.textContent = `COMPETITIVE ${mode.toUpperCase()}`;
+      overlay.appendChild(modeLabel);
+
+      // MMR change
+      const mmrRow = document.createElement('div');
+      Object.assign(mmrRow.style, {
+        display: 'flex', alignItems: 'center', gap: '16px',
+        marginBottom: '16px', fontSize: '16px',
+      });
+
+      const mmrBefore = document.createElement('span');
+      mmrBefore.style.color = 'rgba(255,255,255,0.5)';
+      mmrBefore.textContent = `MMR: ${rankChange.mmrBefore}`;
+      mmrRow.appendChild(mmrBefore);
+
+      const arrow = document.createElement('span');
+      arrow.style.color = 'rgba(255,255,255,0.3)';
+      arrow.textContent = '\u2192';
+      mmrRow.appendChild(arrow);
+
+      const mmrAfterEl = document.createElement('span');
+      mmrAfterEl.style.color = '#fff';
+      mmrAfterEl.style.fontWeight = '700';
+      mmrAfterEl.textContent = `${rankChange.mmrAfter}`;
+      mmrRow.appendChild(mmrAfterEl);
+
+      overlay.appendChild(mmrRow);
+
+      // Division progress bar
+      const divMin = rankInfo.min;
+      const divMax = rankInfo.max === Infinity ? rankInfo.min + 200 : rankInfo.max + 1;
+      const divProgress = rankInfo.max === Infinity ? 1.0 : rankInfo.progress;
+
+      const barContainer = document.createElement('div');
+      Object.assign(barContainer.style, {
+        width: '280px', marginBottom: '8px',
+      });
+
+      const barOuter = document.createElement('div');
+      Object.assign(barOuter.style, {
+        width: '100%', height: '10px',
+        background: 'rgba(255, 255, 255, 0.1)',
+        borderRadius: '5px', overflow: 'hidden',
+        border: `1px solid ${rankColor}40`,
+      });
+      const barFill = document.createElement('div');
+      Object.assign(barFill.style, {
+        width: '0%', height: '100%',
+        background: `linear-gradient(90deg, ${rankColor}88, ${rankColor})`,
+        borderRadius: '5px',
+        transition: 'width 1.2s ease-out',
+      });
+      barOuter.appendChild(barFill);
+      barContainer.appendChild(barOuter);
+
+      // Division labels
+      const divLabels = document.createElement('div');
+      Object.assign(divLabels.style, {
+        display: 'flex', justifyContent: 'space-between',
+        fontSize: '10px', color: 'rgba(255,255,255,0.3)',
+        marginTop: '4px', letterSpacing: '1px',
+      });
+      const divMinLabel = document.createElement('span');
+      divMinLabel.textContent = divMin.toString();
+      const divMaxLabel = document.createElement('span');
+      divMaxLabel.textContent = rankInfo.max === Infinity ? '' : (divMax).toString();
+      divLabels.appendChild(divMinLabel);
+      divLabels.appendChild(divMaxLabel);
+      barContainer.appendChild(divLabels);
+
+      overlay.appendChild(barContainer);
+
+      // Delta display
+      const deltaEl = document.createElement('div');
+      const deltaPositive = rankChange.mmrDelta >= 0;
+      Object.assign(deltaEl.style, {
+        fontSize: '20px', fontWeight: '800',
+        color: deltaPositive ? '#00ff88' : '#ff4444',
+        letterSpacing: '2px', marginTop: '12px',
+        textShadow: `0 0 16px ${deltaPositive ? 'rgba(0,255,136,0.5)' : 'rgba(255,68,68,0.5)'}`,
+      });
+      const deltaSign = deltaPositive ? '+' : '';
+      const deltaArrow = deltaPositive ? '\u2191' : '\u2193';
+      deltaEl.textContent = `${deltaSign}${rankChange.mmrDelta} MMR ${deltaArrow}`;
+      overlay.appendChild(deltaEl);
+
+      container.appendChild(overlay);
+
+      // Animate in
+      requestAnimationFrame(() => {
+        overlay.style.opacity = '1';
+        if (isRankUp) {
+          setTimeout(() => {
+            rankTitle.style.transform = 'scale(1)';
+          }, 200);
+        }
+        setTimeout(() => {
+          barFill.style.width = `${Math.round(Math.min(divProgress, 1) * 100)}%`;
+        }, 300);
+      });
+
+      // Auto-dismiss after 3 seconds
+      setTimeout(dismiss, 3000);
     });
   }
 
@@ -400,7 +692,16 @@ export class Progression {
   }
 
   /**
-   * Create and return a DOM element for the lobby XP display.
+   * Create a rank badge HTML string.
+   * @param {string} mode - '1v1' or '2v2'
+   */
+  getRankBadgeHTML(mode = '1v1') {
+    const rank = this.getRankDisplay(mode);
+    return `<span class="rank-badge" style="color:${rank.color};border-color:${rank.color}40">${rank.fullName.toUpperCase()}</span>`;
+  }
+
+  /**
+   * Create and return a DOM element for the lobby XP display with rank.
    */
   createLobbyXPDisplay() {
     const wrapper = document.createElement('div');
@@ -410,6 +711,22 @@ export class Progression {
       gap: '4px', marginBottom: '8px',
     });
 
+    // Rank badge
+    const rankBadge = document.createElement('div');
+    rankBadge.id = 'lobby-rank-badge';
+    Object.assign(rankBadge.style, {
+      fontFamily: "'Orbitron', sans-serif",
+      fontSize: '11px', fontWeight: '700',
+      letterSpacing: '2px',
+      padding: '2px 10px',
+      borderRadius: '4px',
+      border: '1px solid',
+      marginBottom: '2px',
+    });
+    this._updateRankBadgeElement(rankBadge);
+    wrapper.appendChild(rankBadge);
+
+    // Level + title
     const levelLabel = document.createElement('div');
     Object.assign(levelLabel.style, {
       fontFamily: "'Orbitron', sans-serif",
@@ -417,7 +734,8 @@ export class Progression {
       color: '#00ffff', letterSpacing: '2px',
       textShadow: '0 0 10px rgba(0, 255, 255, 0.4)',
     });
-    levelLabel.textContent = `LEVEL ${this.level}`;
+    const prestigePrefix = this.prestige > 0 ? '\u2605'.repeat(Math.min(this.prestige, 10)) + ' ' : '';
+    levelLabel.textContent = `${prestigePrefix}LVL ${this.level} - ${this.getLevelTitle()}`;
     levelLabel.id = 'lobby-level-label';
     wrapper.appendChild(levelLabel);
 
@@ -443,14 +761,38 @@ export class Progression {
     return wrapper;
   }
 
+  _updateRankBadgeElement(el) {
+    const rank = this.getRankDisplay('1v1');
+    el.style.color = rank.color;
+    el.style.borderColor = rank.color + '40';
+    el.style.background = rank.color + '15';
+    el.style.textShadow = `0 0 8px ${rank.color}40`;
+    el.textContent = rank.fullName.toUpperCase();
+
+    // Champion pulsing glow
+    if (rank.name === 'Champion') {
+      el.style.animation = 'champion-glow 2s ease-in-out infinite';
+    } else {
+      el.style.animation = '';
+    }
+  }
+
   /**
    * Update the lobby XP display if it exists.
    */
   updateLobbyDisplay() {
     const label = document.getElementById('lobby-level-label');
-    if (label) label.textContent = `LEVEL ${this.level}`;
+    if (label) {
+      const prestigePrefix = this.prestige > 0 ? '\u2605'.repeat(Math.min(this.prestige, 10)) + ' ' : '';
+      label.textContent = `${prestigePrefix}LVL ${this.level} - ${this.getLevelTitle()}`;
+    }
     const fill = document.getElementById('lobby-xp-fill');
     if (fill) fill.style.width = `${Math.round(this.getLevelProgress() * 100)}%`;
+
+    const rankBadge = document.getElementById('lobby-rank-badge');
+    if (rankBadge) {
+      this._updateRankBadgeElement(rankBadge);
+    }
   }
 
   /**

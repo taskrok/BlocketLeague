@@ -20,6 +20,7 @@ import { ServerBoostPads } from './ServerBoostPads.js';
 import { PerformanceTracker } from '../shared/PerformanceTracker.js';
 import { computeAIInput } from './ServerAI.js';
 import { saveMatch, getPlayerStats } from './database.js';
+import { getRankFromMMR } from '../shared/Ranks.js';
 
 export class GameRoom {
   constructor(io, roomId, maxPlayers = 2, onCleanup = null) {
@@ -868,10 +869,37 @@ export class GameRoom {
   _saveMatchToDatabase(stats, mvpIdx) {
     try {
       const mode = this.maxPlayers === 4 ? '2v2' : '1v1';
+      const mmrColumn = mode === '2v2' ? 'mmr_2v2' : 'mmr_1v1';
       const durationSeconds = Math.round(GAME.MATCH_DURATION - this.matchTime);
       const blueWon = this.scores.blue > this.scores.orange;
-
       const playTimeMinutes = durationSeconds / 60;
+
+      // Gather current MMR for each human player to compute opponent MMR
+      const playerMMRs = {};
+      for (let i = 0; i < this.maxPlayers; i++) {
+        const p = this.players[i];
+        if (!p || !p.playerId) continue;
+        const pStats = getPlayerStats(p.playerId);
+        playerMMRs[i] = pStats ? (pStats[mmrColumn] || 1000) : 1000;
+      }
+
+      // Compute opponent MMR for each player
+      const half = this.maxPlayers / 2;
+      function getOpponentMMR(slotIdx) {
+        const isBlue = slotIdx < half;
+        const opponentSlots = [];
+        for (let i = 0; i < half * 2; i++) {
+          const slotIsBlue = i < half;
+          if (slotIsBlue !== isBlue && playerMMRs[i] !== undefined) {
+            opponentSlots.push(playerMMRs[i]);
+          }
+        }
+        // If no human opponents (all bots), use the player's own MMR as baseline
+        if (opponentSlots.length === 0) return playerMMRs[slotIdx] || 1000;
+        // For 2v2: average opponent team MMR; for 1v1: opponent's MMR
+        return Math.round(opponentSlots.reduce((a, b) => a + b, 0) / opponentSlots.length);
+      }
+
       const players = [];
       for (let i = 0; i < this.maxPlayers; i++) {
         const p = this.players[i];
@@ -893,27 +921,49 @@ export class GameRoom {
           won,
           aerialGoals: 0,
           playTimeMinutes,
+          opponentMMR: getOpponentMMR(i),
+          overtimeWin: won && this.isOvertime,
         });
       }
 
       if (players.length > 0) {
-        saveMatch({
+        const result = saveMatch({
           mode,
           durationSeconds,
           blueScore: this.scores.blue,
           orangeScore: this.scores.orange,
+          isOvertime: this.isOvertime,
           players,
         });
 
-        // Send updated progression to each human player
+        // Send updated progression + rank data to each human player
         for (const p of this.players) {
           if (!p || !p.playerId || !p.socket) continue;
           const updated = getPlayerStats(p.playerId);
           if (updated) {
+            const rankResult = result && result.playerResults
+              ? result.playerResults[p.playerId]
+              : null;
+
             p.socket.emit('progression', {
               xp: updated.xp,
               level: updated.level,
               displayName: updated.displayName,
+              mmr_1v1: updated.mmr_1v1,
+              mmr_2v2: updated.mmr_2v2,
+              rank1v1: updated.rank1v1,
+              rank2v2: updated.rank2v2,
+              levelTitle: updated.levelTitle,
+              prestige: updated.prestige || 0,
+              // Match-specific rank change info
+              mmrDelta: rankResult ? rankResult.mmrDelta : null,
+              mmrBefore: rankResult ? rankResult.mmrBefore : null,
+              mmrAfter: rankResult ? rankResult.mmrAfter : null,
+              rankBefore: rankResult ? rankResult.rankBefore : null,
+              rankAfter: rankResult ? rankResult.rankAfter : null,
+              rankColor: rankResult ? rankResult.rankColor : null,
+              xpEarned: rankResult ? rankResult.xpEarned : null,
+              matchMode: mode,
             });
           }
         }

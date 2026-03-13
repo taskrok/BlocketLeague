@@ -671,9 +671,14 @@ export class Game {
         const playerStats = data.stats[this.playerNumber];
         const playerWon = (this.myTeam === 'blue' && data.blueScore > data.orangeScore) ||
                           (this.myTeam === 'orange' && data.orangeScore > data.blueScore);
-        const xpResult = progression.endMatch(playerStats, playerWon, 0);
+        const isMVP = data.mvpIdx === this.playerNumber;
+        const isOvertimeWin = playerWon && this.isOvertime;
+        const xpResult = progression.endMatch(playerStats, playerWon, 0, { isMVP, isOvertimeWin });
         if (xpResult) {
-          progression.showXPScreen(xpResult);
+          // Chain: XP screen -> rank change screen
+          progression.showXPScreen(xpResult).then(() => {
+            return progression.showRankChangeScreen();
+          });
         }
       }
 
@@ -1789,7 +1794,9 @@ export class Game {
       const playerStats = stats[0];
       const playerWon = (this.myTeam === 'blue' && this.scores.blue > this.scores.orange) ||
                         (this.myTeam === 'orange' && this.scores.orange > this.scores.blue);
-      const xpResult = progression.endMatch(playerStats, playerWon, 0);
+      const isMVP = false; // no MVP tracking in singleplayer
+      const isOvertimeWin = playerWon && this.isOvertime;
+      const xpResult = progression.endMatch(playerStats, playerWon, 0, { isMVP, isOvertimeWin });
       if (xpResult) {
         progression.showXPScreen(xpResult);
       }

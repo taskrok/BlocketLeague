@@ -226,7 +226,7 @@ io.on('connection', (socket) => {
   }
   playerIds.set(socket.id, playerId);
 
-  // Ensure player exists in database and send back ID + progression
+  // Ensure player exists in database and send back ID + progression + rank data
   const playerName = socket.handshake.query.playerName || '';
   ensurePlayer(playerId, playerName);
   const stats = getPlayerStats(playerId);
@@ -235,6 +235,12 @@ io.on('connection', (socket) => {
     xp: stats ? stats.xp : 0,
     level: stats ? stats.level : 0,
     displayName: stats ? stats.displayName : playerName,
+    mmr_1v1: stats ? (stats.mmr_1v1 || 1000) : 1000,
+    mmr_2v2: stats ? (stats.mmr_2v2 || 1000) : 1000,
+    rank1v1: stats ? stats.rank1v1 : null,
+    rank2v2: stats ? stats.rank2v2 : null,
+    levelTitle: stats ? stats.levelTitle : 'Rookie',
+    prestige: stats ? (stats.prestige || 0) : 0,
   });
 
   socket.on('createRoom', (data) => {
@@ -359,7 +365,12 @@ io.on('connection', (socket) => {
     const pid = playerIds.get(socket.id);
     if (!pid) return;
     const s = getPlayerStats(pid);
-    const result = s ? { xp: s.xp, level: s.level, displayName: s.displayName } : { xp: 0, level: 0, displayName: '' };
+    const result = s ? {
+      xp: s.xp, level: s.level, displayName: s.displayName,
+      mmr_1v1: s.mmr_1v1 || 1000, mmr_2v2: s.mmr_2v2 || 1000,
+      rank1v1: s.rank1v1, rank2v2: s.rank2v2,
+      levelTitle: s.levelTitle, prestige: s.prestige || 0,
+    } : { xp: 0, level: 0, displayName: '', mmr_1v1: 1000, mmr_2v2: 1000, levelTitle: 'Rookie', prestige: 0 };
     if (typeof callback === 'function') {
       callback(result);
     } else {
