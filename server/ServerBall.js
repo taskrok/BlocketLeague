@@ -3,7 +3,7 @@
 // ============================================
 
 import * as CANNON from 'cannon-es';
-import { BALL, COLLISION_GROUPS } from '../shared/constants.js';
+import { BALL, ARENA, COLLISION_GROUPS } from '../shared/constants.js';
 
 export class ServerBall {
   constructor(world) {
@@ -48,6 +48,44 @@ export class ServerBall {
       av.x *= avScale;
       av.y *= avScale;
       av.z *= avScale;
+    }
+
+    // Prevent ball from tunneling through arena boundaries
+    const pos = this.body.position;
+    const R = BALL.RADIUS;
+    const HW = ARENA.WIDTH / 2;
+    const HL = ARENA.LENGTH / 2;
+    const H = ARENA.HEIGHT;
+
+    // Floor
+    if (pos.y < R) {
+      pos.y = R;
+      if (vel.y < 0) vel.y *= -BALL.RESTITUTION;
+    }
+    // Ceiling
+    if (pos.y > H - R) {
+      pos.y = H - R;
+      if (vel.y > 0) vel.y *= -BALL.RESTITUTION;
+    }
+    // Side walls
+    if (pos.x < -HW + R) {
+      pos.x = -HW + R;
+      if (vel.x < 0) vel.x *= -BALL.RESTITUTION;
+    } else if (pos.x > HW - R) {
+      pos.x = HW - R;
+      if (vel.x > 0) vel.x *= -BALL.RESTITUTION;
+    }
+    // End walls (skip if inside goal mouth)
+    const inGoalX = Math.abs(pos.x) < ARENA.GOAL_WIDTH / 2;
+    const inGoalY = pos.y < ARENA.GOAL_HEIGHT;
+    if (!inGoalX || !inGoalY) {
+      if (pos.z < -HL + R) {
+        pos.z = -HL + R;
+        if (vel.z < 0) vel.z *= -BALL.RESTITUTION;
+      } else if (pos.z > HL - R) {
+        pos.z = HL - R;
+        if (vel.z > 0) vel.z *= -BALL.RESTITUTION;
+      }
     }
   }
 

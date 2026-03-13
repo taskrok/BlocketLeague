@@ -215,19 +215,25 @@ export class CameraController {
         _carToBall.z /= ballDist;
       }
 
-      // Position camera directly opposite the ball from the car
-      // (no blending with car-facing direction — that causes the car
-      //  to disappear under the camera when driving away from ball)
+      // Position camera directly opposite the ball from the car.
+      // When the ball is high, pull the camera back further and raise it
+      // so the car stays in frame.
+      const ballHeight = Math.max(_ballPos.y - _carPos.y, 0);
+      const extraDist = Math.min(ballHeight * 0.3, 6);   // pull back up to 6 extra
+      const extraHeight = Math.min(ballHeight * 0.25, 5); // raise up to 5 extra
       _desiredPos.set(
-        _carPos.x - _carToBall.x * this.distance,
-        _carPos.y + this.height,
-        _carPos.z - _carToBall.z * this.distance
+        _carPos.x - _carToBall.x * (this.distance + extraDist),
+        _carPos.y + this.height + extraHeight,
+        _carPos.z - _carToBall.z * (this.distance + extraDist)
       );
 
-      // Look at the ball — car naturally stays in the lower frame
+      // Look toward the ball but cap lookAt height so the car stays visible.
+      // Max lookAt height = car Y + 12 — beyond that the ball indicator arrow
+      // guides the player.
+      const maxLookY = _carPos.y + 12;
       _desiredLookAt.set(
         _ballPos.x,
-        Math.max(_ballPos.y, 0) + 0.5,
+        Math.min(Math.max(_ballPos.y, 0) + 0.5, maxLookY),
         _ballPos.z
       );
     } else {

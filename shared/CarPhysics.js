@@ -55,9 +55,16 @@ export class CarPhysics {
 
   checkGround(body, state, simTime) {
     // After jumping, suppress ground detection so the car can clear the surface.
-    // Wall jumps need longer (450ms) because the car moves horizontally and
-    // flat vertical walls take longer to escape than curved surfaces.
-    const lockoutDuration = state._jumpedFromWall ? 450 : 100;
+    // Wall jumps need 450ms. Curved/fillet surfaces need a scaled lockout based
+    // on how tilted the normal is — the more tilted, the longer to escape detectRange.
+    // Flat floor (normalY=1) → 100ms, 45° curve (normalY≈0.7) → ~250ms, wall → 450ms.
+    let lockoutDuration;
+    if (state._jumpedFromWall) {
+      lockoutDuration = 450;
+    } else {
+      const normalY = Math.abs(state._jumpNormalY || 1);
+      lockoutDuration = 100 + (1 - normalY) * 500;
+    }
     if (state.hasJumped && (simTime - state.jumpLockout) < lockoutDuration) {
       state.isGrounded = false;
       return;
@@ -570,6 +577,7 @@ export class CarPhysics {
     if (input.jumpPressed && state.isGrounded && !state.hasJumped) {
       const n = state.surfaceNormal;
       state._jumpedFromWall = state.onWall;
+      state._jumpNormalY = n.y;
 
       if (state.onWall) {
         // Wall jump: kill velocity into wall, push away from wall + give upward boost
@@ -809,6 +817,7 @@ export function createCarState() {
     dodgeTime: 0,
     jumpLockout: 0,
     _jumpedFromWall: false,
+    _jumpNormalY: 1,
     _dodgeAngVel: null,
     _dodgeDecaying: false,
     _dodgeDecayStart: 0,
@@ -839,6 +848,7 @@ export function resetCarState(body, state, position, direction) {
   state.boost = 33;  // RL-accurate starting boost
   state.hasJumped = false;
   state._jumpedFromWall = false;
+  state._jumpNormalY = 1;
   state.canDoubleJump = false;
   state.isDodging = false;
   state._dodgeDecaying = false;

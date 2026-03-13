@@ -4,7 +4,7 @@
 
 import * as THREE from 'three';
 import * as CANNON from 'cannon-es';
-import { BALL, COLORS, COLLISION_GROUPS } from '../../shared/constants.js';
+import { BALL, ARENA, COLORS, COLLISION_GROUPS } from '../../shared/constants.js';
 
 export class Ball {
   constructor(scene, world, isRemote = false) {
@@ -139,6 +139,23 @@ export class Ball {
       av.x *= avScale;
       av.y *= avScale;
       av.z *= avScale;
+    }
+
+    // Prevent ball from tunneling through arena boundaries
+    const pos = this.body.position;
+    const R = BALL.RADIUS;
+    const HW = ARENA.WIDTH / 2;
+    const HL = ARENA.LENGTH / 2;
+    const H = ARENA.HEIGHT;
+    if (pos.y < R) { pos.y = R; if (vel.y < 0) vel.y *= -BALL.RESTITUTION; }
+    if (pos.y > H - R) { pos.y = H - R; if (vel.y > 0) vel.y *= -BALL.RESTITUTION; }
+    if (pos.x < -HW + R) { pos.x = -HW + R; if (vel.x < 0) vel.x *= -BALL.RESTITUTION; }
+    else if (pos.x > HW - R) { pos.x = HW - R; if (vel.x > 0) vel.x *= -BALL.RESTITUTION; }
+    const inGoalX = Math.abs(pos.x) < ARENA.GOAL_WIDTH / 2;
+    const inGoalY = pos.y < ARENA.GOAL_HEIGHT;
+    if (!inGoalX || !inGoalY) {
+      if (pos.z < -HL + R) { pos.z = -HL + R; if (vel.z < 0) vel.z *= -BALL.RESTITUTION; }
+      else if (pos.z > HL - R) { pos.z = HL - R; if (vel.z > 0) vel.z *= -BALL.RESTITUTION; }
     }
 
     // Sync position from physics
