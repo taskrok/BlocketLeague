@@ -1,0 +1,29 @@
+version: "3.8"
+
+services:
+  # ── TaskForce ──────────────────────────────────
+  taskforce:
+    build: ./TaskForce
+    restart: unless-stopped
+    ports:
+      - "80:8079"
+      - "8078:8078"
+    environment:
+      - MAP=crossroads
+      - NODE_ENV=production
+      - LEGACY_MODE=1
+      - SERVE_STATIC=1
+      - GAME_PORT=8079
+    mem_limit: 512m
+
+  # ── Blocket League ────────────────────────────
+  blocket:
+    build: ./BlocketLeague
+    restart: unless-stopped
+    ports:
+      - "3001:3001"
+    volumes:
+      - blocket-data:/app/data
+
+volumes:
+  blocket-data:
