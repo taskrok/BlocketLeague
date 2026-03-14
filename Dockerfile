@@ -12,6 +12,7 @@ WORKDIR /app
 COPY package*.json ./
 RUN npm install --omit=dev
 COPY --from=build /app/client/dist ./client/dist
+COPY client/src/ ./client/src/
 COPY server/ ./server/
 COPY shared/ ./shared/
 
