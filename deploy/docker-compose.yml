@@ -22,8 +22,6 @@ services:
     restart: unless-stopped
     ports:
       - "3001:3001"
-    environment:
-      - DEBUG=1
     volumes:
       - blocket-data:/app/data
 
