@@ -22,6 +22,10 @@ import { computeAIInput } from './ServerAI.js';
 import { saveMatch, getPlayerStats } from './database.js';
 import { getRankFromMMR } from '../shared/Ranks.js';
 
+// Debug mode: set DEBUG=1 environment variable to enable server-side perf logging
+const DEBUG_MODE = process.env.DEBUG === '1';
+const DEBUG_LOG_INTERVAL = 5000; // log every 5 seconds
+
 export class GameRoom {
   constructor(io, roomId, maxPlayers = 2, onCleanup = null) {
     this.io = io;
@@ -42,6 +46,21 @@ export class GameRoom {
     this._forceCleanupTimeout = null;
     this._onCleanup = onCleanup;
     this.playerPings = new Array(maxPlayers).fill(0);
+
+    // Debug perf tracking
+    if (DEBUG_MODE) {
+      this._debugStats = {
+        tickCount: 0,
+        tickTimeSum: 0,
+        tickTimeMax: 0,
+        broadcastCount: 0,
+        broadcastBytes: 0,
+        lastLogTime: performance.now(),
+        loopJitterSum: 0,
+        loopJitterMax: 0,
+        loopJitterCount: 0,
+      };
+    }
 
     // Cache spawn arrays to avoid re-creating every call
     this._cachedSpawns = null;
@@ -542,6 +561,14 @@ export class GameRoom {
       const elapsed = (now - this._physicsLastTime) / 1000; // seconds
       this._physicsLastTime = now;
 
+      // Track loop jitter (deviation from expected interval)
+      if (DEBUG_MODE && this._debugStats) {
+        const jitterMs = Math.abs(elapsed * 1000 - physicsMs);
+        this._debugStats.loopJitterSum += jitterMs;
+        this._debugStats.loopJitterCount++;
+        if (jitterMs > this._debugStats.loopJitterMax) this._debugStats.loopJitterMax = jitterMs;
+      }
+
       // Cap accumulated time to prevent spiral of death (max 5 frames of catch-up)
       this._physicsAccumulator += Math.min(elapsed, physicsMs * 5 / 1000);
 
@@ -610,6 +637,7 @@ export class GameRoom {
   _physicsTick() {
     if (this.state !== 'playing' && this.state !== 'overtime' && this.state !== 'goal') return;
 
+    const tickStart = DEBUG_MODE ? performance.now() : 0;
     const dt = PHYSICS.TIMESTEP;
 
     // Apply inputs to cars (human players + AI bots)
@@ -673,6 +701,40 @@ export class GameRoom {
     if (this._broadcastTickCounter >= this._broadcastEveryNTicks) {
       this._broadcastTickCounter = 0;
       this._broadcast();
+    }
+
+    // Debug: track tick performance
+    if (DEBUG_MODE) {
+      const tickMs = performance.now() - tickStart;
+      const ds = this._debugStats;
+      ds.tickCount++;
+      ds.tickTimeSum += tickMs;
+      if (tickMs > ds.tickTimeMax) ds.tickTimeMax = tickMs;
+
+      const now = performance.now();
+      if (now - ds.lastLogTime >= DEBUG_LOG_INTERVAL) {
+        const avgTick = ds.tickCount > 0 ? (ds.tickTimeSum / ds.tickCount).toFixed(2) : '0';
+        const avgJitter = ds.loopJitterCount > 0 ? (ds.loopJitterSum / ds.loopJitterCount).toFixed(2) : '0';
+        const humans = this.players.filter(p => p && p.socket).length;
+        const bots = this.botSlots.size;
+        const pings = this.playerPings.filter((_, i) => this.players[i] && !this.botSlots.has(i));
+        console.log(
+          `[DEBUG ${this.roomId}] tick: avg=${avgTick}ms max=${ds.tickTimeMax.toFixed(2)}ms | ` +
+          `broadcasts: ${ds.broadcastCount} (${ds.broadcastBytes}B) | ` +
+          `loop jitter: avg=${avgJitter}ms max=${ds.loopJitterMax.toFixed(2)}ms | ` +
+          `players: ${humans}h+${bots}b | pings: [${pings.map(p => p + 'ms').join(', ')}] | ` +
+          `state: ${this.state} tick#${this.tick}`
+        );
+        ds.tickCount = 0;
+        ds.tickTimeSum = 0;
+        ds.tickTimeMax = 0;
+        ds.broadcastCount = 0;
+        ds.broadcastBytes = 0;
+        ds.loopJitterSum = 0;
+        ds.loopJitterMax = 0;
+        ds.loopJitterCount = 0;
+        ds.lastLogTime = now;
+      }
     }
   }
 
@@ -857,6 +919,11 @@ export class GameRoom {
     // Binary encode + volatile emit (drops packets under pressure instead of queuing)
     const buffer = encodeGameState(gs, this.maxPlayers);
     this.io.to(this.roomId).volatile.emit('gameState', buffer);
+
+    if (DEBUG_MODE) {
+      this._debugStats.broadcastCount++;
+      this._debugStats.broadcastBytes += buffer.byteLength;
+    }
 
     // Broadcast pings ~1Hz (every 30th broadcast at 30Hz)
     if (this.tick % 60 === 0) {

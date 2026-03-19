@@ -37,6 +37,7 @@ import { QuickChat } from './QuickChat.js';
 import { BallIndicator } from './BallIndicator.js';
 import { Tutorial, isTutorialComplete } from './Tutorial.js';
 import { progression } from './Progression.js';
+import { DebugOverlay } from './DebugOverlay.js';
 
 // Reusable temp vectors
 const _aimEuler = new CANNON.Vec3();
@@ -170,6 +171,9 @@ export class Game {
 
     this.clock = new THREE.Clock();
     this.accumulator = 0;
+
+    // Debug overlay (toggle with ` key)
+    this.debugOverlay = new DebugOverlay(this.network);
 
     this._loop();
   }
@@ -954,6 +958,9 @@ export class Game {
         this.tutorial = null;
       }
     }
+
+    // Update debug overlay
+    if (this.debugOverlay) this.debugOverlay.update();
 
     // Camera always updates (except during replay — replay player drives camera)
     if (this.cameraController && this.state !== 'replay') {
@@ -1964,6 +1971,12 @@ export class Game {
 
   destroy() {
     this._destroyed = true;
+
+    // Clean up debug overlay
+    if (this.debugOverlay) {
+      this.debugOverlay.destroy();
+      this.debugOverlay = null;
+    }
 
     // Clean up tutorial
     if (this.tutorial) {
