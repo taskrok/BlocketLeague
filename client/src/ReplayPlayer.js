@@ -167,8 +167,9 @@ export class ReplayPlayer {
       if (!car) continue;
 
       const a = carsA[i];
-      const b = carsB ? carsB[i] : a;
-      if (!a) continue;
+      if (!a || !a.active) continue;
+      const bRaw = carsB ? carsB[i] : null;
+      const b = (bRaw && bRaw.active) ? bRaw : null;
 
       // Handle demolished visibility
       car.mesh.visible = !a.demolished;
