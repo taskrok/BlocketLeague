@@ -8,10 +8,36 @@ const MAX_CARS = 4;
 
 export class ReplayBuffer {
   constructor() {
+    // Pre-allocate all frame slots to avoid per-frame object creation
     this._frames = new Array(MAX_FRAMES);
+    for (let i = 0; i < MAX_FRAMES; i++) {
+      this._frames[i] = {
+        ball: { px: 0, py: 0, pz: 0, vx: 0, vy: 0, vz: 0, qx: 0, qy: 0, qz: 0, qw: 1 },
+        cars: ReplayBuffer._allocCars(),
+        carCount: 0,
+        boostPadMask: new Uint8Array(5), // ceil(34 / 8) = 5 bytes, covers up to 40 pads
+        events: null,
+      };
+    }
     this._head = 0;   // next write position
     this._count = 0;  // how many frames stored
     this._pendingEvents = []; // events to attach to the next recorded frame
+  }
+
+  static _allocCars() {
+    const cars = new Array(MAX_CARS);
+    for (let i = 0; i < MAX_CARS; i++) {
+      cars[i] = {
+        active: false,
+        px: 0, py: 0, pz: 0,
+        vx: 0, vy: 0, vz: 0,
+        qx: 0, qy: 0, qz: 0, qw: 1,
+        boost: 0,
+        boosting: false,
+        demolished: false,
+      };
+    }
+    return cars;
   }
 
   /**
@@ -29,41 +55,40 @@ export class ReplayBuffer {
    * @param {object} boostPads - BoostPads instance
    */
   record(ball, cars, boostPads) {
-    const frame = this._frames[this._head] || (this._frames[this._head] = {});
+    const frame = this._frames[this._head];
 
-    // Ball state
+    // Ball state — copy into pre-allocated object
+    const fb = frame.ball;
     const bp = ball.body.position;
     const bv = ball.body.velocity;
     const bq = ball.body.quaternion;
-    frame.ball = {
-      px: bp.x, py: bp.y, pz: bp.z,
-      vx: bv.x, vy: bv.y, vz: bv.z,
-      qx: bq.x, qy: bq.y, qz: bq.z, qw: bq.w,
-    };
+    fb.px = bp.x; fb.py = bp.y; fb.pz = bp.z;
+    fb.vx = bv.x; fb.vy = bv.y; fb.vz = bv.z;
+    fb.qx = bq.x; fb.qy = bq.y; fb.qz = bq.z; fb.qw = bq.w;
 
-    // Cars state
-    if (!frame.cars) frame.cars = [];
+    // Cars state — copy into pre-allocated car slots
+    frame.carCount = cars.length;
     for (let i = 0; i < cars.length; i++) {
+      const fc = frame.cars[i];
       const car = cars[i];
       if (!car) {
-        frame.cars[i] = null;
+        fc.active = false;
         continue;
       }
+      fc.active = true;
       const cp = car.body.position;
       const cv = car.body.velocity;
       const cq = car.body.quaternion;
-      frame.cars[i] = {
-        px: cp.x, py: cp.y, pz: cp.z,
-        vx: cv.x, vy: cv.y, vz: cv.z,
-        qx: cq.x, qy: cq.y, qz: cq.z, qw: cq.w,
-        boost: car.boost,
-        boosting: car.boostFlame ? car.boostFlame.visible : false,
-        demolished: car.demolished,
-      };
+      fc.px = cp.x; fc.py = cp.y; fc.pz = cp.z;
+      fc.vx = cv.x; fc.vy = cv.y; fc.vz = cv.z;
+      fc.qx = cq.x; fc.qy = cq.y; fc.qz = cq.z; fc.qw = cq.w;
+      fc.boost = car.boost;
+      fc.boosting = car.boostFlame ? car.boostFlame.visible : false;
+      fc.demolished = car.demolished;
     }
 
-    // Boost pads bitmask
-    frame.boostPadMask = this._packBoostPads(boostPads);
+    // Boost pads bitmask — pack into pre-allocated Uint8Array
+    this._packBoostPads(boostPads, frame.boostPadMask);
 
     // Attach any pending events
     frame.events = this._pendingEvents.length > 0 ? this._pendingEvents.splice(0) : null;
@@ -79,16 +104,34 @@ export class ReplayBuffer {
    * @param {object} boostPads  - BoostPads instance
    */
   recordFromSnapshot(ballData, carsData, boostPads) {
-    const frame = this._frames[this._head] || (this._frames[this._head] = {});
+    const frame = this._frames[this._head];
 
-    frame.ball = { ...ballData };
+    // Ball state — copy fields into pre-allocated object
+    const fb = frame.ball;
+    fb.px = ballData.px; fb.py = ballData.py; fb.pz = ballData.pz;
+    fb.vx = ballData.vx; fb.vy = ballData.vy; fb.vz = ballData.vz;
+    fb.qx = ballData.qx; fb.qy = ballData.qy; fb.qz = ballData.qz; fb.qw = ballData.qw;
 
-    if (!frame.cars) frame.cars = [];
+    // Cars state — copy fields into pre-allocated car slots
+    frame.carCount = carsData.length;
     for (let i = 0; i < carsData.length; i++) {
-      frame.cars[i] = carsData[i] ? { ...carsData[i] } : null;
+      const fc = frame.cars[i];
+      const src = carsData[i];
+      if (!src) {
+        fc.active = false;
+        continue;
+      }
+      fc.active = true;
+      fc.px = src.px; fc.py = src.py; fc.pz = src.pz;
+      fc.vx = src.vx; fc.vy = src.vy; fc.vz = src.vz;
+      fc.qx = src.qx; fc.qy = src.qy; fc.qz = src.qz; fc.qw = src.qw;
+      fc.boost = src.boost;
+      fc.boosting = src.boosting;
+      fc.demolished = src.demolished;
     }
 
-    frame.boostPadMask = this._packBoostPads(boostPads);
+    // Boost pads bitmask — pack into pre-allocated Uint8Array
+    this._packBoostPads(boostPads, frame.boostPadMask);
 
     // Attach any pending events
     frame.events = this._pendingEvents.length > 0 ? this._pendingEvents.splice(0) : null;
@@ -122,17 +165,15 @@ export class ReplayBuffer {
     this._count = 0;
   }
 
-  _packBoostPads(boostPads) {
-    if (!boostPads || !boostPads.pads) return null;
+  _packBoostPads(boostPads, mask) {
+    if (!boostPads || !boostPads.pads) { mask.fill(0); return; }
     const pads = boostPads.pads;
-    // Use a Uint8Array bitmask (supports up to 64 pads)
-    const bytes = Math.ceil(pads.length / 8);
-    const mask = new Uint8Array(bytes);
+    // Clear the pre-allocated mask, then set active bits
+    mask.fill(0);
     for (let i = 0; i < pads.length; i++) {
       if (pads[i].active) {
         mask[i >> 3] |= (1 << (i & 7));
       }
     }
-    return mask;
   }
 }
