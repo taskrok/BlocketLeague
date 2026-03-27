@@ -7,6 +7,7 @@ import { ARENA, BOOST_PAD, BOOST_PAD_LAYOUT } from '../shared/constants.js';
 export class ServerBoostPads {
   constructor() {
     this.pads = [];
+    this._bitmaskBuf = null; // pre-allocated in _createPads after pad count is known
     this._createPads();
   }
 
@@ -38,6 +39,9 @@ export class ServerBoostPads {
         respawnTimer: 0,
       });
     });
+
+    // Pre-allocate bitmask buffer now that pad count is known
+    this._bitmaskBuf = new Uint8Array(Math.ceil(this.pads.length / 8));
   }
 
   update(dt, cars) {
@@ -81,8 +85,8 @@ export class ServerBoostPads {
 
   // Returns Uint8Array bitmask supporting >32 pads (used by binary protocol)
   getActiveBitmaskBytes() {
-    const numBytes = Math.ceil(this.pads.length / 8);
-    const bytes = new Uint8Array(numBytes);
+    const bytes = this._bitmaskBuf;
+    bytes.fill(0);
     for (let i = 0; i < this.pads.length; i++) {
       if (this.pads[i].active) {
         bytes[i >> 3] |= (1 << (i & 7));

@@ -16,6 +16,20 @@ const _v4 = new CANNON.Vec3();
 const _v5 = new CANNON.Vec3();
 const _q1 = new CANNON.Quaternion();
 
+// Pre-allocated normals for checkGoalSurface (read-only, never mutated by callers)
+const _normalDown   = new CANNON.Vec3(0, -1, 0);
+const _normalPosZ   = new CANNON.Vec3(0, 0,  1);  // back wall normal for side=-1
+const _normalNegZ   = new CANNON.Vec3(0, 0, -1);  // back wall normal for side=+1
+const _normalPosX   = new CANNON.Vec3( 1, 0, 0);  // side wall normal for ps=-1
+const _normalNegX   = new CANNON.Vec3(-1, 0, 0);  // side wall normal for ps=+1
+// Separate pre-allocated normals for each fillet/sphere section (avoids aliasing)
+const _filletNormalFloorBack   = new CANNON.Vec3();
+const _filletNormalCeilBack    = new CANNON.Vec3();
+const _filletNormalFloorSide   = new CANNON.Vec3();
+const _filletNormalCeilSide    = new CANNON.Vec3();
+const _filletNormalSideBack    = new CANNON.Vec3();
+const _filletNormalCorner      = new CANNON.Vec3();
+
 /**
  * CarPhysics operates on a car state object and a cannon-es Body.
  * It contains ALL shared physics methods extracted from Car.js / ServerCar.js.
@@ -171,7 +185,7 @@ export class CarPhysics {
         const dist = Math.abs(pos.y - GH);
         if (dist < detectRange && dist < bestDist) {
           bestDist = dist;
-          best = { sx: pos.x, sy: GH, sz: pos.z, normal: new CANNON.Vec3(0, -1, 0), dist };
+          best = { sx: pos.x, sy: GH, sz: pos.z, normal: _normalDown, dist };
         }
       }
 
@@ -180,7 +194,7 @@ export class CarPhysics {
         const dist = Math.abs(pos.z - zBack);
         if (dist < detectRange && dist < bestDist) {
           bestDist = dist;
-          best = { sx: pos.x, sy: pos.y, sz: zBack, normal: new CANNON.Vec3(0, 0, -side), dist };
+          best = { sx: pos.x, sy: pos.y, sz: zBack, normal: side === 1 ? _normalNegZ : _normalPosZ, dist };
         }
       }
 
@@ -191,7 +205,7 @@ export class CarPhysics {
           const dist = Math.abs(pos.x - wallX);
           if (dist < detectRange && dist < bestDist) {
             bestDist = dist;
-            best = { sx: wallX, sy: pos.y, sz: pos.z, normal: new CANNON.Vec3(-ps, 0, 0), dist };
+            best = { sx: wallX, sy: pos.y, sz: pos.z, normal: ps === 1 ? _normalNegX : _normalPosX, dist };
           }
         }
       }
@@ -213,7 +227,8 @@ export class CarPhysics {
               bestDist = dist;
               const sy = cy + GFR * uy;
               const sz = cz + GFR * uz;
-              best = { sx: pos.x, sy, sz, normal: new CANNON.Vec3(0, -uy, -uz), dist };
+              _filletNormalFloorBack.set(0, -uy, -uz);
+              best = { sx: pos.x, sy, sz, normal: _filletNormalFloorBack, dist };
             }
           }
         }
@@ -236,7 +251,8 @@ export class CarPhysics {
               bestDist = dist;
               const sy = cy + GFR * uy;
               const sz = cz + GFR * uz;
-              best = { sx: pos.x, sy, sz, normal: new CANNON.Vec3(0, -uy, -uz), dist };
+              _filletNormalCeilBack.set(0, -uy, -uz);
+              best = { sx: pos.x, sy, sz, normal: _filletNormalCeilBack, dist };
             }
           }
         }
@@ -260,7 +276,8 @@ export class CarPhysics {
                 bestDist = dist;
                 const sx = cx + GFR * ux;
                 const sy = cy + GFR * uy;
-                best = { sx, sy, sz: pos.z, normal: new CANNON.Vec3(-ux, -uy, 0), dist };
+                _filletNormalFloorSide.set(-ux, -uy, 0);
+                best = { sx, sy, sz: pos.z, normal: _filletNormalFloorSide, dist };
               }
             }
           }
@@ -285,7 +302,8 @@ export class CarPhysics {
                 bestDist = dist;
                 const sx = cx + GFR * ux;
                 const sy = cy + GFR * uy;
-                best = { sx, sy, sz: pos.z, normal: new CANNON.Vec3(-ux, -uy, 0), dist };
+                _filletNormalCeilSide.set(-ux, -uy, 0);
+                best = { sx, sy, sz: pos.z, normal: _filletNormalCeilSide, dist };
               }
             }
           }
@@ -310,7 +328,8 @@ export class CarPhysics {
                 bestDist = dist;
                 const sx = cx + GFR * ux;
                 const sz = cz + GFR * uz;
-                best = { sx, sy: pos.y, sz, normal: new CANNON.Vec3(-ux, 0, -uz), dist };
+                _filletNormalSideBack.set(-ux, 0, -uz);
+                best = { sx, sy: pos.y, sz, normal: _filletNormalSideBack, dist };
               }
             }
           }
@@ -343,7 +362,8 @@ export class CarPhysics {
               const sx = cx + GFR * ux;
               const sy = cy + GFR * uy;
               const sz = cz + GFR * uz;
-              best = { sx, sy, sz, normal: new CANNON.Vec3(-ux, -uy, -uz), dist };
+              _filletNormalCorner.set(-ux, -uy, -uz);
+              best = { sx, sy, sz, normal: _filletNormalCorner, dist };
             }
           }
         }
