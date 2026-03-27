@@ -44,6 +44,7 @@ export class GameRoom {
     this._broadcastInterval = null;
     this._countdownInterval = null;
     this._forceCleanupTimeout = null;
+    this._overtimeTimeout = null;
     this._onCleanup = onCleanup;
     this.playerPings = new Array(maxPlayers).fill(0);
 
@@ -602,6 +603,10 @@ export class GameRoom {
       clearInterval(this._countdownInterval);
       this._countdownInterval = null;
     }
+    if (this._overtimeTimeout) {
+      clearTimeout(this._overtimeTimeout);
+      this._overtimeTimeout = null;
+    }
   }
 
   // ========== ROOM CLEANUP ==========
@@ -623,6 +628,34 @@ export class GameRoom {
         p.socket.leave(this.roomId);
       }
     }
+
+    // Destroy physics world: remove all bodies and null references
+    // to prevent leaking an entire CANNON.World per completed game
+    if (this.world) {
+      // Remove car bodies
+      if (this.cars) {
+        for (const car of this.cars) {
+          if (car && car.body) {
+            this.world.removeBody(car.body);
+          }
+        }
+      }
+      // Remove ball body
+      if (this.ball && this.ball.body) {
+        this.world.removeBody(this.ball.body);
+      }
+      // Remove all remaining bodies (arena colliders, etc.)
+      // Iterate backwards since removeBody mutates the array
+      const bodies = this.world.bodies;
+      for (let i = bodies.length - 1; i >= 0; i--) {
+        this.world.removeBody(bodies[i]);
+      }
+      this.world = null;
+    }
+    this.ball = null;
+    this.cars = null;
+    this.arena = null;
+
     this.players.fill(null);
     this.botSlots.clear();
     this.bodyToCarIndex.clear();
@@ -766,7 +799,7 @@ export class GameRoom {
     this.goalResetTime = 9;
 
     if (this.isOvertime) {
-      setTimeout(() => {
+      this._overtimeTimeout = setTimeout(() => {
         this.state = 'ended';
         const winningTeam = this.scores.blue > this.scores.orange ? 'blue' : 'orange';
         const mvpIdx = this.perfTracker.computeMVP(winningTeam);

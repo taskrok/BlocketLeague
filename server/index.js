@@ -178,7 +178,15 @@ function broadcastQueueUpdate(mode) {
 function startMatchedGame(players, mode) {
   const maxPlayers = mode === '2v2' ? 4 : 2;
   const code = generateRoomCode();
-  const room = new GameRoom(io, code, maxPlayers);
+  const room = new GameRoom(io, code, maxPlayers, (roomId) => {
+    // onCleanup callback: clean playerRooms entries for all players in this room
+    for (const [socketId, r] of playerRooms) {
+      if (r.roomId === roomId) {
+        playerRooms.delete(socketId);
+      }
+    }
+    rooms.delete(roomId);
+  });
   rooms.set(code, room);
 
   // Add real players
@@ -250,7 +258,15 @@ io.on('connection', (socket) => {
     const playerName = (data && data.playerName) || '';
 
     const code = generateRoomCode();
-    const room = new GameRoom(io, code, maxPlayers);
+    const room = new GameRoom(io, code, maxPlayers, (roomId) => {
+      // onCleanup callback: clean playerRooms entries for all players in this room
+      for (const [socketId, r] of playerRooms) {
+        if (r.roomId === roomId) {
+          playerRooms.delete(socketId);
+        }
+      }
+      rooms.delete(roomId);
+    });
     rooms.set(code, room);
 
     room.addPlayer(socket, variantConfig, playerName, playerIds.get(socket.id));
@@ -263,7 +279,13 @@ io.on('connection', (socket) => {
     setTimeout(() => {
       if (rooms.has(code) && !rooms.get(code).isFull()) {
         const r = rooms.get(code);
-        r.players.filter(p => p).forEach(p => {
+        // Clean playerRooms for players in this expiring room
+        for (const p of r.players) {
+          if (p && p.socketId) {
+            playerRooms.delete(p.socketId);
+          }
+        }
+        r.players.filter(p => p && p.socket).forEach(p => {
           p.socket.emit('roomExpired', {});
         });
         r._stopLoops();
