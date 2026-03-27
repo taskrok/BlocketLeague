@@ -1329,11 +1329,21 @@ export class Game {
     this.playerCar.boost = myState.boost;
 
     // Replay pending inputs on top of server state (prediction)
-    // Step physics world each iteration so gravity/collisions match server
+    // Step physics world each iteration so gravity/collisions match server.
+    // Cap replay count to avoid massive lag spikes after network stalls —
+    // if too many inputs queued, just accept server position (skip replay).
     const pending = this.network.getPendingInputs();
-    for (const input of pending) {
-      this.playerCar.update(input, PHYSICS.TIMESTEP);
-      this.world.step(PHYSICS.TIMESTEP);
+    const MAX_REPLAY = 15;
+    if (pending.length <= MAX_REPLAY) {
+      for (const input of pending) {
+        this.playerCar.update(input, PHYSICS.TIMESTEP);
+        this.world.step(PHYSICS.TIMESTEP);
+      }
+    } else {
+      // Too many pending inputs — reconciliation would be too expensive.
+      // Clear pending buffer and accept server state directly (will cause
+      // a visual snap, but avoids a multi-frame freeze).
+      this.network.pendingInputs.length = 0;
     }
 
     // Compute new correction offset = old visual pos - new predicted physics pos

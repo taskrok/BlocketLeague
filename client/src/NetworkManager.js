@@ -307,7 +307,22 @@ export class NetworkManager {
       this.socket.emit('input', encodeInput(input));
     }
 
-    return input;
+    // Return a shallow copy of essential fields so pendingInputs doesn't hold
+    // a reference to the pooled object (which gets overwritten when the pool wraps)
+    return {
+      seq: input.seq,
+      throttle: input.throttle,
+      steer: input.steer,
+      jump: input.jump,
+      jumpPressed: input.jumpPressed,
+      boost: input.boost,
+      airRoll: input.airRoll,
+      pitchUp: input.pitchUp,
+      pitchDown: input.pitchDown,
+      handbrake: input.handbrake,
+      dodgeForward: input.dodgeForward,
+      dodgeSteer: input.dodgeSteer,
+    };
   }
 
   // ========== RING BUFFER ACCESS ==========
@@ -481,6 +496,13 @@ export class NetworkManager {
 
   addPendingInput(input) {
     this.pendingInputs.push(input);
+
+    // Cap pending inputs to prevent unbounded growth during network stalls.
+    // 180 = ~3 seconds at 60Hz. Drop oldest entries if exceeded.
+    const MAX_PENDING = 180;
+    if (this.pendingInputs.length > MAX_PENDING) {
+      this.pendingInputs.splice(0, this.pendingInputs.length - MAX_PENDING);
+    }
   }
 
   clearPendingInputsBefore(seq) {
