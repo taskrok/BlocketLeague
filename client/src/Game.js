@@ -2047,13 +2047,18 @@ export class Game {
 
     // Dispose Three.js scene objects
     if (this.scene) {
+      const texProps = ['map', 'emissiveMap', 'normalMap', 'roughnessMap', 'metalnessMap', 'aoMap', 'bumpMap', 'alphaMap', 'envMap', 'lightMap', 'displacementMap'];
       this.scene.traverse((obj) => {
         if (obj.geometry) obj.geometry.dispose();
         if (obj.material) {
           if (Array.isArray(obj.material)) {
-            obj.material.forEach(m => m.dispose());
+            obj.material.forEach(m => {
+              m.dispose();
+              texProps.forEach(prop => { if (m[prop]) { m[prop].dispose(); m[prop] = null; } });
+            });
           } else {
             obj.material.dispose();
+            texProps.forEach(prop => { if (obj.material[prop]) { obj.material[prop].dispose(); obj.material[prop] = null; } });
           }
         }
       });

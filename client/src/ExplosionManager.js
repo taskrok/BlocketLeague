@@ -161,7 +161,7 @@ export class ExplosionManager {
     this.scene.add(group);
     this._activeExplosions.push({
       group, flash, flashMat, light, particles, elapsed: 0,
-      isGoal: true, ring, ringMat, ring2, ring2Mat,
+      isGoal: true, ring, ringMat, ring2, ring2Mat, ringGeo,
     });
   }
 
@@ -216,9 +216,10 @@ export class ExplosionManager {
         for (const p of ex.particles) {
           this._releaseMaterial(p.mesh.material);
         }
-        // Goal ring materials are not pooled (created fresh for rings)
+        // Goal ring materials + geometry are not pooled (created fresh for rings)
         if (ex.ringMat) ex.ringMat.dispose();
         if (ex.ring2Mat) ex.ring2Mat.dispose();
+        if (ex.ringGeo) ex.ringGeo.dispose();
         ex.light.dispose();
         this._activeExplosions.splice(i, 1);
       }
@@ -279,6 +280,26 @@ export class ExplosionManager {
 
   /** Clear all active effects (used on destroy). */
   clear() {
+    for (const ex of this._activeExplosions) {
+      this.scene.remove(ex.group);
+      ex.light.dispose();
+      if (ex.ringMat) ex.ringMat.dispose();
+      if (ex.ring2Mat) ex.ring2Mat.dispose();
+      if (ex.ringGeo) ex.ringGeo.dispose();
+      // Release pooled materials
+      this._releaseMaterial(ex.flashMat);
+      for (const p of ex.particles) {
+        this._releaseMaterial(p.mesh.material);
+      }
+      // Dispose any non-pooled child geometries/materials
+      ex.group.traverse((child) => {
+        if (child.geometry && !child.geometry._isShared) child.geometry.dispose();
+      });
+    }
+    for (const ring of this._activeLandingRings) {
+      this.scene.remove(ring.mesh);
+      ring.mesh.material.dispose();
+    }
     this._activeExplosions = [];
     this._activeLandingRings = [];
   }
