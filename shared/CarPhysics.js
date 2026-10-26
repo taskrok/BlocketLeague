@@ -34,6 +34,18 @@ const _filletNormalCorner      = new CANNON.Vec3();
 // allocated an array + iterator per loop, per tick, per car).
 const _SIDES = [-1, 1];
 
+/**
+ * Gravity the body's world actually applies this tick. Every gravity
+ * cancellation/compensation force in this file scales off this value so a
+ * world running mutated gravity (offline Moon Ball etc.) keeps the same
+ * car-vs-ball gravity ratio. On the server (and any unmutated client) the
+ * world gravity is exactly PHYSICS.GRAVITY, so the shared sim stays identical.
+ */
+function worldGravityY(body) {
+  const w = body.world;
+  return w ? w.gravity.y : PHYSICS.GRAVITY;
+}
+
 // Single pre-allocated result object for checkGoalSurface. Written in place and
 // returned, so the RETURN VALUE IS REUSED ACROSS CALLS: callers must copy what
 // they need before the next call and never retain the reference across ticks.
@@ -64,7 +76,7 @@ export class CarPhysics {
     if (state.demolished) return;
 
     // Reduce effective gravity for cars (lighter than ball for easier aerials)
-    body.force.y -= PHYSICS.GRAVITY * CAR.MASS * (1 - CAR.GRAVITY_SCALE);
+    body.force.y -= worldGravityY(body) * CAR.MASS * (1 - CAR.GRAVITY_SCALE);
 
     this.checkGround(body, state, simTime);
     this.handleJump(body, state, input, dt, simTime);
@@ -607,8 +619,8 @@ export class CarPhysics {
     }
 
     // Graduated gravity cancellation -- stronger as surface gets more vertical
-    // PHYSICS.GRAVITY is negative, so this adds upward force
-    body.force.y -= PHYSICS.GRAVITY * CAR.MASS * Math.max(wallFactor, state.onGoalSurface ? 1 : 0);
+    // Gravity is negative, so this adds upward force
+    body.force.y -= worldGravityY(body) * CAR.MASS * Math.max(wallFactor, state.onGoalSurface ? 1 : 0);
 
     if (state.onGoalSurface) {
       // Push into surface in all axes (Y included for ceiling driving)
@@ -715,7 +727,7 @@ export class CarPhysics {
       body.angularVelocity.copy(state._dodgeAngVel);
       // Cancel gravity so the car floats during the flip -- prevents floor
       // collision from blocking the rotation
-      body.force.y -= PHYSICS.GRAVITY * CAR.MASS;
+      body.force.y -= worldGravityY(body) * CAR.MASS;
     }
 
     // End dodge torque phase after DODGE_DURATION, enter decay.

@@ -304,6 +304,22 @@ export class HUD {
     this.statusText.style.opacity = msg ? '1' : '0';
   }
 
+  /**
+   * Persistent "MUTATOR: NAME" pill under the scoreboard for offline mutator
+   * matches. Built once per match (static text, no per-frame writes) and
+   * removed by reset().
+   */
+  showMutatorBadge(name) {
+    if (!this.hudTop) return;
+    if (!this._mutatorBadge) {
+      this._mutatorBadge = document.createElement('div');
+      this._mutatorBadge.id = 'mutator-badge';
+      this.hudTop.appendChild(this._mutatorBadge);
+    }
+    this._mutatorBadge.textContent = name;
+    this._mutatorBadge.style.display = '';
+  }
+
   showLiveScoreboard(blueScore, orangeScore, stats, maxPlayers, pings) {
     if (!stats) return;
     const half = Math.floor(maxPlayers / 2);
@@ -555,6 +571,10 @@ export class HUD {
     if (this._vsBanner) {
       this._vsBanner.remove();
       this._vsBanner = null;
+    }
+    if (this._mutatorBadge) {
+      this._mutatorBadge.remove();
+      this._mutatorBadge = null;
     }
     this.showReplayIndicator(false);
   }

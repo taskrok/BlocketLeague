@@ -9,7 +9,7 @@
 // ============================================
 
 import * as CANNON from 'cannon-es';
-import { ARENA as ARENA_CONST } from '../../shared/constants.js';
+import { ARENA as ARENA_CONST, BALL as BALL_CONST } from '../../shared/constants.js';
 
 // Reusable temp vector for AI euler extraction
 const _aiEuler = new CANNON.Vec3();
@@ -462,16 +462,19 @@ export class AIController {
     const speed = car.body.velocity.length();
     const handbrake = absAngle > p.handbrakeAngle && speed > p.handbrakeSpeed;
 
-    // Jump for aerial balls
+    // Jump for aerial balls. Heights are tuned for the regulation ball, so
+    // measure from where a resting ball's centre sits (mutators can enlarge it).
     let jumpPressed = false;
+    const ballLift = (this.ball.radius || BALL_CONST.RADIUS) - BALL_CONST.RADIUS;
+    const ballHeight = ballPos.y - ballLift;
     const jumpHeight = p.jumpHeight || 3;
     const jumpDist = p.jumpDist || 8;
-    if (p.jumpBall && mode === 'attack' && distToBall < jumpDist && ballPos.y > jumpHeight && car.isGrounded) {
+    if (p.jumpBall && mode === 'attack' && distToBall < jumpDist && ballHeight > jumpHeight && car.isGrounded) {
       jumpPressed = true;
     }
 
     // Aerial boost -- hold boost while in air moving toward ball
-    if (p.aerialBoost && !car.isGrounded && ballPos.y > 3 && distToBall < 25) {
+    if (p.aerialBoost && !car.isGrounded && ballHeight > 3 && distToBall < 25) {
       boost = true;
     }
 
@@ -480,7 +483,7 @@ export class AIController {
     let dodgeSteer = 0;
     if (p.dodgeBall && mode === 'attack' && distToBall < (p.dodgeDist || 5)
         && !car.isGrounded && car.canDoubleJump && !car.isDodging
-        && ballPos.y < 5) {
+        && ballHeight < 5) {
       jumpPressed = true;
       dodgeForward = toBallNZ > 0 ? -1 : 1;
       dodgeSteer = toBallNX > 0.3 ? 1 : toBallNX < -0.3 ? -1 : 0;

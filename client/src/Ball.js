@@ -7,10 +7,26 @@ import * as CANNON from 'cannon-es';
 import { BALL, ARENA, COLORS, COLLISION_GROUPS } from '../../shared/constants.js';
 
 export class Ball {
-  constructor(scene, world, isRemote = false) {
+  /**
+   * @param {THREE.Scene} scene
+   * @param {CANNON.World} world
+   * @param {boolean} [isRemote] server-driven ball: body is not added to the world
+   * @param {object} [mutators] resolved mutator config (shared/Mutators.js);
+   *   omitted = regulation ball. Only offline modes pass one.
+   */
+  constructor(scene, world, isRemote = false, mutators = null) {
     this.scene = scene;
     this.world = world;
     this.isRemote = isRemote;
+
+    // Effective ball parameters. Everything below reads these instead of the
+    // BALL constants so a mutated ball is consistent across physics, the
+    // tunnelling clamp, visual roll and the mesh.
+    const m = mutators;
+    this.radius = BALL.RADIUS * (m ? m.ballRadiusScale : 1);
+    this.mass = BALL.MASS * (m ? m.ballMassScale : 1);
+    this.restitution = m ? m.ballRestitution : BALL.RESTITUTION;
+    this.maxSpeed = BALL.MAX_SPEED * (m ? m.ballMaxSpeedScale : 1);
 
     this._createPhysics();
     this._createMesh();
@@ -46,12 +62,12 @@ export class Ball {
   }
 
   _createPhysics() {
-    const shape = new CANNON.Sphere(BALL.RADIUS);
+    const shape = new CANNON.Sphere(this.radius);
 
     this.body = new CANNON.Body({
-      mass: BALL.MASS,
+      mass: this.mass,
       shape: shape,
-      position: new CANNON.Vec3(0, BALL.RADIUS + 0.5, 0),
+      position: new CANNON.Vec3(0, this.radius + 0.5, 0),
       linearDamping: BALL.LINEAR_DAMPING,
       angularDamping: BALL.ANGULAR_DAMPING,
       allowSleep: false,
@@ -70,7 +86,8 @@ export class Ball {
     this.mesh = new THREE.Group();
 
     // Main sphere
-    const geometry = new THREE.IcosahedronGeometry(BALL.RADIUS, 2);
+    const R = this.radius;
+    const geometry = new THREE.IcosahedronGeometry(R, 2);
     const material = new THREE.MeshStandardMaterial({
       color: 0xffffff,
       emissive: COLORS.BALL,
@@ -97,13 +114,13 @@ export class Ball {
       metalness: 0.4,
       roughness: 0.5,
     });
-    const patchGeo = new THREE.CircleGeometry(BALL.RADIUS * 0.38, 5);
+    const patchGeo = new THREE.CircleGeometry(R * 0.38, 5);
     patchDirs.forEach(v => {
       const len = Math.sqrt(v[0]*v[0] + v[1]*v[1] + v[2]*v[2]);
       const dir = new THREE.Vector3(v[0]/len, v[1]/len, v[2]/len);
       const patch = new THREE.Mesh(patchGeo, patchMat);
-      patch.position.copy(dir).multiplyScalar(BALL.RADIUS * 1.001);
-      patch.lookAt(dir.clone().multiplyScalar(BALL.RADIUS * 2));
+      patch.position.copy(dir).multiplyScalar(R * 1.001);
+      patch.lookAt(dir.clone().multiplyScalar(R * 2));
       this.sphere.add(patch);
     });
 
@@ -113,7 +130,7 @@ export class Ball {
     this.mesh.add(this.light);
 
     // Ground shadow indicator (ring on the floor below ball)
-    const shadowGeo = new THREE.RingGeometry(0.5, BALL.RADIUS * 0.8, 32);
+    const shadowGeo = new THREE.RingGeometry(0.5, R * 0.8, 32);
     this.shadowMat = new THREE.MeshBasicMaterial({
       color: COLORS.BALL,
       transparent: true,
@@ -141,8 +158,8 @@ export class Ball {
     // Clamp ball speed
     const vel = this.body.velocity;
     const speed = vel.length();
-    if (speed > BALL.MAX_SPEED) {
-      const scale = BALL.MAX_SPEED / speed;
+    if (speed > this.maxSpeed) {
+      const scale = this.maxSpeed / speed;
       vel.x *= scale;
       vel.y *= scale;
       vel.z *= scale;
@@ -160,19 +177,20 @@ export class Ball {
 
     // Prevent ball from tunneling through arena boundaries
     const pos = this.body.position;
-    const R = BALL.RADIUS;
+    const R = this.radius;
+    const CR = this.restitution;
     const HW = ARENA.WIDTH / 2;
     const HL = ARENA.LENGTH / 2;
     const H = ARENA.HEIGHT;
-    if (pos.y < R) { pos.y = R; if (vel.y < 0) vel.y *= -BALL.RESTITUTION; }
-    if (pos.y > H - R) { pos.y = H - R; if (vel.y > 0) vel.y *= -BALL.RESTITUTION; }
-    if (pos.x < -HW + R) { pos.x = -HW + R; if (vel.x < 0) vel.x *= -BALL.RESTITUTION; }
-    else if (pos.x > HW - R) { pos.x = HW - R; if (vel.x > 0) vel.x *= -BALL.RESTITUTION; }
+    if (pos.y < R) { pos.y = R; if (vel.y < 0) vel.y *= -CR; }
+    if (pos.y > H - R) { pos.y = H - R; if (vel.y > 0) vel.y *= -CR; }
+    if (pos.x < -HW + R) { pos.x = -HW + R; if (vel.x < 0) vel.x *= -CR; }
+    else if (pos.x > HW - R) { pos.x = HW - R; if (vel.x > 0) vel.x *= -CR; }
     const inGoalX = Math.abs(pos.x) < ARENA.GOAL_WIDTH / 2;
     const inGoalY = pos.y < ARENA.GOAL_HEIGHT;
     if (!inGoalX || !inGoalY) {
-      if (pos.z < -HL + R) { pos.z = -HL + R; if (vel.z < 0) vel.z *= -BALL.RESTITUTION; }
-      else if (pos.z > HL - R) { pos.z = HL - R; if (vel.z > 0) vel.z *= -BALL.RESTITUTION; }
+      if (pos.z < -HL + R) { pos.z = -HL + R; if (vel.z < 0) vel.z *= -CR; }
+      else if (pos.z > HL - R) { pos.z = HL - R; if (vel.z > 0) vel.z *= -CR; }
     }
 
     // Sync position from physics
@@ -184,7 +202,7 @@ export class Ball {
       // Roll axis = cross(velocity, up) — perpendicular to both
       this._rollAxis.set(vel.z, 0, -vel.x).normalize();
       if (this._rollAxis.lengthSq() > 0.001) {
-        const angularSpeed = curSpeed / BALL.RADIUS;
+        const angularSpeed = curSpeed / R;
         this._deltaQuat.setFromAxisAngle(this._rollAxis, angularSpeed * dt);
         this._spinQuat.premultiply(this._deltaQuat);
         this._spinQuat.normalize();
@@ -229,7 +247,7 @@ export class Ball {
   }
 
   reset() {
-    this.body.position.set(0, BALL.RADIUS + 0.5, 0);
+    this.body.position.set(0, this.radius + 0.5, 0);
     this.body.velocity.set(0, 0, 0);
     this.body.angularVelocity.set(0, 0, 0);
     this._spinQuat.identity();

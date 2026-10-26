@@ -30,6 +30,7 @@ import {
 import { computeBallHitImpulse } from '../../shared/BallHitImpulse.js';
 import { PerformanceTracker } from '../../shared/PerformanceTracker.js';
 import { checkDemolition, handleBump } from '../../shared/Demolition.js';
+import { resolveMutators, isStandardMutators, DEMO_CONTACT_MIN_SPEED } from '../../shared/Mutators.js';
 import { AIController, findPlayerTeam, pickOpponentTeam } from './AIController.js';
 import { ExplosionManager } from './ExplosionManager.js';
 import { TrainingMode } from './TrainingMode.js';
@@ -62,6 +63,7 @@ export class Game {
       aiMode = '1v1',
       trainingOpts = null,
       arenaTheme = null,
+      mutators = null,
     } = options;
 
     this.canvas = canvas;
@@ -73,6 +75,12 @@ export class Game {
     this.aiMode = aiMode;
     this.trainingOpts = trainingOpts; // { type, difficulty }
     this.arenaTheme = arenaTheme;
+    // Mutators are offline-only: multiplayer is server-authoritative with a
+    // regulation world, and training packs are tuned for regulation physics.
+    // Anything else resolves to MUTATOR_DEFAULTS, which is a no-op everywhere.
+    this.mutators = resolveMutators(
+      (mode === 'singleplayer' || mode === 'freeplay') ? mutators : null
+    );
     this._destroyed = false;
     this._rafId = null;
 
@@ -122,6 +130,9 @@ export class Game {
 
     this.input = new InputManager();
     this.hud = new HUD();
+    if (!isStandardMutators(this.mutators)) {
+      this.hud.showMutatorBadge(this.mutators.name);
+    }
     this.replayBuffer = new ReplayBuffer();
 
     // Add HUD level badge
@@ -256,8 +267,10 @@ export class Game {
   }
 
   _initPhysics() {
+    // Mutated gravity scales the whole world; CarPhysics reads the body's
+    // world gravity for its compensation forces so the car/ball ratio holds.
     this.world = new CANNON.World({
-      gravity: new CANNON.Vec3(0, PHYSICS.GRAVITY, 0),
+      gravity: new CANNON.Vec3(0, PHYSICS.GRAVITY * this.mutators.gravityScale, 0),
     });
     this.world.broadphase = new CANNON.SAPBroadphase(this.world);
     this.world.solver.iterations = 10;
@@ -268,7 +281,7 @@ export class Game {
 
     this.world.addContactMaterial(new CANNON.ContactMaterial(
       ballMaterial, wallMaterial, {
-        restitution: BALL_CONST.RESTITUTION,
+        restitution: this.mutators.ballRestitution,
         friction: BALL_CONST.FRICTION,
       }
     ));
@@ -318,7 +331,7 @@ export class Game {
       }
     });
 
-    this.ball = new Ball(this.scene, this.world);
+    this.ball = new Ball(this.scene, this.world, false, this.mutators);
     this.ball.body.material = this.ballMaterial;
 
     const modelIds = modelLoader.getModelIds();
@@ -937,6 +950,7 @@ export class Game {
   }
 
   _initBallCollisionHandler() {
+    const hitPower = this.mutators.hitPower;
     this.ball.body.addEventListener('collide', (e) => {
       const other = e.body;
       // Check if the other body is a car (collision filter group)
@@ -964,12 +978,12 @@ export class Game {
         dodgeDecaying: car ? car._dodgeDecaying : false,
       });
 
-      this.ball.body.velocity.x = impulse.x;
-      this.ball.body.velocity.y = impulse.y;
-      this.ball.body.velocity.z = impulse.z;
+      this.ball.body.velocity.x = impulse.x * hitPower;
+      this.ball.body.velocity.y = impulse.y * hitPower;
+      this.ball.body.velocity.z = impulse.z * hitPower;
 
       // Ball impact flash and camera shake
-      const hitSpeed = Math.sqrt(impulse.x * impulse.x + impulse.y * impulse.y + impulse.z * impulse.z);
+      const hitSpeed = Math.sqrt(impulse.x * impulse.x + impulse.y * impulse.y + impulse.z * impulse.z) * hitPower;
       this.ball.flash(hitSpeed);
       if (this.cameraController) this.cameraController.shakeHit(hitSpeed);
       audioManager.playBallHit(hitSpeed);
@@ -1002,7 +1016,20 @@ export class Game {
   }
 
   _handleCarCollision(carA, carB) {
-    const result = checkDemolition(carA, carB);
+    let result = checkDemolition(carA, carB);
+
+    // Demo Derby: any cross-team contact at driving speed demolishes the
+    // slower car. Supersonic rule above still applies (and wins ties).
+    if (!result && this.mutators.demoOnContact && !carA.demolished && !carB.demolished) {
+      const speedA = carA.getSpeed();
+      const speedB = carB.getSpeed();
+      if (speedA !== speedB && Math.max(speedA, speedB) >= DEMO_CONTACT_MIN_SPEED) {
+        result = speedA > speedB
+          ? { attacker: carA, victim: carB }
+          : { attacker: carB, victim: carA };
+      }
+    }
+
     if (result) {
       if (this.perfTracker) {
         const idx = this._carIndex(result.attacker);
@@ -1022,6 +1049,7 @@ export class Game {
     const idx = this._carIndex(car);
     const color = idx < half ? COLORS.CYAN : COLORS.ORANGE;
     car.demolish();
+    car.respawnTimer = this.mutators.demoRespawnTime;
     this.explosionManager.spawnExplosion(pos, color);
     this.replayBuffer.addEvent({ type: 'demolish', x: pos.x, y: pos.y, z: pos.z, color });
     if (this.cameraController) this.cameraController.shakeDemolition();
@@ -1193,9 +1221,14 @@ export class Game {
         this.playerCar.update(assisted, dt);
       }
 
-      // Infinite boost in freeplay
+      // Infinite boost in freeplay, or for every car under an unlimited-boost mutator
       if (this.mode === 'freeplay') {
         this.playerCar.boost = CAR_CONST.MAX_BOOST;
+      } else if (this.mutators.unlimitedBoost) {
+        const cars = this.allCars;
+        for (let i = 0; i < cars.length; i++) {
+          if (cars[i]) cars[i].boost = CAR_CONST.MAX_BOOST;
+        }
       }
 
       if (this.mode !== 'freeplay') {

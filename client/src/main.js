@@ -11,6 +11,7 @@ import { modelLoader } from './ModelLoader.js';
 import { COLORS, RANDOM_NAMES } from '../../shared/constants.js';
 import { getGeneralSettings } from './GameSettings.js';
 import { ARENA_THEMES } from './ArenaThemes.js';
+import { MUTATOR_PRESETS } from '../../shared/Mutators.js';
 import { audioManager } from './AudioManager.js';
 import { progression } from './Progression.js';
 
@@ -39,6 +40,31 @@ window.addEventListener('DOMContentLoaded', async () => {
   const arenaNameEl = document.getElementById('arena-name');
   let currentArenaIndex = 0;
   arenaNameEl.textContent = ARENA_THEMES[0].name;
+
+  // Mutator picker (offline modes only; hidden for online/training)
+  const MUTATOR_KEY = 'blocket-mutator';
+  const mutatorSelector = document.getElementById('mutator-selector');
+  const btnPrevMutator = document.getElementById('btn-prev-mutator');
+  const btnNextMutator = document.getElementById('btn-next-mutator');
+  const mutatorNameEl = document.getElementById('mutator-name');
+  const mutatorDescEl = document.getElementById('mutator-desc');
+  let currentMutatorIndex = 0;
+  try {
+    const savedId = localStorage.getItem(MUTATOR_KEY);
+    const savedIdx = MUTATOR_PRESETS.findIndex(m => m.id === savedId);
+    if (savedIdx >= 0) currentMutatorIndex = savedIdx;
+  } catch {}
+  function updateMutatorLabel() {
+    const m = MUTATOR_PRESETS[currentMutatorIndex];
+    mutatorNameEl.textContent = m.id === 'standard' ? 'Mutator: Off' : m.name;
+    mutatorDescEl.textContent = m.desc;
+  }
+  function stepMutator(dir) {
+    currentMutatorIndex = (currentMutatorIndex + dir + MUTATOR_PRESETS.length) % MUTATOR_PRESETS.length;
+    updateMutatorLabel();
+    try { localStorage.setItem(MUTATOR_KEY, MUTATOR_PRESETS[currentMutatorIndex].id); } catch {}
+  }
+  updateMutatorLabel();
 
   function pickRandomName() {
     return RANDOM_NAMES[Math.floor(Math.random() * RANDOM_NAMES.length)];
@@ -568,6 +594,9 @@ window.addEventListener('DOMContentLoaded', async () => {
     }
     setPreviewCar(chosenVariant);
     updateModelLabel();
+    // Mutators only exist offline (multiplayer is server-authoritative,
+    // training packs assume regulation physics)
+    mutatorSelector.style.display = (mode === 'singleplayer' || mode === 'freeplay') ? '' : 'none';
     startPreviewLoop();
   }
 
@@ -784,6 +813,7 @@ window.addEventListener('DOMContentLoaded', async () => {
     }
 
     const selectedArena = ARENA_THEMES[currentArenaIndex];
+    const selectedMutators = MUTATOR_PRESETS[currentMutatorIndex].id;
     const localModelId = chosenVariant && chosenVariant.modelId;
 
     // Offline modes: AI cars pick from modelLoader.getModelIds() (loaded models
@@ -792,7 +822,7 @@ window.addEventListener('DOMContentLoaded', async () => {
       hideLobbyForMatch();
       requestFullscreen();
       whenModelsReady([localModelId], () => {
-        const game = new Game(canvas, { mode: 'singleplayer', playerVariant: chosenVariant, aiDifficulty: selectedDifficulty, aiMode: selectedAIMode, arenaTheme: selectedArena });
+        const game = new Game(canvas, { mode: 'singleplayer', playerVariant: chosenVariant, aiDifficulty: selectedDifficulty, aiMode: selectedAIMode, arenaTheme: selectedArena, mutators: selectedMutators });
         game.hud.onBackToLobby = () => returnToLobby();
         activeGame = game;
         window.game = game;
@@ -804,7 +834,7 @@ window.addEventListener('DOMContentLoaded', async () => {
       hideLobbyForMatch();
       requestFullscreen();
       whenModelsReady([localModelId], () => {
-        const game = new Game(canvas, { mode: 'freeplay', playerVariant: chosenVariant, arenaTheme: selectedArena });
+        const game = new Game(canvas, { mode: 'freeplay', playerVariant: chosenVariant, arenaTheme: selectedArena, mutators: selectedMutators });
         game.hud.onBackToLobby = () => returnToLobby();
         activeGame = game;
         window.game = game;
@@ -1293,6 +1323,9 @@ window.addEventListener('DOMContentLoaded', async () => {
     currentArenaIndex = (currentArenaIndex + 1) % ARENA_THEMES.length;
     arenaNameEl.textContent = ARENA_THEMES[currentArenaIndex].name;
   });
+
+  btnPrevMutator.addEventListener('click', () => stepMutator(-1));
+  btnNextMutator.addEventListener('click', () => stepMutator(1));
 
   btnLetsGo.addEventListener('click', () => {
     // Prevent starting with a locked car
