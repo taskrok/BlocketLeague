@@ -23,9 +23,20 @@ import { DEMOLITION, COLORS } from '../../shared/constants.js';
 // demolition explosions (1 flash + PARTICLE_COUNT debris each).
 // Pools grow on demand if ever exhausted, so these only set the warm-up.
 const FLASH_POOL_SIZE = 4;
-const SPARK_POOL_SIZE = 100;
+const SPARK_POOL_SIZE = 150;   // 2 goals (50 each) + demolitions (16) + hit bursts (<=20)
 const DEBRIS_POOL_SIZE = 40 + DEMOLITION.PARTICLE_COUNT * 2;
-const GOAL_RING_POOL_SIZE = 4;
+const GOAL_RING_POOL_SIZE = 6;  // 2 per goal + 1 per demolition shockwave
+
+// Explosion kinds (record.kind)
+const KIND_DEMO = 0;
+const KIND_GOAL = 1;
+const KIND_HIT = 2;
+
+// Hit-spark tuning
+const HIT_SPARK_MIN = 5;
+const HIT_SPARK_MAX = 18;
+const HIT_SPARK_LIFETIME = 0.38;
+const DEMO_SPARK_COUNT = 16;
 const LANDING_RING_POOL_SIZE = 12;
 const LIGHT_POOL_SIZE = 2;
 
@@ -150,6 +161,9 @@ export class ExplosionManager {
     if (this._explosionRecordPool.length > 0) return this._explosionRecordPool.pop();
     return {
       x: 0, y: 0, z: 0,
+      kind: KIND_DEMO,
+      duration: 0,     // flash/ring/light fade time
+      lifetime: 0,     // particle lifetime (record is released after this)
       flash: null,
       light: null,
       lightIntensity: 0,
@@ -162,8 +176,7 @@ export class ExplosionManager {
   }
 
   _releaseExplosionRecord(ex) {
-    this._release(this._flashPool, ex.flash);
-    ex.flash = null;
+    if (ex.flash) { this._release(this._flashPool, ex.flash); ex.flash = null; }
     for (let i = 0; i < ex.particles.length; i++) {
       const p = ex.particles[i];
       this._release(p.isSpark ? this._sparkPool : this._debrisPool, p);
@@ -191,8 +204,11 @@ export class ExplosionManager {
   spawnExplosion(pos, color) {
     const ex = this._acquireExplosionRecord();
     ex.x = pos.x; ex.y = pos.y; ex.z = pos.z;
+    ex.kind = KIND_DEMO;
     ex.isGoal = false;
     ex.elapsed = 0;
+    ex.duration = DEMOLITION.EXPLOSION_DURATION;
+    ex.lifetime = DEMOLITION.PARTICLE_LIFETIME;
 
     // Flash sphere
     ex.flash = this._acquire(this._flashPool, color, 1);
@@ -201,6 +217,26 @@ export class ExplosionManager {
     // Point light (borrowed from the fixed pool; may be null)
     ex.lightIntensity = 5;
     ex.light = this._borrowLight(color, 5, 30, ex.x, ex.y, ex.z);
+
+    // Ground shockwave ring
+    ex.ring = this._acquire(this._goalRingPool, color, 0.8);
+    ex.ring.mesh.position.set(ex.x, 0.15, ex.z);
+    ex.ring.mesh.rotation.x = -Math.PI / 2;
+
+    // Hot sparks flung outward (fast, elongated)
+    for (let i = 0; i < DEMO_SPARK_COUNT; i++) {
+      _tmpColor.set(color).lerp(_white, 0.3 + Math.random() * 0.5);
+      const p = this._acquire(this._sparkPool, _tmpColor, 1);
+      p.isSpark = true;
+      const theta = Math.random() * Math.PI * 2;
+      const spd = 14 + Math.random() * 16;
+      p.vx = Math.cos(theta) * spd;
+      p.vy = 4 + Math.random() * 14;
+      p.vz = Math.sin(theta) * spd;
+      p.mesh.lookAt(p.vx, p.vy, p.vz);
+      p.mesh.position.set(ex.x, ex.y, ex.z);
+      ex.particles.push(p);
+    }
 
     // Debris particles
     for (let i = 0; i < DEMOLITION.PARTICLE_COUNT; i++) {
@@ -218,8 +254,11 @@ export class ExplosionManager {
   spawnGoalExplosion(pos, color) {
     const ex = this._acquireExplosionRecord();
     ex.x = pos.x; ex.y = pos.y; ex.z = pos.z;
+    ex.kind = KIND_GOAL;
     ex.isGoal = true;
     ex.elapsed = 0;
+    ex.duration = 1.0;
+    ex.lifetime = 1.4;
 
     // Core flash sphere
     ex.flash = this._acquire(this._flashPool, color, 1);
@@ -270,28 +309,77 @@ export class ExplosionManager {
     this._activeExplosions.push(ex);
   }
 
+  /**
+   * Short spark burst at a ball impact (car hit or wall bounce).
+   * No flash sphere and no light: the ball's own emissive flash carries the
+   * hit; the sparks just give it a direction and some grit.
+   * @param {{x:number,y:number,z:number}} pos   contact point (ball centre)
+   * @param {{x:number,y:number,z:number}} dir   unit direction of the impulse
+   * @param {number} strength  impulse magnitude (world units/s)
+   * @param {number|THREE.Color} color
+   */
+  spawnHitSparks(pos, dir, strength, color) {
+    const t = Math.min(strength / 80, 1);
+    const count = HIT_SPARK_MIN + Math.round(t * (HIT_SPARK_MAX - HIT_SPARK_MIN));
+
+    const ex = this._acquireExplosionRecord();
+    ex.x = pos.x; ex.y = pos.y; ex.z = pos.z;
+    ex.kind = KIND_HIT;
+    ex.isGoal = false;
+    ex.elapsed = 0;
+    ex.duration = HIT_SPARK_LIFETIME;
+    ex.lifetime = HIT_SPARK_LIFETIME;
+    ex.flash = null;
+    ex.light = null;
+    ex.ring = null;
+
+    const carry = 6 + strength * 0.25;   // sparks inherit some of the new ball direction
+    const spread = 6 + t * 12;
+    for (let i = 0; i < count; i++) {
+      _tmpColor.set(color).lerp(_white, 0.3 + Math.random() * 0.6);
+      const p = this._acquire(this._sparkPool, _tmpColor, 1);
+      p.isSpark = true;
+      p.vx = dir.x * carry + (Math.random() - 0.5) * 2 * spread;
+      p.vy = dir.y * carry + Math.random() * spread * 0.8 + 2;
+      p.vz = dir.z * carry + (Math.random() - 0.5) * 2 * spread;
+      p.mesh.lookAt(p.vx, p.vy, p.vz);
+      p.mesh.scale.set(0.6, 0.6, 0.5 + t * 0.8);
+      p.mesh.position.set(ex.x, ex.y, ex.z);
+      ex.particles.push(p);
+    }
+
+    this._activeExplosions.push(ex);
+  }
+
   updateExplosions(dt) {
     for (let i = this._activeExplosions.length - 1; i >= 0; i--) {
       const ex = this._activeExplosions[i];
       ex.elapsed += dt;
 
-      const duration = ex.isGoal ? 1.0 : DEMOLITION.EXPLOSION_DURATION;
-      const lifetime = ex.isGoal ? 1.4 : DEMOLITION.PARTICLE_LIFETIME;
+      const duration = ex.duration;
+      const lifetime = ex.lifetime;
+      const flashT = Math.min(ex.elapsed / duration, 1);
 
       // Flash: scale up and fade out
-      const flashT = Math.min(ex.elapsed / duration, 1);
-      const flashScale = ex.isGoal ? 2 + flashT * 18 : 1 + flashT * 8;
-      ex.flash.mesh.scale.setScalar(flashScale);
-      ex.flash.mesh.material.opacity = Math.max(0, 1 - flashT);
+      if (ex.flash) {
+        const flashScale = ex.isGoal ? 2 + flashT * 18 : 1 + flashT * 8;
+        ex.flash.mesh.scale.setScalar(flashScale);
+        ex.flash.mesh.material.opacity = Math.max(0, 1 - flashT);
+      }
       if (ex.light) ex.light.intensity = Math.max(0, ex.lightIntensity * (1 - flashT));
 
-      // Goal: expanding shockwave rings
+      // Shockwave rings
       if (ex.isGoal && ex.ring) {
         const ringScale = 2 + flashT * 40;
         ex.ring.mesh.scale.setScalar(ringScale);
         ex.ring.mesh.material.opacity = Math.max(0, 0.9 * (1 - flashT));
         ex.ring2.mesh.scale.setScalar(ringScale * 0.8);
         ex.ring2.mesh.material.opacity = Math.max(0, 0.7 * (1 - flashT * 1.2));
+      } else if (ex.ring) {
+        // Demolition: fast ground ring, eased out
+        const e = 1 - (1 - flashT) * (1 - flashT);
+        ex.ring.mesh.scale.setScalar(1 + e * 14);
+        ex.ring.mesh.material.opacity = Math.max(0, 0.8 * (1 - flashT));
       }
 
       // Particles: move + gravity + fade

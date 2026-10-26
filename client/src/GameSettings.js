@@ -17,6 +17,7 @@ export const DISPLAY_DEFAULTS = {
   antialias: true,
   nameplates: true,
   particles: true,
+  trails: true,
   fpsCounter: false,
   renderScale: 1.0,
 };
@@ -642,6 +643,38 @@ export class GameSettings {
     bloomRow.appendChild(bloomCheck);
     bloomRow.appendChild(bloomLabel);
     pane.appendChild(bloomRow);
+
+    // Lightweight FX toggles (applied live; no post-processing rebuild)
+    const fxChecks = [
+      { key: 'trails', label: 'Ball & boost trails' },
+      { key: 'particles', label: 'Particles & debris' },
+    ];
+    for (const cfg of fxChecks) {
+      const row = document.createElement('div');
+      row.className = 'cs-row';
+      row.style.marginTop = '8px';
+      row.style.cursor = 'pointer';
+      const check = document.createElement('input');
+      check.type = 'checkbox';
+      check.checked = displaySettings[cfg.key];
+      check.id = 'gs-' + cfg.key;
+      check.style.accentColor = '#00ffff';
+      check.style.cursor = 'pointer';
+      const label = document.createElement('label');
+      label.className = 'cs-label';
+      label.textContent = cfg.label;
+      label.htmlFor = check.id;
+      label.style.cursor = 'pointer';
+      check.addEventListener('change', () => {
+        const ds = getDisplaySettings();
+        ds[cfg.key] = check.checked;
+        try { localStorage.setItem(DISPLAY_STORAGE_KEY, JSON.stringify(ds)); } catch {}
+        if (this.onFxSettingsChanged) this.onFxSettingsChanged();
+      });
+      row.appendChild(check);
+      row.appendChild(label);
+      pane.appendChild(row);
+    }
 
     return pane;
   }

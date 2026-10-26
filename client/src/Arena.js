@@ -157,6 +157,57 @@ export class Arena {
     this._buildFieldMarkings();
     this._buildFieldText();
     this._buildExteriorText();
+
+    // Reactive grid: the neon shell's emissive strength and colours are
+    // uniforms, so the whole arena can pulse on hits/goals/kickoff for the
+    // cost of a few uniform writes (no material or geometry changes).
+    this._gridUniforms = this.arenaMesh.material.userData.gridUniforms || null;
+    this._gridBaseStrength = this.theme.gridEmissive;
+    this._gridBaseBlue = new THREE.Color(this.theme.gridColor1);
+    this._gridBaseRed = new THREE.Color(this.theme.gridColor2);
+    this._flashColor = new THREE.Color(0xffffff);
+    this._pulse = 0;        // additive brightness, decays fast
+    this._flash = 0;        // 0..1 blend toward _flashColor, decays slower
+    this._flashDirty = false;
+    this._time = 0;
+  }
+
+  // ========== REACTIVE GRID ==========
+
+  /** Brighten the whole grid briefly. 0.2 = subtle tick, 1.5 = goal. */
+  pulse(strength) {
+    if (strength > this._pulse) this._pulse = strength;
+  }
+
+  /** Wash the grid toward a colour (e.g. scoring team), fading back over ~1.5 s. */
+  flashColor(color, strength = 1) {
+    this._flashColor.set(color);
+    this._flash = Math.max(this._flash, strength);
+    this._flashDirty = true;
+  }
+
+  update(dt) {
+    const u = this._gridUniforms;
+    if (!u) return;
+    this._time += dt;
+
+    if (this._pulse > 0) {
+      this._pulse *= Math.exp(-4.5 * dt);
+      if (this._pulse < 0.005) this._pulse = 0;
+    }
+    // Slow ambient breathing so the arena never reads as completely static
+    const breathe = 1 + 0.05 * Math.sin(this._time * 1.1);
+    u.gridEmissiveStrength.value = this._gridBaseStrength * (breathe + this._pulse);
+
+    if (this._flashDirty) {
+      this._flash *= Math.exp(-1.8 * dt);
+      if (this._flash < 0.01) {
+        this._flash = 0;
+        this._flashDirty = false;
+      }
+      u.gridColorBlue.value.copy(this._gridBaseBlue).lerp(this._flashColor, this._flash);
+      u.gridColorRed.value.copy(this._gridBaseRed).lerp(this._flashColor, this._flash);
+    }
   }
 
   // ========== GRASS FLOOR ==========

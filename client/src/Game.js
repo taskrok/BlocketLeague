@@ -32,6 +32,7 @@ import { PerformanceTracker } from '../../shared/PerformanceTracker.js';
 import { checkDemolition, handleBump } from '../../shared/Demolition.js';
 import { AIController, findPlayerTeam, pickOpponentTeam } from './AIController.js';
 import { ExplosionManager } from './ExplosionManager.js';
+import { TrailManager } from './TrailFX.js';
 import { TrainingMode } from './TrainingMode.js';
 import { audioManager } from './AudioManager.js';
 import { QuickChat } from './QuickChat.js';
@@ -172,6 +173,7 @@ export class Game {
       this._disposePostProcessing();
       this._initPostProcessing();
     };
+    this.gameSettings.onFxSettingsChanged = () => this._applyFxSettings();
 
     // Quick-chat system
     this.quickChat = new QuickChat({
@@ -430,6 +432,8 @@ export class Game {
 
     this.boostPads = new BoostPads(this.scene);
     this.explosionManager = new ExplosionManager(this.scene);
+    this._initTrails();
+    this.trails.setCars(this.allCars);
     this.maxPlayers = this.allCars.length;
     this.perfTracker = new PerformanceTracker(this.maxPlayers);
 
@@ -618,6 +622,60 @@ export class Game {
     // Boost pads with isRemote — server handles pickup/respawn
     this.boostPads = new BoostPads(this.scene, true);
     this.explosionManager = new ExplosionManager(this.scene);
+    this._initTrails(); // car ribbons attached in _createMultiplayerCars
+  }
+
+  // ========== LIGHTWEIGHT FX (trails, sparks, arena pulses) ==========
+
+  _initTrails() {
+    this.trails = new TrailManager(this.scene);
+    this.trails.setBall(this.ball);
+    this._applyFxSettings();
+  }
+
+  /** Re-read the display settings that gate the cheap FX (live-toggleable). */
+  _applyFxSettings() {
+    const ds = getDisplaySettings();
+    this._sparksEnabled = ds.particles !== false;
+    if (this.trails) this.trails.setEnabled(ds.trails !== false);
+  }
+
+  /**
+   * Per-frame FX driven by the ball's impulse detector (see Ball.update):
+   * spark burst along the new velocity, a tick on the arena grid, and a
+   * small FOV punch for the local player's own touches.
+   */
+  _updateBallImpactFX() {
+    const ball = this.ball;
+    if (!ball || ball.lastImpulse <= 0) return;
+    const strength = ball.lastImpulse;
+    ball.lastImpulse = 0; // consume: Ball.update() is not called every frame in every state (replay)
+    if (this._sparksEnabled) {
+      this.explosionManager.spawnHitSparks(ball.body.position, ball.lastImpulseDir, strength, COLORS.BALL);
+    }
+    if (this.arena) this.arena.pulse(Math.min(strength / 80, 1) * 0.35);
+    // Own touch: the local car is within reach of the ball
+    const pc = this.playerCar;
+    if (pc && this.cameraController && !pc.demolished) {
+      const dx = pc.body.position.x - ball.body.position.x;
+      const dy = pc.body.position.y - ball.body.position.y;
+      const dz = pc.body.position.z - ball.body.position.z;
+      if (dx * dx + dy * dy + dz * dz < 36) {
+        this.cameraController.kickFov(1 + Math.min(strength / 80, 1) * 3);
+      }
+    }
+  }
+
+  /** Goal FX shared by singleplayer, freeplay and multiplayer paths. */
+  _goalFX(goalColor) {
+    if (this.arena) {
+      this.arena.pulse(1.6);
+      this.arena.flashColor(goalColor, 1);
+    }
+    if (this.cameraController) {
+      this.cameraController.shakeGoal();
+      this.cameraController.kickFov(5);
+    }
   }
 
   _initMultiplayer() {
@@ -677,9 +735,11 @@ export class Game {
       const color = isBlueTeam ? COLORS.CYAN : COLORS.ORANGE;
       victim.demolish();
       this.explosionManager.spawnExplosion(pos, color);
+      if (this.arena) this.arena.pulse(0.5);
       audioManager.playDemolition();
       if (data.victimIdx === this.playerNumber) {
         this.hud.showDemolished();
+        if (this.cameraController) this.cameraController.shakeDemolition();
       }
     });
 
@@ -701,7 +761,7 @@ export class Game {
 
       // Spawn goal explosion at ball position
       const goalColor = data.team === 'orange' ? COLORS.GOAL_ORANGE : COLORS.GOAL_BLUE;
-      if (this.cameraController) this.cameraController.shakeGoal();
+      this._goalFX(goalColor);
       if (data.ballPos) {
         this.explosionManager.spawnGoalExplosion(data.ballPos, goalColor);
         this.replayBuffer.addEvent({ type: 'goal', x: data.ballPos.x, y: data.ballPos.y, z: data.ballPos.z, color: goalColor });
@@ -849,6 +909,7 @@ export class Game {
 
     this._rebuildCarLookup();
     this.cameraController.setTarget(this.playerCar);
+    if (this.trails) this.trails.setCars(this.allCars);
   }
 
   /** Rebuild the body -> car / slot maps used by the collide handlers. */
@@ -1023,6 +1084,7 @@ export class Game {
     const color = idx < half ? COLORS.CYAN : COLORS.ORANGE;
     car.demolish();
     this.explosionManager.spawnExplosion(pos, color);
+    if (this.arena) this.arena.pulse(0.5);
     this.replayBuffer.addEvent({ type: 'demolish', x: pos.x, y: pos.y, z: pos.z, color });
     if (this.cameraController) this.cameraController.shakeDemolition();
     if (car === this.playerCar) this.hud.showDemolished();
@@ -1062,6 +1124,7 @@ export class Game {
         audioManager.playCountdownBeep(true);
         clearInterval(this._countdownInterval);
         this.state = 'playing';
+        if (this.arena) this.arena.pulse(0.9); // kickoff: whole arena lights up on GO
         audioManager.startCrowdAmbiance();
       }
     }, 1000);
@@ -1142,6 +1205,12 @@ export class Game {
 
     // Gamepad-aware controls hint
     this._updateControlsHint();
+
+    // Cheap per-frame FX: reactive arena grid, ball impact sparks, ribbons.
+    // Runs after every mode's sim/sync so meshes are at their final positions.
+    if (this.arena) this.arena.update(dt);
+    this._updateBallImpactFX();
+    if (this.trails) this.trails.update(dt, this.camera);
 
     this.composer.render();
   }
@@ -1685,7 +1754,7 @@ export class Game {
     const goalPos = { x: ballPos.x, y: ballPos.y, z: ballPos.z };
     this.explosionManager.spawnGoalExplosion(goalPos, goalColor);
     this.replayBuffer.addEvent({ type: 'goal', x: goalPos.x, y: goalPos.y, z: goalPos.z, color: goalColor });
-    if (this.cameraController) this.cameraController.shakeGoal();
+    this._goalFX(goalColor);
     // Flush the event into the buffer — no more frames are recorded after this
     this.replayBuffer.record(this.ball, this.allCars, this.boostPads);
 
@@ -1726,7 +1795,7 @@ export class Game {
     const ballPos = this.ball.body.position;
     const goalColor = goalSide === 1 ? COLORS.GOAL_ORANGE : COLORS.GOAL_BLUE;
     this.explosionManager.spawnGoalExplosion({ x: ballPos.x, y: ballPos.y, z: ballPos.z }, goalColor);
-    if (this.cameraController) this.cameraController.shakeGoal();
+    this._goalFX(goalColor);
 
     if (goalSide === 1) {
       this.scores.orange++;
@@ -1766,6 +1835,9 @@ export class Game {
     this.replayPlayer.start(frames);
     this.state = 'replay';
     this._replaySkipped = false;
+    // ReplayPlayer drives the camera; drop any speed/kick FOV so it does not freeze mid-punch
+    if (this.cameraController) this.cameraController.settleFov();
+    if (this.trails) this.trails.clear();
     this.hud.showReplayIndicator(true, this._lastScorerName || null);
 
     // Snapshot current keys so held keys don't instantly skip
@@ -1792,8 +1864,10 @@ export class Game {
         for (const e of evts) {
           if (e.type === 'goal') {
             this.explosionManager.spawnGoalExplosion(e, e.color);
+            if (this.arena) { this.arena.pulse(1.6); this.arena.flashColor(e.color, 1); }
           } else if (e.type === 'demolish') {
             this.explosionManager.spawnExplosion(e, e.color);
+            if (this.arena) this.arena.pulse(0.5);
           }
         }
       }
@@ -1944,8 +2018,11 @@ export class Game {
       }
     }
 
+    if (this.trails) this.trails.clear();
+
     if (data.count === 0) {
       this.state = 'playing';
+      if (this.arena) this.arena.pulse(0.9);
       audioManager.startCrowdAmbiance();
     }
   }
@@ -2275,6 +2352,10 @@ export class Game {
     // Clear explosions and landing rings
     if (this.explosionManager) {
       this.explosionManager.clear();
+    }
+    if (this.trails) {
+      this.trails.dispose();
+      this.trails = null;
     }
 
     // Null out references
