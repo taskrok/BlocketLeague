@@ -52,6 +52,114 @@ export class Progression {
     this._matchStartTime = null;
     this._pendingXP = []; // { label, amount } entries from current match
     this._lastRankChange = null; // store last match rank change for display
+    this._lastRewards = null; // server 'matchRewards' payload (challenges, streak, achievements, unlocks)
+  }
+
+  /** Store the server-computed retention rewards for the match that just ended. */
+  setMatchRewards(data) {
+    this._lastRewards = data && typeof data === 'object' ? data : null;
+  }
+
+  getLastRewards() {
+    return this._lastRewards;
+  }
+
+  /**
+   * Post-match rewards screen: daily streak bonus, challenge progress,
+   * achievements and cosmetic unlocks. Waits briefly for the server payload
+   * (it is emitted right after 'progression') and resolves immediately when
+   * nothing noteworthy happened this match.
+   * @returns {Promise}
+   */
+  showRewardsScreen() {
+    const waitForData = (tries) => {
+      if (this._lastRewards || tries <= 0) return Promise.resolve(this._lastRewards);
+      return new Promise((r) => setTimeout(r, 100)).then(() => waitForData(tries - 1));
+    };
+
+    return waitForData(15).then((rw) => {
+      this._lastRewards = null;
+      if (!rw) return;
+      const challenges = Array.isArray(rw.challenges) ? rw.challenges : [];
+      const achievements = Array.isArray(rw.newAchievements) ? rw.newAchievements : [];
+      const unlocks = Array.isArray(rw.newUnlocks) ? rw.newUnlocks.filter(u => u.type === 'boost') : [];
+      const progressed = challenges.some(c => c.delta > 0);
+      const notable = (rw.streakXP > 0) || progressed || achievements.length > 0 || unlocks.length > 0;
+      if (!notable) return;
+
+      return new Promise((resolve) => {
+        const container = document.getElementById('game-container') || document.body;
+        const overlay = document.createElement('div');
+        overlay.id = 'rewards-screen';
+        overlay.className = 'rw-overlay';
+
+        let dismissed = false;
+        const dismiss = () => {
+          if (dismissed) return;
+          dismissed = true;
+          overlay.removeEventListener('click', dismiss);
+          overlay.style.opacity = '0';
+          setTimeout(() => {
+            if (overlay.parentNode) overlay.remove();
+            resolve();
+          }, 400);
+        };
+        overlay.addEventListener('click', dismiss);
+
+        const esc = (s) => String(s == null ? '' : s).replace(/[&<>"]/g, (ch) => (
+          { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[ch]
+        ));
+
+        let html = '<div class="rw-title">MATCH PROGRESS</div>';
+
+        if (rw.streakXP > 0) {
+          html += `<div class="rw-streak"><span class="rw-flame">&#128293;</span>DAY ${esc(rw.streak)} STREAK<span class="rw-xp">+${esc(rw.streakXP)} XP</span></div>`;
+        }
+
+        if (achievements.length > 0) {
+          html += '<div class="rw-section">ACHIEVEMENT UNLOCKED</div>';
+          for (const a of achievements) {
+            html += `<div class="rw-row rw-ach"><span class="rw-ach-name">${esc(a.name)}</span><span class="rw-ach-title">Title: ${esc(a.title)}</span><span class="rw-xp">+${esc(a.xp)} XP</span></div>`;
+          }
+        }
+
+        if (unlocks.length > 0) {
+          html += '<div class="rw-section">NEW BOOST TRAIL</div>';
+          for (const u of unlocks) {
+            const hex = typeof u.hex === 'number' ? '#' + u.hex.toString(16).padStart(6, '0') : '#ff8800';
+            html += `<div class="rw-row rw-unlock"><span class="rw-swatch" style="background:${hex};box-shadow:0 0 10px ${hex}"></span><span>${esc(u.name)}</span><span class="rw-hint">Equip in Profile &rsaquo; Garage</span></div>`;
+          }
+        }
+
+        if (progressed) {
+          html += '<div class="rw-section">CHALLENGES</div>';
+          for (const c of challenges) {
+            if (!(c.delta > 0)) continue;
+            const pct = Math.round(Math.min(1, c.progress / Math.max(1, c.target)) * 100);
+            const prevPct = Math.round(Math.min(1, (c.progress - c.delta) / Math.max(1, c.target)) * 100);
+            const done = c.completed ? ' rw-done' : '';
+            html += `<div class="rw-row rw-ch${done}">` +
+              `<div class="rw-ch-head"><span class="rw-ch-name">${c.period === 'weekly' ? '<span class="rw-tag">WEEKLY</span>' : ''}${esc(c.name)}</span>` +
+              `<span class="rw-ch-count">${c.justCompleted ? `<span class="rw-xp">+${esc(c.xp)} XP</span>` : `${esc(c.progress)}/${esc(c.target)}`}</span></div>` +
+              `<div class="rw-bar"><div class="rw-bar-fill" data-to="${pct}" style="width:${prevPct}%"></div></div></div>`;
+          }
+        }
+
+        overlay.innerHTML = html;
+        container.appendChild(overlay);
+
+        requestAnimationFrame(() => {
+          overlay.style.opacity = '1';
+          setTimeout(() => {
+            overlay.querySelectorAll('.rw-bar-fill').forEach((el) => {
+              el.style.width = el.getAttribute('data-to') + '%';
+            });
+          }, 250);
+        });
+
+        setTimeout(dismiss, 4000);
+      });
+    });
   }
 
   _load() {

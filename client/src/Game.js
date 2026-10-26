@@ -503,8 +503,13 @@ export class Game {
     // so _updateNameplates only touches the DOM when something changed.
     this._nameplateState = [];
     const container = document.getElementById('game-container');
+    const escapeHTML = (s) => String(s == null ? '' : s).replace(/[&<>"]/g, (ch) => (
+      { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[ch]
+    ));
+    const titles = this._carTitles || [];
     for (let i = 0; i < this.allCars.length; i++) {
-      if (i === 0) { // skip player car
+      // Skip the local player's own car (slot 0 offline, this.playerNumber online)
+      if (!this.allCars[i] || this.allCars[i] === this.playerCar) {
         this._nameplates.push(null);
         this._nameplateState.push(null);
         continue;
@@ -520,9 +525,10 @@ export class Game {
       // Anchor at the container origin; placement is done entirely via transform
       el.style.left = '0';
       el.style.top = '0';
-      // Boost indicator circle (SVG) + name
+      // Boost indicator circle (SVG) + name (+ equipped title, if any)
       const circ = 2 * Math.PI * 5; // r=5
-      el.innerHTML = `<svg class="np-boost" width="14" height="14" viewBox="0 0 14 14"><circle cx="7" cy="7" r="5" fill="none" stroke="rgba(255,255,255,0.25)" stroke-width="2"/><circle class="np-boost-fill" cx="7" cy="7" r="5" fill="none" stroke="${teamColor}" stroke-width="2" stroke-dasharray="${circ}" stroke-dashoffset="0" transform="rotate(-90 7 7)"/></svg><span class="np-name">${this._carNames[i] || ''}</span>`;
+      const title = titles[i] ? `<span class="np-title">${escapeHTML(titles[i])}</span>` : '';
+      el.innerHTML = `<svg class="np-boost" width="14" height="14" viewBox="0 0 14 14"><circle cx="7" cy="7" r="5" fill="none" stroke="rgba(255,255,255,0.25)" stroke-width="2"/><circle class="np-boost-fill" cx="7" cy="7" r="5" fill="none" stroke="${teamColor}" stroke-width="2" stroke-dasharray="${circ}" stroke-dashoffset="0" transform="rotate(-90 7 7)"/></svg><span class="np-text"><span class="np-name">${escapeHTML(this._carNames[i] || '')}</span>${title}</span>`;
       container.appendChild(el);
       this._nameplates.push(el);
       this._nameplateState.push({
@@ -542,7 +548,7 @@ export class Game {
     const halfH = this.canvas.clientHeight / 2;
     const NP_CIRC = 2 * Math.PI * 5;
 
-    for (let i = 1; i < this.allCars.length; i++) {
+    for (let i = 0; i < this.allCars.length; i++) {
       const el = this._nameplates[i];
       if (!el) continue;
       const st = this._nameplateState[i];
@@ -708,6 +714,12 @@ export class Game {
       this._createMultiplayerCars(data);
     });
 
+    // Server-computed retention rewards (challenges, streak, achievements,
+    // unlocks); displayed after the XP and rank screens on gameOver.
+    this.network.on('matchRewards', (data) => {
+      progression.setMatchRewards(data);
+    });
+
     this.network.on('countdown', (data) => {
       // Defer countdown events during replay/celebration — apply after replay finishes
       if (this.state === 'replay' || this.state === 'goal_celebration') {
@@ -830,9 +842,11 @@ export class Game {
         const isOvertimeWin = playerWon && this.isOvertime;
         const xpResult = progression.endMatch(playerStats, playerWon, 0, { isMVP, isOvertimeWin });
         if (xpResult) {
-          // Chain: XP screen -> rank change screen
+          // Chain: XP screen -> rank change screen -> challenges/achievements
           progression.showXPScreen(xpResult).then(() => {
             return progression.showRankChangeScreen();
+          }).then(() => {
+            return progression.showRewardsScreen();
           });
         }
       }
@@ -923,6 +937,26 @@ export class Game {
     this._rebuildCarLookup();
     this.cameraController.setTarget(this.playerCar);
     if (this.trails) this.trails.setCars(this.allCars);
+
+    // Names + equipped titles for nameplates and the end-of-match scoreboard.
+    // Titles arrive via the server-sanitized variantConfig of each player.
+    const names = new Array(this.maxPlayers).fill('');
+    const titles = new Array(this.maxPlayers).fill(null);
+    let myName = '';
+    try { myName = localStorage.getItem('blocket-player-name') || ''; } catch {}
+    names[mySlot] = myName || 'You';
+    titles[mySlot] = (this._localVariant && this._localVariant.title) || null;
+    for (const other of otherPlayers) {
+      names[other.slot] = other.playerName || (other.isBot ? `Bot ${other.slot + 1}` : `Player ${other.slot + 1}`);
+      titles[other.slot] = (other.variantConfig && other.variantConfig.title) || null;
+    }
+    this._carNames = names;
+    this._carTitles = titles;
+    this.hud.setPlayerNames(names);
+    if (this._nameplates) {
+      for (const el of this._nameplates) { if (el) el.remove(); }
+    }
+    this._initNameplates();
   }
 
   /** Rebuild the body -> car / slot maps used by the collide handlers. */

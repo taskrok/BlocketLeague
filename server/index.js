@@ -13,7 +13,9 @@ import { decodeInput } from '../shared/BinaryProtocol.js';
 import {
   initDatabase, generatePlayerId, ensurePlayer,
   getPlayerStats, getLeaderboard, getMatchHistory,
+  getProfile, getLoadout, setLoadout, getLeaderboardPage,
 } from './database.js';
+import { sanitizeVariantConfig } from '../shared/Meta.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
@@ -67,6 +69,14 @@ const INPUT_WINDOW_MS = 1000 / 60;        // one physics tick
 const INPUT_MAX_PER_WINDOW = 3;           // inputs accepted per tick window
 const QUICKCHAT_MIN_INTERVAL_MS = 500;    // max 2 quick-chats per second
 const PING_MIN_INTERVAL_MS = 250;         // max 4 ping_measure per second
+const META_WINDOW_MS = 5000;              // profile/loadout/leaderboard requests...
+const META_MAX_PER_WINDOW = 12;           // ...accepted per socket per window
+const MAX_NAME_LENGTH = 16;
+
+/** Clamp a client-supplied display name to a plain string of bounded length. */
+function cleanPlayerName(v) {
+  return typeof v === 'string' ? v.replace(/[\u0000-\u001f\u007f]/g, '').trim().slice(0, MAX_NAME_LENGTH) : '';
+}
 
 function generateRoomCode() {
   let code;
@@ -255,6 +265,11 @@ function startMatchedGame(players, mode) {
 // Map socketId -> playerId (persistent UUID)
 const playerIds = new Map();
 
+// Map socketId -> validated equipped cosmetics ({ boost, title }). Seeded from
+// the DB on connect and refreshed by setLoadout, so joining a room never
+// trusts the client's own variantConfig for anything unlock-gated.
+const playerLoadouts = new Map();
+
 // ========== SOCKET HANDLERS ==========
 
 io.on('connection', (socket) => {
@@ -268,8 +283,9 @@ io.on('connection', (socket) => {
   playerIds.set(socket.id, playerId);
 
   // Ensure player exists in database and send back ID + progression + rank data
-  const playerName = socket.handshake.query.playerName || '';
+  const playerName = cleanPlayerName(socket.handshake.query.playerName);
   ensurePlayer(playerId, playerName);
+  playerLoadouts.set(socket.id, getLoadout(playerId));
   const stats = getPlayerStats(playerId);
   socket.emit('playerId', {
     playerId,
@@ -287,8 +303,8 @@ io.on('connection', (socket) => {
   socket.on('createRoom', (data) => {
     const mode = data && data.mode === '2v2' ? '2v2' : '1v1';
     const maxPlayers = mode === '2v2' ? 4 : 2;
-    const variantConfig = data && data.variantConfig ? data.variantConfig : {};
-    const playerName = (data && data.playerName) || '';
+    const variantConfig = sanitizeVariantConfig(data && data.variantConfig, playerLoadouts.get(socket.id));
+    const playerName = cleanPlayerName(data && data.playerName);
 
     const code = generateRoomCode();
     const room = createGameRoom(code, maxPlayers);
@@ -315,9 +331,9 @@ io.on('connection', (socket) => {
   });
 
   socket.on('joinRoom', (data) => {
-    const code = (data && data.code || '').toUpperCase().trim();
-    const variantConfig = data && data.variantConfig ? data.variantConfig : {};
-    const playerName = (data && data.playerName) || '';
+    const code = (data && typeof data.code === 'string' ? data.code : '').toUpperCase().trim().slice(0, 8);
+    const variantConfig = sanitizeVariantConfig(data && data.variantConfig, playerLoadouts.get(socket.id));
+    const playerName = cleanPlayerName(data && data.playerName);
 
     const room = rooms.get(code);
     if (!room) {
@@ -336,8 +352,8 @@ io.on('connection', (socket) => {
   });
 
   socket.on('quickMatch', (data) => {
-    const variantConfig = data && data.variantConfig ? data.variantConfig : {};
-    const playerName = (data && data.playerName) || '';
+    const variantConfig = sanitizeVariantConfig(data && data.variantConfig, playerLoadouts.get(socket.id));
+    const playerName = cleanPlayerName(data && data.playerName);
     const mode = (data && data.mode === '2v2') ? '2v2' : '1v1';
 
     addToQueue(socket, mode, variantConfig, playerName);
@@ -471,8 +487,47 @@ io.on('connection', (socket) => {
     }
   });
 
+  // --- Retention loop API (profile, loadout, paged leaderboard) ---
+  // Fixed-window limit shared by the three events: these hit SQLite, and the
+  // lobby only needs a handful of calls per minute.
+  let metaWindowStart = 0;
+  let metaWindowCount = 0;
+  function metaAllowed() {
+    const now = performance.now();
+    if (now - metaWindowStart >= META_WINDOW_MS) {
+      metaWindowStart = now;
+      metaWindowCount = 0;
+    }
+    return ++metaWindowCount <= META_MAX_PER_WINDOW;
+  }
+
+  socket.on('getProfile', (_, callback) => {
+    if (typeof callback !== 'function' || !metaAllowed()) return;
+    const pid = playerIds.get(socket.id);
+    if (!pid) return;
+    callback(getProfile(pid));
+  });
+
+  socket.on('setLoadout', (data, callback) => {
+    if (!metaAllowed()) return;
+    const pid = playerIds.get(socket.id);
+    if (!pid) return;
+    // setLoadout validates ids/lengths and drops anything locked
+    const clean = setLoadout(pid, data && typeof data === 'object' ? data : {});
+    playerLoadouts.set(socket.id, clean);
+    if (typeof callback === 'function') callback(clean);
+  });
+
+  socket.on('getLeaderboardPage', (data, callback) => {
+    if (typeof callback !== 'function' || !metaAllowed()) return;
+    const mode = data && data.mode === '2v2' ? '2v2' : '1v1';
+    const page = data && Number.isInteger(data.page) ? data.page : 0;
+    callback(getLeaderboardPage(mode, page, playerIds.get(socket.id) || null));
+  });
+
   socket.on('disconnect', () => {
     console.log(`Player disconnected: ${socket.id}`);
+    playerLoadouts.delete(socket.id);
 
     // Remove from matchmaking queue if queued
     removeFromQueue(socket.id);
