@@ -464,6 +464,7 @@ export function buildLobbySettings(container) {
     { key: 'antialias', label: 'Anti-aliasing (restart required)' },
     { key: 'nameplates', label: 'Car nameplates' },
     { key: 'particles', label: 'Particles & debris' },
+    { key: 'trails', label: 'Ball & boost trails' },
     { key: 'fpsCounter', label: 'FPS counter' },
   ];
 

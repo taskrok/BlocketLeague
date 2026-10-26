@@ -14,6 +14,12 @@ const _ballPos = new THREE.Vector3();
 const _carToBall = new THREE.Vector3();
 const _ballCamPos = new THREE.Vector3();
 
+// Dynamic FOV tuning (degrees / world units per second)
+const SPEED_FOV_START = 22;   // no widening below this speed
+const SPEED_FOV_END = 46;     // CAR.BOOST_MAX_SPEED
+const SPEED_FOV_MAX = 6;      // extra degrees at max speed
+const FOV_KICK_MAX = 10;      // cap on stacked transient kicks
+
 export class CameraController {
   constructor(camera) {
     this.camera = camera;
@@ -40,6 +46,13 @@ export class CameraController {
     // Camera shake system
     this._shakes = [];              // active shake instances
     this._shakeOffset = new THREE.Vector3();
+
+    // FOV dynamics: base (from settings) + speed widening + transient kicks.
+    // camera.fov is only written (and the projection matrix only rebuilt)
+    // when the result actually changes.
+    this.baseFov = camera.fov;
+    this._speedFov = 0;   // smoothed widening at high speed (0..SPEED_FOV_MAX)
+    this._fovKick = 0;    // transient punch from hits/goals, decays fast
   }
 
   setTarget(car) {
@@ -56,7 +69,7 @@ export class CameraController {
 
   getSettings() {
     return {
-      fov: this.camera.fov,
+      fov: this.baseFov,
       distance: this.distance,
       height: this.height,
       smoothness: this.smoothSpeed,
@@ -65,7 +78,8 @@ export class CameraController {
 
   setSettings(settings) {
     if (settings.fov !== undefined) {
-      this.camera.fov = settings.fov;
+      this.baseFov = settings.fov;
+      this.camera.fov = settings.fov + this._speedFov + this._fovKick;
       this.camera.updateProjectionMatrix();
     }
     if (settings.distance !== undefined) this.distance = settings.distance;
@@ -110,6 +124,43 @@ export class CameraController {
     this.shake(intensity, 0.15);
   }
 
+  // --- FOV kick / speed FOV ---
+
+  /** Transient FOV punch in degrees (stacks, clamped). */
+  kickFov(degrees) {
+    this._fovKick = Math.min(this._fovKick + degrees, FOV_KICK_MAX);
+  }
+
+  /** Drop all dynamic FOV immediately (used when another system takes the camera). */
+  settleFov() {
+    this._speedFov = 0;
+    this._fovKick = 0;
+    this._applyFov();
+  }
+
+  _updateFov(dt, speed) {
+    // Speed widening: ramps in between SPEED_FOV_START and SPEED_FOV_END
+    let t = (speed - SPEED_FOV_START) / (SPEED_FOV_END - SPEED_FOV_START);
+    if (t < 0) t = 0; else if (t > 1) t = 1;
+    const target = t * t * SPEED_FOV_MAX;
+    this._speedFov += (target - this._speedFov) * Math.min(1, 4 * dt);
+
+    // Kick decays exponentially
+    if (this._fovKick > 0) {
+      this._fovKick *= Math.exp(-9 * dt);
+      if (this._fovKick < 0.02) this._fovKick = 0;
+    }
+    this._applyFov();
+  }
+
+  _applyFov() {
+    const fov = this.baseFov + this._speedFov + this._fovKick;
+    if (Math.abs(fov - this.camera.fov) > 0.01) {
+      this.camera.fov = fov;
+      this.camera.updateProjectionMatrix();
+    }
+  }
+
   /** Compute combined shake offset from all active shakes */
   _updateShake(dt) {
     this._shakeOffset.set(0, 0, 0);
@@ -132,6 +183,8 @@ export class CameraController {
 
     // When demolished, orbit the ball instead of following the car underground
     if (this.target.demolished && this.ballTarget) {
+      this._updateShake(dt);
+      this._updateFov(dt, 0);
       this._updateDemolishedCam(dt);
       return;
     }
@@ -260,8 +313,9 @@ export class CameraController {
     // Keep camera above ground
     this.currentPos.y = Math.max(1, this.currentPos.y);
 
-    // Apply shake offset
+    // Apply shake offset + dynamic FOV
     this._updateShake(dt);
+    this._updateFov(dt, Math.sqrt(vel.x * vel.x + vel.y * vel.y + vel.z * vel.z));
 
     // Apply
     this.camera.position.copy(this.currentPos);

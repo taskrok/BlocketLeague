@@ -6,6 +6,14 @@ import * as THREE from 'three';
 import * as CANNON from 'cannon-es';
 import { BALL, ARENA, COLORS, COLLISION_GROUPS } from '../../shared/constants.js';
 
+// Impulse detector tuning: accumulated velocity change (units/s) that counts
+// as an impact, the accumulator's decay time constant, and the minimum gap
+// between two reported impacts (a ball scraping along a car/wall otherwise
+// fires every frame).
+const IMPULSE_THRESHOLD = 16;
+const IMPULSE_ACCUM_TAU = 0.07;
+const IMPULSE_COOLDOWN = 0.12;
+
 export class Ball {
   /**
    * @param {THREE.Scene} scene
@@ -47,6 +55,17 @@ export class Ball {
     // `visible` because changing the visible light count forces every lit
     // material in the scene to recompile; its intensity is driven instead.
     this._visible = true;
+
+    // Impulse detector: a sudden velocity change (car hit, wall/floor bounce)
+    // is exposed for one frame so VFX can react. Works identically whether the
+    // velocity comes from local physics or the server (isRemote).
+    // The velocity change is accumulated with a short decay so a hit that the
+    // network interpolation spreads over 2-3 frames still registers once.
+    this._prevVel = new THREE.Vector3();
+    this._dvAccum = new THREE.Vector3();
+    this._impulseCooldown = 0;
+    this.lastImpulse = 0;                       // magnitude (0 = none this frame)
+    this.lastImpulseDir = new THREE.Vector3();  // unit direction of the velocity change
   }
 
   /**
@@ -193,6 +212,27 @@ export class Ball {
       else if (pos.z > HL - R) { pos.z = HL - R; if (vel.z > 0) vel.z *= -CR; }
     }
 
+    // Impulse detection (after clamping so a MAX_SPEED clamp never registers)
+    const pv = this._prevVel;
+    const acc = this._dvAccum;
+    const decay = Math.exp(-dt / IMPULSE_ACCUM_TAU);
+    acc.x = acc.x * decay + (vel.x - pv.x);
+    acc.y = acc.y * decay + (vel.y - pv.y);
+    acc.z = acc.z * decay + (vel.z - pv.z);
+    pv.set(vel.x, vel.y, vel.z);
+    this._impulseCooldown -= dt;
+    const dv = acc.length();
+    if (dv > IMPULSE_THRESHOLD && this._impulseCooldown <= 0) {
+      this.lastImpulse = dv;
+      this.lastImpulseDir.set(acc.x / dv, acc.y / dv, acc.z / dv);
+      acc.set(0, 0, 0);
+      this._impulseCooldown = IMPULSE_COOLDOWN;
+      // Remote balls get no collide events; flash from the detector instead
+      if (this.isRemote) this.flash(dv);
+    } else {
+      this.lastImpulse = 0;
+    }
+
     // Sync position from physics
     this.mesh.position.copy(this.body.position);
 
@@ -250,6 +290,9 @@ export class Ball {
     this.body.position.set(0, this.radius + 0.5, 0);
     this.body.velocity.set(0, 0, 0);
     this.body.angularVelocity.set(0, 0, 0);
+    this._prevVel.set(0, 0, 0);
+    this._dvAccum.set(0, 0, 0);
+    this.lastImpulse = 0;
     this._spinQuat.identity();
     // Sync mesh immediately so visuals match reset position
     this.mesh.position.copy(this.body.position);
