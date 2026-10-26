@@ -5,6 +5,7 @@
 
 import { InputManager } from './InputManager.js';
 import { DISPLAY_DEFAULTS } from './GameSettings.js';
+import { audioManager } from './AudioManager.js';
 
 const CAMERA_STORAGE_KEY = 'blocket-camera-settings';
 const AUDIO_STORAGE_KEY = 'blocket-audio-settings';
@@ -133,13 +134,9 @@ export function buildLobbySettings(container) {
     keyBindings: loadJSON(KEY_BINDINGS_KEY, InputManager.getDefaultKeyBindings()),
     gpBindings: loadJSON(GP_BINDINGS_KEY, InputManager.getDefaultGpBindings()),
     gpSettings: loadJSON(GP_SETTINGS_KEY, InputManager.getDefaultGpSettings()),
-    audioVolume: (() => {
-      try {
-        const s = localStorage.getItem(AUDIO_STORAGE_KEY);
-        if (s) { const p = JSON.parse(s); if (typeof p.musicVolume === 'number') return p.musicVolume; }
-      } catch {}
-      return 0.5;
-    })(),
+    audioVolume: 0.5,
+    sfxVolume: 0.5,
+    sfxMuted: false,
     autoFullscreen: (() => {
       try {
         const s = localStorage.getItem(GENERAL_STORAGE_KEY);
@@ -157,6 +154,18 @@ export function buildLobbySettings(container) {
     _keyButtons: {},
     _gpButtons: {},
   };
+
+  try {
+    const s = localStorage.getItem(AUDIO_STORAGE_KEY);
+    if (s) {
+      const p = JSON.parse(s);
+      if (typeof p.musicVolume === 'number') state.audioVolume = p.musicVolume;
+      if (typeof p.sfxVolume === 'number') state.sfxVolume = p.sfxVolume;
+      if (typeof p.sfxMuted === 'boolean') state.sfxMuted = p.sfxMuted;
+    }
+  } catch {}
+  // Single writer for the audio key so music and SFX settings never clobber each other
+  const audioSnapshot = () => ({ musicVolume: state.audioVolume, sfxVolume: state.sfxVolume, sfxMuted: state.sfxMuted });
 
   container.innerHTML = '';
 
@@ -398,7 +407,7 @@ export function buildLobbySettings(container) {
     const val = parseFloat(audioInput.value);
     state.audioVolume = val;
     audioVal.textContent = Math.round(val * 100);
-    saveDebounced(AUDIO_STORAGE_KEY, () => ({ musicVolume: state.audioVolume }));
+    saveDebounced(AUDIO_STORAGE_KEY, audioSnapshot);
     // Apply immediately to lobby music if playing
     if (window.__blocketTitleMusic) {
       window.__blocketTitleMusic.volume = val;
@@ -409,7 +418,61 @@ export function buildLobbySettings(container) {
   audioRow.appendChild(audioInput);
   audioRow.appendChild(audioVal);
   audioWrap.appendChild(audioRow);
+
+  // SFX volume
+  const sfxRow = document.createElement('div');
+  sfxRow.className = 'cs-row';
+  const sfxLabel = document.createElement('label');
+  sfxLabel.className = 'cs-label';
+  sfxLabel.textContent = 'SFX Volume';
+  const sfxVal = document.createElement('span');
+  sfxVal.className = 'cs-value';
+  sfxVal.textContent = Math.round(state.sfxVolume * 100);
+  const sfxInput = document.createElement('input');
+  sfxInput.type = 'range';
+  sfxInput.className = 'cs-slider';
+  sfxInput.min = 0;
+  sfxInput.max = 1;
+  sfxInput.step = 0.01;
+  sfxInput.value = state.sfxVolume;
+  sfxInput.addEventListener('input', () => {
+    const val = parseFloat(sfxInput.value);
+    state.sfxVolume = val;
+    sfxVal.textContent = Math.round(val * 100);
+    audioManager.setMasterVolume(val);
+    saveDebounced(AUDIO_STORAGE_KEY, audioSnapshot);
+  });
+  sfxInput.addEventListener('change', () => flushSave(AUDIO_STORAGE_KEY));
+  sfxRow.appendChild(sfxLabel);
+  sfxRow.appendChild(sfxInput);
+  sfxRow.appendChild(sfxVal);
+  audioWrap.appendChild(sfxRow);
   audioPane.appendChild(audioWrap);
+
+  // Mute SFX
+  const muteRow = document.createElement('div');
+  muteRow.className = 'cs-row';
+  muteRow.style.cursor = 'pointer';
+  const muteCheck = document.createElement('input');
+  muteCheck.type = 'checkbox';
+  muteCheck.id = 'ls-sfx-mute';
+  muteCheck.checked = state.sfxMuted;
+  muteCheck.style.accentColor = '#00ffff';
+  muteCheck.style.cursor = 'pointer';
+  const muteLabel = document.createElement('label');
+  muteLabel.className = 'cs-label';
+  muteLabel.htmlFor = 'ls-sfx-mute';
+  muteLabel.textContent = 'Mute sound effects';
+  muteLabel.style.cursor = 'pointer';
+  muteCheck.addEventListener('change', () => {
+    state.sfxMuted = muteCheck.checked;
+    audioManager.setMuted(state.sfxMuted);
+    cancelPendingSave(AUDIO_STORAGE_KEY);
+    saveJSON(AUDIO_STORAGE_KEY, audioSnapshot());
+  });
+  muteRow.appendChild(muteCheck);
+  muteRow.appendChild(muteLabel);
+  audioPane.appendChild(muteRow);
 
   const audioResetBtn = document.createElement('button');
   audioResetBtn.className = 'cs-reset';
@@ -417,11 +480,18 @@ export function buildLobbySettings(container) {
   audioResetBtn.textContent = 'Reset to Defaults';
   audioResetBtn.addEventListener('click', () => {
     state.audioVolume = 0.5;
+    state.sfxVolume = 0.5;
+    state.sfxMuted = false;
     audioInput.value = 0.5;
     audioVal.textContent = '50';
+    sfxInput.value = 0.5;
+    sfxVal.textContent = '50';
+    muteCheck.checked = false;
     cancelPendingSave(AUDIO_STORAGE_KEY);
-    saveJSON(AUDIO_STORAGE_KEY, { musicVolume: 0.5 });
+    saveJSON(AUDIO_STORAGE_KEY, audioSnapshot());
     if (window.__blocketTitleMusic) window.__blocketTitleMusic.volume = 0.5;
+    audioManager.setMasterVolume(0.5);
+    audioManager.setMuted(false);
   });
   audioPane.appendChild(audioResetBtn);
   panes.audio = audioPane;

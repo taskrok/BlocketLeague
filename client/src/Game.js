@@ -831,33 +831,37 @@ export class Game {
     this.network.on('gameOver', (data) => {
       this.state = 'ended';
       audioManager.stopAll();
-      this.hud.showMatchEnd(data.blueScore, data.orangeScore, data.stats, data.mvpIdx, this.maxPlayers);
 
-      // Record progression for multiplayer
+      // Record progression for multiplayer (rank change arrives later via
+      // the 'progression' event; the results screen listens for it)
+      let xpResult = null;
       if (data.stats && this.playerNumber >= 0) {
         const playerStats = data.stats[this.playerNumber];
         const playerWon = (this.myTeam === 'blue' && data.blueScore > data.orangeScore) ||
                           (this.myTeam === 'orange' && data.orangeScore > data.blueScore);
         const isMVP = data.mvpIdx === this.playerNumber;
         const isOvertimeWin = playerWon && this.isOvertime;
-        const xpResult = progression.endMatch(playerStats, playerWon, 0, { isMVP, isOvertimeWin });
-        if (xpResult) {
-          // Chain: XP screen -> rank change screen -> challenges/achievements
-          progression.showXPScreen(xpResult).then(() => {
-            return progression.showRankChangeScreen();
-          }).then(() => {
-            return progression.showRewardsScreen();
-          });
-        }
+        xpResult = progression.endMatch(playerStats, playerWon, 0, { isMVP, isOvertimeWin });
       }
 
+      this.hud.showMatchEnd(data.blueScore, data.orangeScore, data.stats, data.mvpIdx, this.maxPlayers, {
+        localIdx: this.playerNumber,
+        localTeam: this.myTeam,
+        xpResult,
+        showRank: !!xpResult,
+      });
+      // Server-computed retention rewards (challenges, streak, achievements,
+      // unlocks) arrive via 'matchRewards'; show them over the results screen
+      // when there is something noteworthy.
+      if (xpResult) progression.showRewardsScreen();
+
       this._setupCelebration();
-      if (this.onMatchEnd) this.onMatchEnd();
+      if (this.onMatchEnd) this.onMatchEnd('gameOver');
     });
 
     this.network.on('playerLeft', () => {
       this.hud.showStatus('A player disconnected');
-      if (this.onMatchEnd) this.onMatchEnd();
+      if (this.onMatchEnd) this.onMatchEnd('playerLeft');
     });
 
     this.network.on('disconnected', () => {
@@ -1221,6 +1225,13 @@ export class Game {
 
     // Update debug overlay
     if (this.debugOverlay) this.debugOverlay.update();
+
+    // Results screen gamepad actions (Start = play again, Back = lobby).
+    // Either action destroys this Game synchronously, so stop the frame here.
+    if (this.state === 'ended') {
+      this.hud.pollMatchEndGamepad(this.input.getGamepad());
+      if (this._destroyed) return;
+    }
 
     // Camera always updates (except during replay — replay player drives camera)
     if (this.cameraController && this.state !== 'replay') {
@@ -2122,27 +2133,25 @@ export class Game {
   }
 
   _showEndStats() {
-    if (this.perfTracker) {
-      const winningTeam = this.scores.blue > this.scores.orange ? 'blue' : 'orange';
-      const mvpIdx = this.perfTracker.computeMVP(winningTeam);
-      this.hud.showMatchEnd(this.scores.blue, this.scores.orange, this.perfTracker.getStats(), mvpIdx, this.allCars.length);
-    } else {
-      this.hud.showMatchEnd(this.scores.blue, this.scores.orange);
-    }
+    const winningTeam = this.scores.blue > this.scores.orange ? 'blue' : 'orange';
+    const stats = this.perfTracker ? this.perfTracker.getStats() : null;
+    const mvpIdx = this.perfTracker ? this.perfTracker.computeMVP(winningTeam) : -1;
 
     // Record progression (player is always slot 0 in singleplayer)
-    if (this.mode === 'singleplayer') {
-      const stats = this.perfTracker.getStats();
+    let xpResult = null;
+    if (this.mode === 'singleplayer' && stats) {
       const playerStats = stats[0];
-      const playerWon = (this.myTeam === 'blue' && this.scores.blue > this.scores.orange) ||
-                        (this.myTeam === 'orange' && this.scores.orange > this.scores.blue);
-      const isMVP = false; // no MVP tracking in singleplayer
+      const playerWon = this.myTeam === winningTeam;
+      const isMVP = mvpIdx === 0;
       const isOvertimeWin = playerWon && this.isOvertime;
-      const xpResult = progression.endMatch(playerStats, playerWon, 0, { isMVP, isOvertimeWin });
-      if (xpResult) {
-        progression.showXPScreen(xpResult);
-      }
+      xpResult = progression.endMatch(playerStats, playerWon, 0, { isMVP, isOvertimeWin });
     }
+
+    this.hud.showMatchEnd(this.scores.blue, this.scores.orange, stats, mvpIdx, this.allCars.length, {
+      localIdx: 0,
+      localTeam: this.myTeam,
+      xpResult,
+    });
 
     this._setupCelebration();
   }

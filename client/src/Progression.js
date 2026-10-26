@@ -53,6 +53,9 @@ export class Progression {
     this._pendingXP = []; // { label, amount } entries from current match
     this._lastRankChange = null; // store last match rank change for display
     this._lastRewards = null; // server 'matchRewards' payload (challenges, streak, achievements, unlocks)
+    // Set by the HUD results screen while it is visible; called when the
+    // server's post-match progression event carries a rank change.
+    this.onRankChange = null;
   }
 
   /** Store the server-computed retention rewards for the match that just ended. */
@@ -243,6 +246,10 @@ export class Progression {
     this._data.unlockedCars = this.getUnlockedCarIndices(100);
     this._save();
     this.updateLobbyDisplay();
+
+    if (this._lastRankChange && this.onRankChange) {
+      this.onRankChange(this._lastRankChange);
+    }
   }
 
   // --- Accessors ---
@@ -369,6 +376,8 @@ export class Progression {
   endMatch(playerStats, won, aerialGoals = 0, extraData = {}) {
     if (!playerStats) return;
 
+    const xpBefore = this._data.xp;
+    const levelBefore = this._data.level;
     const s = this._data.stats;
     s.goals += playerStats.goals || 0;
     s.assists += playerStats.assists || 0;
@@ -442,352 +451,14 @@ export class Progression {
     this._data.unlockedCars = this.getUnlockedCarIndices(100); // generous max
 
     this._save();
-    return { entries: this._pendingXP, totalXP, newLevel: this._data.level };
-  }
-
-  // --- XP Screen UI ---
-
-  /**
-   * Show post-match XP breakdown overlay. Returns a Promise that resolves after the display.
-   * @param {object} xpResult - { entries, totalXP, newLevel } from endMatch()
-   * @returns {Promise}
-   */
-  showXPScreen(xpResult) {
-    if (!xpResult || !xpResult.entries || xpResult.entries.length === 0) {
-      return Promise.resolve();
-    }
-
-    return new Promise((resolve) => {
-      const container = document.getElementById('game-container') || document.body;
-
-      const overlay = document.createElement('div');
-      overlay.id = 'xp-screen';
-      Object.assign(overlay.style, {
-        position: 'fixed',
-        top: '0', left: '0', width: '100%', height: '100%',
-        background: 'rgba(0, 0, 0, 0.8)',
-        display: 'flex', flexDirection: 'column',
-        alignItems: 'center', justifyContent: 'center',
-        zIndex: '400',
-        fontFamily: "'Orbitron', sans-serif",
-        opacity: '0',
-        transition: 'opacity 0.4s',
-        cursor: 'pointer',
-      });
-
-      // Click to skip
-      let dismissed = false;
-      const dismiss = () => {
-        if (dismissed) return;
-        dismissed = true;
-        overlay.style.opacity = '0';
-        setTimeout(() => {
-          if (overlay.parentNode) overlay.remove();
-          resolve();
-        }, 400);
-      };
-      overlay.addEventListener('click', dismiss);
-
-      // Title
-      const title = document.createElement('div');
-      Object.assign(title.style, {
-        fontSize: '28px', fontWeight: '800', color: '#00ffff',
-        letterSpacing: '4px', marginBottom: '24px',
-        textShadow: '0 0 20px rgba(0, 255, 255, 0.5)',
-      });
-      title.textContent = 'MATCH REWARDS';
-      overlay.appendChild(title);
-
-      // XP entries
-      const list = document.createElement('div');
-      Object.assign(list.style, {
-        display: 'flex', flexDirection: 'column', gap: '8px',
-        marginBottom: '24px', minWidth: '280px',
-      });
-
-      for (const entry of xpResult.entries) {
-        const row = document.createElement('div');
-        Object.assign(row.style, {
-          display: 'flex', justifyContent: 'space-between',
-          padding: '6px 16px',
-          background: 'rgba(0, 255, 255, 0.05)',
-          borderRadius: '4px',
-          fontSize: '14px', letterSpacing: '1px',
-        });
-        const label = document.createElement('span');
-        label.style.color = 'rgba(255, 255, 255, 0.8)';
-        label.textContent = entry.label;
-        const amount = document.createElement('span');
-        amount.style.color = '#00ff88';
-        amount.style.fontWeight = '700';
-        amount.textContent = `+${entry.amount} XP`;
-        row.appendChild(label);
-        row.appendChild(amount);
-        list.appendChild(row);
-      }
-      overlay.appendChild(list);
-
-      // Total
-      const totalRow = document.createElement('div');
-      Object.assign(totalRow.style, {
-        fontSize: '20px', fontWeight: '800', color: '#00ff88',
-        letterSpacing: '2px', marginBottom: '20px',
-        textShadow: '0 0 16px rgba(0, 255, 136, 0.5)',
-      });
-      totalRow.textContent = `TOTAL: +${xpResult.totalXP} XP`;
-      overlay.appendChild(totalRow);
-
-      // Level + title
-      const levelRow = document.createElement('div');
-      Object.assign(levelRow.style, {
-        display: 'flex', alignItems: 'center', gap: '12px',
-        marginBottom: '8px',
-      });
-      const levelLabel = document.createElement('span');
-      Object.assign(levelLabel.style, {
-        fontSize: '16px', fontWeight: '700', color: '#fff',
-        letterSpacing: '2px',
-      });
-      const prestigePrefix = this.prestige > 0 ? '\u2605'.repeat(Math.min(this.prestige, 10)) + ' ' : '';
-      levelLabel.textContent = `${prestigePrefix}LEVEL ${this.level} - ${this.getLevelTitle()}`;
-      levelRow.appendChild(levelLabel);
-      overlay.appendChild(levelRow);
-
-      // XP progress bar
-      const barOuter = document.createElement('div');
-      Object.assign(barOuter.style, {
-        width: '280px', height: '12px',
-        background: 'rgba(255, 255, 255, 0.1)',
-        borderRadius: '6px', overflow: 'hidden',
-        border: '1px solid rgba(0, 255, 255, 0.3)',
-      });
-      const barFill = document.createElement('div');
-      const progress = this.getLevelProgress();
-      Object.assign(barFill.style, {
-        width: '0%', height: '100%',
-        background: 'linear-gradient(90deg, #00ffff, #00ff88)',
-        borderRadius: '6px',
-        transition: 'width 1.5s ease-out',
-      });
-      barOuter.appendChild(barFill);
-      overlay.appendChild(barOuter);
-
-      // XP text below bar
-      const xpText = document.createElement('div');
-      Object.assign(xpText.style, {
-        fontSize: '11px', color: 'rgba(255, 255, 255, 0.5)',
-        marginTop: '6px', letterSpacing: '1px',
-      });
-      const nextLevelXP = xpForLevel(this.level + 1);
-      xpText.textContent = `${this.xp} / ${nextLevelXP} XP`;
-      overlay.appendChild(xpText);
-
-      container.appendChild(overlay);
-
-      // Fade in
-      requestAnimationFrame(() => {
-        overlay.style.opacity = '1';
-        // Animate XP bar
-        setTimeout(() => {
-          barFill.style.width = `${Math.round(progress * 100)}%`;
-        }, 200);
-      });
-
-      // Auto-dismiss after 3 seconds
-      setTimeout(dismiss, 3000);
-    });
-  }
-
-  /**
-   * Show post-match rank change screen. Returns a Promise that resolves after the display.
-   * @returns {Promise}
-   */
-  showRankChangeScreen() {
-    const rankChange = this._lastRankChange;
-    if (!rankChange || rankChange.mmrDelta === null || rankChange.mmrDelta === undefined) {
-      return Promise.resolve();
-    }
-
-    return new Promise((resolve) => {
-      const container = document.getElementById('game-container') || document.body;
-
-      const overlay = document.createElement('div');
-      overlay.id = 'rank-change-screen';
-      Object.assign(overlay.style, {
-        position: 'fixed',
-        top: '0', left: '0', width: '100%', height: '100%',
-        background: 'rgba(0, 0, 0, 0.85)',
-        display: 'flex', flexDirection: 'column',
-        alignItems: 'center', justifyContent: 'center',
-        zIndex: '400',
-        fontFamily: "'Orbitron', sans-serif",
-        opacity: '0',
-        transition: 'opacity 0.4s',
-        cursor: 'pointer',
-      });
-
-      let dismissed = false;
-      const dismiss = () => {
-        if (dismissed) return;
-        dismissed = true;
-        overlay.style.opacity = '0';
-        setTimeout(() => {
-          if (overlay.parentNode) overlay.remove();
-          this.clearLastRankChange();
-          resolve();
-        }, 400);
-      };
-      overlay.addEventListener('click', dismiss);
-
-      const mode = rankChange.matchMode || '1v1';
-      const mmrAfter = rankChange.mmrAfter;
-      const rankInfo = getRankFromMMR(mmrAfter);
-      const rankColor = rankInfo.color;
-      const isRankUp = rankChange.rankBefore !== rankChange.rankAfter && rankChange.mmrDelta > 0;
-
-      // Rank up flash
-      if (isRankUp) {
-        overlay.style.background = `radial-gradient(circle, ${rankColor}22 0%, rgba(0,0,0,0.85) 70%)`;
-      }
-
-      // Rank name
-      const rankTitle = document.createElement('div');
-      Object.assign(rankTitle.style, {
-        fontSize: isRankUp ? '32px' : '24px',
-        fontWeight: '800',
-        color: rankColor,
-        letterSpacing: '4px',
-        marginBottom: '8px',
-        textShadow: `0 0 20px ${rankColor}80`,
-        transition: isRankUp ? 'transform 0.5s ease-out' : 'none',
-        transform: isRankUp ? 'scale(0)' : 'scale(1)',
-      });
-      rankTitle.textContent = rankInfo.fullName.toUpperCase();
-      overlay.appendChild(rankTitle);
-
-      // Rank up label
-      if (isRankUp) {
-        const rankUpLabel = document.createElement('div');
-        Object.assign(rankUpLabel.style, {
-          fontSize: '14px', fontWeight: '700',
-          color: '#00ff88', letterSpacing: '3px',
-          marginBottom: '16px',
-          textShadow: '0 0 12px rgba(0, 255, 136, 0.5)',
-        });
-        rankUpLabel.textContent = 'RANK UP';
-        overlay.appendChild(rankUpLabel);
-      }
-
-      // Mode label
-      const modeLabel = document.createElement('div');
-      Object.assign(modeLabel.style, {
-        fontSize: '11px', color: 'rgba(255,255,255,0.4)',
-        letterSpacing: '2px', marginBottom: '20px',
-      });
-      modeLabel.textContent = `COMPETITIVE ${mode.toUpperCase()}`;
-      overlay.appendChild(modeLabel);
-
-      // MMR change
-      const mmrRow = document.createElement('div');
-      Object.assign(mmrRow.style, {
-        display: 'flex', alignItems: 'center', gap: '16px',
-        marginBottom: '16px', fontSize: '16px',
-      });
-
-      const mmrBefore = document.createElement('span');
-      mmrBefore.style.color = 'rgba(255,255,255,0.5)';
-      mmrBefore.textContent = `MMR: ${rankChange.mmrBefore}`;
-      mmrRow.appendChild(mmrBefore);
-
-      const arrow = document.createElement('span');
-      arrow.style.color = 'rgba(255,255,255,0.3)';
-      arrow.textContent = '\u2192';
-      mmrRow.appendChild(arrow);
-
-      const mmrAfterEl = document.createElement('span');
-      mmrAfterEl.style.color = '#fff';
-      mmrAfterEl.style.fontWeight = '700';
-      mmrAfterEl.textContent = `${rankChange.mmrAfter}`;
-      mmrRow.appendChild(mmrAfterEl);
-
-      overlay.appendChild(mmrRow);
-
-      // Division progress bar
-      const divMin = rankInfo.min;
-      const divMax = rankInfo.max === Infinity ? rankInfo.min + 200 : rankInfo.max + 1;
-      const divProgress = rankInfo.max === Infinity ? 1.0 : rankInfo.progress;
-
-      const barContainer = document.createElement('div');
-      Object.assign(barContainer.style, {
-        width: '280px', marginBottom: '8px',
-      });
-
-      const barOuter = document.createElement('div');
-      Object.assign(barOuter.style, {
-        width: '100%', height: '10px',
-        background: 'rgba(255, 255, 255, 0.1)',
-        borderRadius: '5px', overflow: 'hidden',
-        border: `1px solid ${rankColor}40`,
-      });
-      const barFill = document.createElement('div');
-      Object.assign(barFill.style, {
-        width: '0%', height: '100%',
-        background: `linear-gradient(90deg, ${rankColor}88, ${rankColor})`,
-        borderRadius: '5px',
-        transition: 'width 1.2s ease-out',
-      });
-      barOuter.appendChild(barFill);
-      barContainer.appendChild(barOuter);
-
-      // Division labels
-      const divLabels = document.createElement('div');
-      Object.assign(divLabels.style, {
-        display: 'flex', justifyContent: 'space-between',
-        fontSize: '10px', color: 'rgba(255,255,255,0.3)',
-        marginTop: '4px', letterSpacing: '1px',
-      });
-      const divMinLabel = document.createElement('span');
-      divMinLabel.textContent = divMin.toString();
-      const divMaxLabel = document.createElement('span');
-      divMaxLabel.textContent = rankInfo.max === Infinity ? '' : (divMax).toString();
-      divLabels.appendChild(divMinLabel);
-      divLabels.appendChild(divMaxLabel);
-      barContainer.appendChild(divLabels);
-
-      overlay.appendChild(barContainer);
-
-      // Delta display
-      const deltaEl = document.createElement('div');
-      const deltaPositive = rankChange.mmrDelta >= 0;
-      Object.assign(deltaEl.style, {
-        fontSize: '20px', fontWeight: '800',
-        color: deltaPositive ? '#00ff88' : '#ff4444',
-        letterSpacing: '2px', marginTop: '12px',
-        textShadow: `0 0 16px ${deltaPositive ? 'rgba(0,255,136,0.5)' : 'rgba(255,68,68,0.5)'}`,
-      });
-      const deltaSign = deltaPositive ? '+' : '';
-      const deltaArrow = deltaPositive ? '\u2191' : '\u2193';
-      deltaEl.textContent = `${deltaSign}${rankChange.mmrDelta} MMR ${deltaArrow}`;
-      overlay.appendChild(deltaEl);
-
-      container.appendChild(overlay);
-
-      // Animate in
-      requestAnimationFrame(() => {
-        overlay.style.opacity = '1';
-        if (isRankUp) {
-          setTimeout(() => {
-            rankTitle.style.transform = 'scale(1)';
-          }, 200);
-        }
-        setTimeout(() => {
-          barFill.style.width = `${Math.round(Math.min(divProgress, 1) * 100)}%`;
-        }, 300);
-      });
-
-      // Auto-dismiss after 3 seconds
-      setTimeout(dismiss, 3000);
-    });
+    return {
+      entries: this._pendingXP,
+      totalXP,
+      newLevel: this._data.level,
+      xpBefore,
+      levelBefore,
+      xpAfter: this._data.xp,
+    };
   }
 
   // --- Lobby UI helpers ---
