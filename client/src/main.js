@@ -9,7 +9,7 @@ import { generateCarVariant } from './CarVariants.js';
 import { buildCarMesh } from './CarMeshBuilder.js';
 import { modelLoader } from './ModelLoader.js';
 import { COLORS, RANDOM_NAMES } from '../../shared/constants.js';
-import { getGeneralSettings } from './GameSettings.js';
+import { getGeneralSettings, getAudioSettings, saveAudioSettings } from './GameSettings.js';
 import { buildLobbySettings } from './LobbySettings.js';
 import { ARENA_THEMES } from './ArenaThemes.js';
 import { MUTATOR_PRESETS } from '../../shared/Mutators.js';
@@ -290,7 +290,7 @@ window.addEventListener('DOMContentLoaded', async () => {
   const initAudio = () => {
     if (!audioInited) {
       audioManager.init();
-      // Restore mute preference from localStorage
+      // Restore mixer preferences from localStorage
       try {
         const audioSettings = JSON.parse(localStorage.getItem('blocket-audio-settings') || '{}');
         if (audioSettings.sfxMuted) {
@@ -298,6 +298,9 @@ window.addEventListener('DOMContentLoaded', async () => {
         }
         if (typeof audioSettings.sfxVolume === 'number') {
           audioManager.setMasterVolume(audioSettings.sfxVolume);
+        }
+        if (typeof audioSettings.crowdVolume === 'number') {
+          audioManager.setCrowdVolume(audioSettings.crowdVolume);
         }
       } catch {}
       audioInited = true;
@@ -307,6 +310,31 @@ window.addEventListener('DOMContentLoaded', async () => {
   };
   document.addEventListener('click', initAudio);
   document.addEventListener('keydown', initAudio);
+
+  // UI feedback: every button click blips; hover blips only on real pointer devices.
+  // Registered after initAudio so the very first click already has a context.
+  document.addEventListener('click', (e) => {
+    const target = e.target;
+    if (target && target.closest && target.closest('button')) audioManager.playUIClick();
+  });
+  if (window.matchMedia && window.matchMedia('(hover: hover)').matches) {
+    document.addEventListener('mouseover', (e) => {
+      const target = e.target;
+      const btn = target && target.closest ? target.closest('button') : null;
+      if (!btn) return;
+      // Moving between children of the same button is not a new hover
+      if (e.relatedTarget && btn.contains(e.relatedTarget)) return;
+      audioManager.playUIHover();
+    });
+  }
+
+  // Keep the quick SFX controls in sync when the mixer panels change them
+  window.addEventListener('blocket-audio-settings-changed', (e) => {
+    const s = (e && e.detail) || {};
+    if (typeof s.sfxVolume === 'number') settingSfxVolume.value = s.sfxVolume;
+    if (typeof s.sfxMuted === 'boolean') settingSfxMute.checked = s.sfxMuted;
+    if (typeof s.musicVolume === 'number') lobbyVolumeSlider.value = s.musicVolume;
+  });
 
   // Lobby music controls
   lobbySkipBtn.addEventListener('click', (e) => {
@@ -322,14 +350,37 @@ window.addEventListener('DOMContentLoaded', async () => {
     const v = parseFloat(lobbyVolumeSlider.value);
     titleMusic.volume = v;
     clearTimeout(lobbyVolumeSaveTimer);
-    lobbyVolumeSaveTimer = setTimeout(() => {
-      try {
-        const audioSettings = JSON.parse(localStorage.getItem('blocket-audio-settings') || '{}');
-        audioSettings.musicVolume = v;
-        localStorage.setItem('blocket-audio-settings', JSON.stringify(audioSettings));
-      } catch {}
-    }, 250);
+    // Merge: this object also holds the SFX/crowd channels
+    lobbyVolumeSaveTimer = setTimeout(() => saveAudioSettings({ musicVolume: v }), 250);
   });
+
+  // --- Music fades: no hard cuts into or out of a match ---
+  let musicFadeTimer = null;
+  function fadeMusicTo(target, ms, done) {
+    if (musicFadeTimer) clearInterval(musicFadeTimer);
+    const from = titleMusic.volume;
+    const start = performance.now();
+    musicFadeTimer = setInterval(() => {
+      const k = Math.min((performance.now() - start) / ms, 1);
+      titleMusic.volume = from + (target - from) * k;
+      if (k >= 1) {
+        clearInterval(musicFadeTimer);
+        musicFadeTimer = null;
+        if (done) done();
+      }
+    }, 33);
+  }
+  function fadeMusicOut() {
+    fadeMusicTo(0, 500, () => {
+      titleMusic.pause();
+      titleMusic.volume = getAudioSettings().musicVolume; // restore for the next play()
+    });
+  }
+  function fadeMusicIn() {
+    titleMusic.volume = 0;
+    titleMusic.play().catch(() => {});
+    fadeMusicTo(getAudioSettings().musicVolume, 900);
+  }
 
   // Room lobby state
   let selectedRoomMode = null; // '1v1' | '2v2'
@@ -728,7 +779,7 @@ window.addEventListener('DOMContentLoaded', async () => {
     }
     lobby.style.display = '';
     startLobbyGamepadPoll();
-    if (musicStarted) titleMusic.play().catch(() => {});
+    if (musicStarted) fadeMusicIn();
     showScreen(lobbyButtons);
     roomLobby.style.display = 'none';
     carSelector.style.display = 'none';
@@ -885,7 +936,7 @@ window.addEventListener('DOMContentLoaded', async () => {
     stopPreview();
     disposePreview();
     carSelector.style.display = 'none';
-    titleMusic.pause();
+    fadeMusicOut();
     toast.style.opacity = '0';
     toast.style.pointerEvents = 'none';
     clearTimeout(toastTimer);

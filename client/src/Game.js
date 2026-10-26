@@ -761,7 +761,7 @@ export class Game {
       victim.demolish();
       this.explosionManager.spawnExplosion(pos, color);
       if (this.arena) this.arena.pulse(0.5);
-      audioManager.playDemolition();
+      audioManager.playDemolition(pos);
       if (data.victimIdx === this.playerNumber) {
         this.hud.showDemolished();
         if (this.cameraController) this.cameraController.shakeDemolition();
@@ -830,6 +830,7 @@ export class Game {
 
     this.network.on('gameOver', (data) => {
       this.state = 'ended';
+      audioManager.playMatchEnd();
       audioManager.stopAll();
 
       // Record progression for multiplayer (rank change arrives later via
@@ -1052,8 +1053,11 @@ export class Game {
     const hitPower = this.mutators.hitPower;
     this.ball.body.addEventListener('collide', (e) => {
       const other = e.body;
-      // Check if the other body is a car (collision filter group)
-      if (!(other.collisionFilterGroup & COLLISION_GROUPS.CAR)) return;
+      // Ball vs. arena: bounce SFX keyed off approach speed along the contact normal
+      if (!(other.collisionFilterGroup & COLLISION_GROUPS.CAR)) {
+        this._onBallArenaContact(e);
+        return;
+      }
 
       const car = this._carByBody.get(other) || null;
 
@@ -1085,13 +1089,132 @@ export class Game {
       const hitSpeed = Math.sqrt(impulse.x * impulse.x + impulse.y * impulse.y + impulse.z * impulse.z) * hitPower;
       this.ball.flash(hitSpeed);
       if (this.cameraController) this.cameraController.shakeHit(hitSpeed);
-      audioManager.playBallHit(hitSpeed);
+      audioManager.playBallHit(hitSpeed, ballPos);
 
       // Finalize touch AFTER impulse (singleplayer only)
       if (this.perfTracker && carIdx >= 0) {
+        const savesBefore = this.perfTracker.stats[carIdx].saves;
         this.perfTracker.finalizePendingTouch(this.ball.body.velocity);
+        // A save just happened: the stands gasp and cheer
+        if (this.perfTracker.stats[carIdx].saves > savesBefore) {
+          audioManager.playCrowdReaction('save');
+        }
       }
     });
+  }
+
+  /**
+   * Ball touched the arena (singleplayer physics). Classify the surface from the
+   * contact normal and play a floor/wall/ceiling bounce at the ball's position.
+   * 'collide' fires before the solver, so the normal velocity is the approach speed.
+   */
+  _onBallArenaContact(e) {
+    const contact = e.contact;
+    if (!contact) return;
+    const impact = Math.abs(contact.getImpactVelocityAlongNormal());
+    if (impact < 4) return;
+    // contact.ni points from bi to bj; flip it so it is the surface normal facing the ball
+    const ny = contact.bi === this.ball.body ? -contact.ni.y : contact.ni.y;
+    const surface = ny > 0.6 ? 'floor' : ny < -0.6 ? 'ceiling' : 'wall';
+    audioManager.playBallBounce(impact, surface, this.ball.body.position);
+  }
+
+  /**
+   * Multiplayer: the ball is server-driven, so impacts are inferred from velocity
+   * discontinuities in the interpolated state. A car within reach means a hit;
+   * otherwise a ball at a boundary means a bounce. Allocation-free.
+   */
+  _detectRemoteBallImpact(b) {
+    const pvx = this._mpBallVX, pvy = this._mpBallVY, pvz = this._mpBallVZ;
+    this._mpBallVX = b.vx; this._mpBallVY = b.vy; this._mpBallVZ = b.vz;
+    if (pvx === undefined) return;
+    if (this.state !== 'playing' && this.state !== 'overtime') return;
+
+    const dvx = b.vx - pvx, dvy = b.vy - pvy, dvz = b.vz - pvz;
+    const dv = Math.sqrt(dvx * dvx + dvy * dvy + dvz * dvz);
+    if (dv < 6) return;
+
+    const pos = this.ball.body.position; // visual body tracks the server ball
+    const R = BALL_CONST.RADIUS;
+
+    // Any car close enough to have touched it?
+    const reach = CAR_CONST.LENGTH + R + 2;
+    const reach2 = reach * reach;
+    const cars = this.allCars;
+    for (let i = 0; i < cars.length; i++) {
+      const car = cars[i];
+      if (!car || car.demolished) continue;
+      const cp = car.body.position;
+      const dx = cp.x - b.px, dy = cp.y - b.py, dz = cp.z - b.pz;
+      if (dx * dx + dy * dy + dz * dz < reach2) {
+        audioManager.playBallHit(dv, pos);
+        return;
+      }
+    }
+
+    const HL = ARENA_CONST.LENGTH / 2, HW = ARENA_CONST.WIDTH / 2, H = ARENA_CONST.HEIGHT;
+    const margin = R + 3;
+    const ax = Math.abs(b.px), az = Math.abs(b.pz);
+    if (b.py < margin && dvy > 0) {
+      audioManager.playBallBounce(dv, 'floor', pos);
+    } else if (b.py > H - margin) {
+      audioManager.playBallBounce(dv, 'ceiling', pos);
+    } else if (ax > HW - margin || az > HL - margin) {
+      audioManager.playBallBounce(dv, 'wall', pos);
+    } else {
+      // Rounded corners: outside the corner circle counts as a wall
+      const cr = ARENA_CONST.CORNER_RADIUS;
+      const cx = HW - cr, cz = HL - cr;
+      if (ax > cx && az > cz) {
+        const ox = ax - cx, oz = az - cz;
+        if (ox * ox + oz * oz > (cr - margin) * (cr - margin)) {
+          audioManager.playBallBounce(dv, 'wall', pos);
+          return;
+        }
+      }
+      // Mid-air, mid-field change with no car nearby: most likely a car we lag behind
+      audioManager.playBallHit(dv, pos);
+    }
+  }
+
+  /**
+   * Crowd tension from ball position: silent at midfield, rising through the
+   * last 50 units in front of either goal, strongest in the goal mouth, faster
+   * ball = louder. Overtime keeps a floor of tension. Throttled inside AudioManager.
+   */
+  _updateCrowdExcitement() {
+    const st = this.state;
+    if (st !== 'playing' && st !== 'overtime') {
+      audioManager.setCrowdExcitement(0);
+      return;
+    }
+    if (!this.ball) return;
+    const p = this.ball.body.position;
+    const HL = ARENA_CONST.LENGTH / 2;
+
+    let zone = (Math.abs(p.z) - (HL - 50)) / 50;
+    if (zone <= 0) {
+      audioManager.setCrowdExcitement(this.isOvertime ? 0.2 : 0);
+      return;
+    }
+    if (zone > 1) zone = 1;
+
+    const lateral = Math.abs(p.x) / (ARENA_CONST.GOAL_WIDTH * 1.2);
+    const aim = lateral < 1 ? 1 : Math.max(0.3, 1 - (lateral - 1) * 0.7);
+
+    let vx, vy, vz;
+    if (this._ballTarget) {
+      vx = this._ballTarget.vx; vy = this._ballTarget.vy; vz = this._ballTarget.vz;
+    } else {
+      const v = this.ball.body.velocity;
+      vx = v.x; vy = v.y; vz = v.z;
+    }
+    const speed = Math.sqrt(vx * vx + vy * vy + vz * vz);
+    const pace = 0.6 + 0.4 * Math.min(speed / 40, 1);
+
+    let x = zone * aim * pace;
+    if (this.isOvertime) x = 0.2 + x * 0.8;
+    audioManager.setCrowdExcitement(x);
   }
 
   // ========== DEMOLITION (singleplayer) ==========
@@ -1140,6 +1263,12 @@ export class Game {
 
     // Sub-supersonic bump
     handleBump(carA, carB);
+
+    // Metallic clank scaled by closing speed (both cars' listeners fire; the
+    // AudioManager's carBump interval dedupes the pair)
+    const va = carA.body.velocity, vb = carB.body.velocity;
+    const dvx = va.x - vb.x, dvy = va.y - vb.y, dvz = va.z - vb.z;
+    audioManager.playCarBump(Math.sqrt(dvx * dvx + dvy * dvy + dvz * dvz), carA.body.position);
   }
 
   _demolishCar(car) {
@@ -1154,7 +1283,7 @@ export class Game {
     this.replayBuffer.addEvent({ type: 'demolish', x: pos.x, y: pos.y, z: pos.z, color });
     if (this.cameraController) this.cameraController.shakeDemolition();
     if (car === this.playerCar) this.hud.showDemolished();
-    audioManager.playDemolition();
+    audioManager.playDemolition(pos);
   }
 
 
@@ -1237,6 +1366,10 @@ export class Game {
     if (this.cameraController && this.state !== 'replay') {
       this.cameraController.update(dt, inputState.ballCam, inputState.lookX);
     }
+
+    // 3D audio listener follows the camera; crowd tension follows the ball
+    audioManager.updateListener(this.camera);
+    this._updateCrowdExcitement();
 
     // HUD updates
     if (this.playerCar) {
@@ -1713,6 +1846,7 @@ export class Game {
     const ballData = interpState.ball;
     if (ballData) {
       this._ballTarget = ballData;
+      this._detectRemoteBallImpact(ballData);
     }
   }
 
@@ -1805,6 +1939,7 @@ export class Game {
         this.hud.showOvertime();
       } else {
         this.state = 'ended';
+        audioManager.playMatchEnd();
         audioManager.stopAll();
         this._showEndStats();
       }
@@ -1900,6 +2035,7 @@ export class Game {
     if (this._goalWasOvertime) {
       setTimeout(() => {
         this.state = 'ended';
+        audioManager.playMatchEnd();
         audioManager.stopAll();
         this._showEndStats();
       }, GAME.GOAL_RESET_TIME * 1000);
@@ -2066,6 +2202,7 @@ export class Game {
     this.network.clearSnapshots(); // discard stale pre-goal snapshots so they don't override reset positions
     this.replayBuffer.clear();
     this._ballTarget = null; // reset ball visual target so it picks up fresh server state
+    this._mpBallVX = undefined; // the kickoff teleport is not an impact
 
     // Reset all cars and ball to spawn positions before countdown begins
     // (server has already reset; this ensures client visuals match immediately)
