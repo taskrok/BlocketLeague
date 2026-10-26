@@ -4,6 +4,7 @@
 // ============================================
 
 import { InputManager } from './InputManager.js';
+import { audioManager } from './AudioManager.js';
 
 const CAMERA_STORAGE_KEY = 'blocket-camera-settings';
 const AUDIO_STORAGE_KEY = 'blocket-audio-settings';
@@ -94,6 +95,49 @@ function keyCodeToName(code) {
     CapsLock: 'Caps', Escape: 'Esc',
   };
   return map[code] || code;
+}
+
+// --- Audio mixer settings (shared by GameSettings, LobbySettings and main.js) ---
+// One localStorage object holds every channel. Writers MUST merge: the music
+// slider, the SFX quick-settings and the crowd slider live in different panels.
+export const AUDIO_DEFAULTS = {
+  musicVolume: 0.5,   // title/lobby music (HTMLAudioElement)
+  sfxVolume: 0.5,     // AudioManager master (all Web Audio output)
+  sfxMuted: false,
+  crowdVolume: 0.7,   // AudioManager crowd bus
+};
+
+export const AUDIO_MIXER_SLIDERS = [
+  { key: 'musicVolume', label: 'Music Volume' },
+  { key: 'sfxVolume',   label: 'SFX Volume' },
+  { key: 'crowdVolume', label: 'Crowd Volume' },
+];
+
+export function getAudioSettings() {
+  try {
+    const saved = localStorage.getItem(AUDIO_STORAGE_KEY);
+    if (saved) return { ...AUDIO_DEFAULTS, ...JSON.parse(saved) };
+  } catch {}
+  return { ...AUDIO_DEFAULTS };
+}
+
+/** Merge `partial` into the stored audio settings and notify other panels. */
+export function saveAudioSettings(partial) {
+  const merged = { ...getAudioSettings(), ...partial };
+  try { localStorage.setItem(AUDIO_STORAGE_KEY, JSON.stringify(merged)); } catch {}
+  try { window.dispatchEvent(new CustomEvent('blocket-audio-settings-changed', { detail: merged })); } catch {}
+  return merged;
+}
+
+/** Push one mixer channel to its output live (no persistence). */
+export function applyAudioChannel(key, value) {
+  if (key === 'musicVolume') {
+    if (window.__blocketTitleMusic) window.__blocketTitleMusic.volume = value;
+  } else if (key === 'sfxVolume') {
+    audioManager.setMasterVolume(value);
+  } else if (key === 'crowdVolume') {
+    audioManager.setCrowdVolume(value);
+  }
 }
 
 export class GameSettings {
@@ -187,25 +231,20 @@ export class GameSettings {
 
   // --- Audio persistence ---
   _loadAudioSettings() {
-    this._audioVolume = 0.5;
-    try {
-      const saved = localStorage.getItem(AUDIO_STORAGE_KEY);
-      if (saved) {
-        const parsed = JSON.parse(saved);
-        if (typeof parsed.musicVolume === 'number') this._audioVolume = parsed.musicVolume;
-      }
-    } catch {}
+    const s = getAudioSettings();
+    this._audioMix = {};
+    for (const { key } of AUDIO_MIXER_SLIDERS) {
+      this._audioMix[key] = typeof s[key] === 'number' ? s[key] : AUDIO_DEFAULTS[key];
+    }
   }
 
   _saveAudioSettings() {
     this._cancelSave('audio');
-    try { localStorage.setItem(AUDIO_STORAGE_KEY, JSON.stringify({ musicVolume: this._audioVolume })); } catch {}
+    saveAudioSettings(this._audioMix);
   }
 
   _applyAudioVolume() {
-    if (window.__blocketTitleMusic) {
-      window.__blocketTitleMusic.volume = this._audioVolume;
-    }
+    for (const { key } of AUDIO_MIXER_SLIDERS) applyAudioChannel(key, this._audioMix[key]);
   }
 
   // --- General settings persistence ---
@@ -514,34 +553,37 @@ export class GameSettings {
     const slidersWrap = document.createElement('div');
     slidersWrap.className = 'cs-sliders';
 
-    const row = document.createElement('div');
-    row.className = 'cs-row';
-    const label = document.createElement('label');
-    label.className = 'cs-label';
-    label.textContent = 'Music Volume';
-    const valSpan = document.createElement('span');
-    valSpan.className = 'cs-value';
-    valSpan.textContent = Math.round(this._audioVolume * 100);
-    const input = document.createElement('input');
-    input.type = 'range';
-    input.className = 'cs-slider';
-    input.min = 0;
-    input.max = 1;
-    input.step = 0.01;
-    input.value = this._audioVolume;
-    input.addEventListener('input', () => {
-      const v = parseFloat(input.value);
-      this._audioVolume = v;
-      valSpan.textContent = Math.round(v * 100);
-      this._applyAudioVolume();
-      this._scheduleSave('audio', () => this._saveAudioSettings());
-    });
-    input.addEventListener('change', () => this._flushSave('audio'));
-    this._audioSlider = { input, valSpan };
-    row.appendChild(label);
-    row.appendChild(input);
-    row.appendChild(valSpan);
-    slidersWrap.appendChild(row);
+    this._audioSliders = {};
+    for (const { key, label: text } of AUDIO_MIXER_SLIDERS) {
+      const row = document.createElement('div');
+      row.className = 'cs-row';
+      const label = document.createElement('label');
+      label.className = 'cs-label';
+      label.textContent = text;
+      const valSpan = document.createElement('span');
+      valSpan.className = 'cs-value';
+      valSpan.textContent = Math.round(this._audioMix[key] * 100);
+      const input = document.createElement('input');
+      input.type = 'range';
+      input.className = 'cs-slider';
+      input.min = 0;
+      input.max = 1;
+      input.step = 0.01;
+      input.value = this._audioMix[key];
+      input.addEventListener('input', () => {
+        const v = parseFloat(input.value);
+        this._audioMix[key] = v;
+        valSpan.textContent = Math.round(v * 100);
+        applyAudioChannel(key, v);
+        this._scheduleSave('audio', () => this._saveAudioSettings());
+      });
+      input.addEventListener('change', () => this._flushSave('audio'));
+      this._audioSliders[key] = { input, valSpan };
+      row.appendChild(label);
+      row.appendChild(input);
+      row.appendChild(valSpan);
+      slidersWrap.appendChild(row);
+    }
     pane.appendChild(slidersWrap);
 
     const resetBtn = document.createElement('button');
@@ -549,9 +591,12 @@ export class GameSettings {
     resetBtn.style.marginTop = '16px';
     resetBtn.textContent = 'Reset to Defaults';
     resetBtn.addEventListener('click', () => {
-      this._audioVolume = 0.5;
-      this._audioSlider.input.value = 0.5;
-      this._audioSlider.valSpan.textContent = '50';
+      for (const { key } of AUDIO_MIXER_SLIDERS) {
+        const v = AUDIO_DEFAULTS[key];
+        this._audioMix[key] = v;
+        this._audioSliders[key].input.value = v;
+        this._audioSliders[key].valSpan.textContent = Math.round(v * 100);
+      }
       this._applyAudioVolume();
       this._saveAudioSettings();
     });

@@ -4,7 +4,10 @@
 // ============================================
 
 import { InputManager } from './InputManager.js';
-import { DISPLAY_DEFAULTS } from './GameSettings.js';
+import {
+  DISPLAY_DEFAULTS, AUDIO_DEFAULTS, AUDIO_MIXER_SLIDERS,
+  getAudioSettings, applyAudioChannel,
+} from './GameSettings.js';
 
 const CAMERA_STORAGE_KEY = 'blocket-camera-settings';
 const AUDIO_STORAGE_KEY = 'blocket-audio-settings';
@@ -133,12 +136,13 @@ export function buildLobbySettings(container) {
     keyBindings: loadJSON(KEY_BINDINGS_KEY, InputManager.getDefaultKeyBindings()),
     gpBindings: loadJSON(GP_BINDINGS_KEY, InputManager.getDefaultGpBindings()),
     gpSettings: loadJSON(GP_SETTINGS_KEY, InputManager.getDefaultGpSettings()),
-    audioVolume: (() => {
-      try {
-        const s = localStorage.getItem(AUDIO_STORAGE_KEY);
-        if (s) { const p = JSON.parse(s); if (typeof p.musicVolume === 'number') return p.musicVolume; }
-      } catch {}
-      return 0.5;
+    audioMix: (() => {
+      const s = getAudioSettings();
+      const mix = {};
+      for (const { key } of AUDIO_MIXER_SLIDERS) {
+        mix[key] = typeof s[key] === 'number' ? s[key] : AUDIO_DEFAULTS[key];
+      }
+      return mix;
     })(),
     autoFullscreen: (() => {
       try {
@@ -379,36 +383,43 @@ export function buildLobbySettings(container) {
   audioPane.className = 'gs-pane';
   const audioWrap = document.createElement('div');
   audioWrap.className = 'cs-sliders';
-  const audioRow = document.createElement('div');
-  audioRow.className = 'cs-row';
-  const audioLabel = document.createElement('label');
-  audioLabel.className = 'cs-label';
-  audioLabel.textContent = 'Music Volume';
-  const audioVal = document.createElement('span');
-  audioVal.className = 'cs-value';
-  audioVal.textContent = Math.round(state.audioVolume * 100);
-  const audioInput = document.createElement('input');
-  audioInput.type = 'range';
-  audioInput.className = 'cs-slider';
-  audioInput.min = 0;
-  audioInput.max = 1;
-  audioInput.step = 0.01;
-  audioInput.value = state.audioVolume;
-  audioInput.addEventListener('input', () => {
-    const val = parseFloat(audioInput.value);
-    state.audioVolume = val;
-    audioVal.textContent = Math.round(val * 100);
-    saveDebounced(AUDIO_STORAGE_KEY, () => ({ musicVolume: state.audioVolume }));
-    // Apply immediately to lobby music if playing
-    if (window.__blocketTitleMusic) {
-      window.__blocketTitleMusic.volume = val;
-    }
-  });
-  audioInput.addEventListener('change', () => flushSave(AUDIO_STORAGE_KEY));
-  audioRow.appendChild(audioLabel);
-  audioRow.appendChild(audioInput);
-  audioRow.appendChild(audioVal);
-  audioWrap.appendChild(audioRow);
+  // Persisted value = stored object (keeps sfxMuted etc.) merged with the mixer sliders
+  const audioSettingsValue = () => ({ ...getAudioSettings(), ...state.audioMix });
+  const notifyAudioChanged = () => {
+    try { window.dispatchEvent(new CustomEvent('blocket-audio-settings-changed', { detail: audioSettingsValue() })); } catch {}
+  };
+  const audioSliderEls = {};
+  for (const { key, label } of AUDIO_MIXER_SLIDERS) {
+    const audioRow = document.createElement('div');
+    audioRow.className = 'cs-row';
+    const audioLabel = document.createElement('label');
+    audioLabel.className = 'cs-label';
+    audioLabel.textContent = label;
+    const audioVal = document.createElement('span');
+    audioVal.className = 'cs-value';
+    audioVal.textContent = Math.round(state.audioMix[key] * 100);
+    const audioInput = document.createElement('input');
+    audioInput.type = 'range';
+    audioInput.className = 'cs-slider';
+    audioInput.min = 0;
+    audioInput.max = 1;
+    audioInput.step = 0.01;
+    audioInput.value = state.audioMix[key];
+    audioInput.addEventListener('input', () => {
+      const val = parseFloat(audioInput.value);
+      state.audioMix[key] = val;
+      audioVal.textContent = Math.round(val * 100);
+      applyAudioChannel(key, val); // live
+      saveDebounced(AUDIO_STORAGE_KEY, audioSettingsValue);
+      notifyAudioChanged();
+    });
+    audioInput.addEventListener('change', () => flushSave(AUDIO_STORAGE_KEY));
+    audioSliderEls[key] = { input: audioInput, valSpan: audioVal };
+    audioRow.appendChild(audioLabel);
+    audioRow.appendChild(audioInput);
+    audioRow.appendChild(audioVal);
+    audioWrap.appendChild(audioRow);
+  }
   audioPane.appendChild(audioWrap);
 
   const audioResetBtn = document.createElement('button');
@@ -416,12 +427,16 @@ export function buildLobbySettings(container) {
   audioResetBtn.style.marginTop = '16px';
   audioResetBtn.textContent = 'Reset to Defaults';
   audioResetBtn.addEventListener('click', () => {
-    state.audioVolume = 0.5;
-    audioInput.value = 0.5;
-    audioVal.textContent = '50';
+    for (const { key } of AUDIO_MIXER_SLIDERS) {
+      const v = AUDIO_DEFAULTS[key];
+      state.audioMix[key] = v;
+      audioSliderEls[key].input.value = v;
+      audioSliderEls[key].valSpan.textContent = Math.round(v * 100);
+      applyAudioChannel(key, v);
+    }
     cancelPendingSave(AUDIO_STORAGE_KEY);
-    saveJSON(AUDIO_STORAGE_KEY, { musicVolume: 0.5 });
-    if (window.__blocketTitleMusic) window.__blocketTitleMusic.volume = 0.5;
+    saveJSON(AUDIO_STORAGE_KEY, audioSettingsValue());
+    notifyAudioChanged();
   });
   audioPane.appendChild(audioResetBtn);
   panes.audio = audioPane;
