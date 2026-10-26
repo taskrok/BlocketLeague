@@ -6,6 +6,8 @@ services:
     restart: unless-stopped
     ports:
       - "3001:3001"
+    environment:
+      - BLOCKET_DB_PATH=/app/data/blocket.db
     volumes:
       - app-data:/app/data
 
