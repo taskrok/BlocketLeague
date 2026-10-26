@@ -20,11 +20,14 @@ import { ServerBoostPads } from './ServerBoostPads.js';
 import { PerformanceTracker } from '../shared/PerformanceTracker.js';
 import { computeAIInput } from './ServerAI.js';
 import { saveMatch, getPlayerStats } from './database.js';
-import { getRankFromMMR } from '../shared/Ranks.js';
+import { getRankFromMMR, getLevelTitle } from '../shared/Ranks.js';
 
 // Debug mode: set DEBUG=1 environment variable to enable server-side perf logging
 const DEBUG_MODE = process.env.DEBUG === '1';
 const DEBUG_LOG_INTERVAL = 5000; // log every 5 seconds
+
+// How often (in physics ticks) cached bot roles are recomputed (~0.5s at 60Hz)
+const AI_ROLE_REFRESH_TICKS = 30;
 
 export class GameRoom {
   constructor(io, roomId, maxPlayers = 2, onCleanup = null) {
@@ -44,9 +47,19 @@ export class GameRoom {
     this._broadcastInterval = null;
     this._countdownInterval = null;
     this._forceCleanupTimeout = null;
-    this._overtimeTimeout = null;
+    // Set when an overtime goal is scored: the goal countdown ends the match
+    // (via _endGame) instead of resetting for another kickoff.
+    this._pendingGameOver = false;
     this._onCleanup = onCleanup;
     this.playerPings = new Array(maxPlayers).fill(0);
+
+    // Cached AI roles per slot ('attacker' | 'support'), refreshed every
+    // AI_ROLE_REFRESH_TICKS ticks or when the bot/player list changes.
+    this._aiRoles = new Array(maxPlayers).fill('attacker');
+    this._aiRolesDirty = true;
+    // Scratch arrays for role computation (one per team, reused)
+    this._aiTeamBotsBlue = [];
+    this._aiTeamBotsOrange = [];
 
     // Debug perf tracking
     if (DEBUG_MODE) {
@@ -102,42 +115,59 @@ export class GameRoom {
   /**
    * Determine AI role for a bot slot: attacker (closest to ball) or support.
    * In 1v1 bots always attack. In 2v2, the bot closest to ball attacks.
+   * Roles are cached in this._aiRoles and recomputed by _refreshAIRoles().
    */
   _getAIRole(idx) {
-    if (this.maxPlayers <= 2) return 'attacker';
-    if (!this.ball) return 'attacker';
+    return this._aiRoles[idx];
+  }
+
+  /**
+   * Recompute cached AI roles for every bot slot. Allocation-free: reuses
+   * per-team scratch arrays. Called every AI_ROLE_REFRESH_TICKS ticks and
+   * whenever the bot/player list changes (_aiRolesDirty).
+   */
+  _refreshAIRoles() {
+    this._aiRolesDirty = false;
+    const roles = this._aiRoles;
+    if (this.maxPlayers <= 2 || !this.ball || !this.cars) {
+      for (let i = 0; i < this.maxPlayers; i++) roles[i] = 'attacker';
+      return;
+    }
 
     const half = this.maxPlayers / 2;
-    const isBlue = idx < half;
-    const teamStart = isBlue ? 0 : half;
-    const teamEnd = isBlue ? half : this.maxPlayers;
-
-    // Find all bot slots on same team
-    const teamBots = [];
-    for (let i = teamStart; i < teamEnd; i++) {
-      if (this.botSlots.has(i) && this.cars[i]) {
-        teamBots.push(i);
-      }
-    }
-
-    if (teamBots.length <= 1) return 'attacker';
-
-    // Closest bot to ball is attacker
     const bp = this.ball.body.position;
-    let closestIdx = teamBots[0];
-    let closestDist = Infinity;
-    for (const i of teamBots) {
-      const cp = this.cars[i].body.position;
-      const dx = cp.x - bp.x;
-      const dz = cp.z - bp.z;
-      const dist = dx * dx + dz * dz;
-      if (dist < closestDist) {
-        closestDist = dist;
-        closestIdx = i;
+
+    for (let team = 0; team < 2; team++) {
+      const teamStart = team === 0 ? 0 : half;
+      const teamEnd = team === 0 ? half : this.maxPlayers;
+      const teamBots = team === 0 ? this._aiTeamBotsBlue : this._aiTeamBotsOrange;
+      teamBots.length = 0;
+
+      for (let i = teamStart; i < teamEnd; i++) {
+        roles[i] = 'attacker';
+        if (this.botSlots.has(i) && this.cars[i]) teamBots.push(i);
+      }
+      if (teamBots.length <= 1) continue;
+
+      // Closest bot to ball is attacker, the rest support
+      let closestIdx = teamBots[0];
+      let closestDist = Infinity;
+      for (let k = 0; k < teamBots.length; k++) {
+        const i = teamBots[k];
+        const cp = this.cars[i].body.position;
+        const dx = cp.x - bp.x;
+        const dz = cp.z - bp.z;
+        const dist = dx * dx + dz * dz;
+        if (dist < closestDist) {
+          closestDist = dist;
+          closestIdx = i;
+        }
+      }
+      for (let k = 0; k < teamBots.length; k++) {
+        const i = teamBots[k];
+        roles[i] = i === closestIdx ? 'attacker' : 'support';
       }
     }
-
-    return idx === closestIdx ? 'attacker' : 'support';
   }
 
   // ========== PLAYER MANAGEMENT ==========
@@ -195,6 +225,7 @@ export class GameRoom {
       this.players[idx].isBot = true;
       this.players[idx].playerName = playerName + ' (Bot)';
       this.botSlots.add(idx);
+      this._aiRolesDirty = true;
 
       // Notify remaining human players (for-loop avoids .filter allocation)
       let hasHumans = false;
@@ -280,6 +311,7 @@ export class GameRoom {
         this.botSlots.add(i);
       }
     }
+    this._aiRolesDirty = true;
 
     // Now all slots are filled, init physics and start
     if (this.players.every(p => p !== null)) {
@@ -579,9 +611,21 @@ export class GameRoom {
         this._physicsAccumulator -= dt;
       }
 
+      // A tick may have ended the game (or otherwise stopped the loops);
+      // don't reschedule a timer that _stopLoops() can no longer clear.
+      if (!this._physicsRunning) return;
+
       // Schedule next tick with drift compensation: calculate how long until
-      // the next target time, clamping to at least 1ms to avoid busy-waiting
+      // the next target time, clamping to at least 1ms to avoid busy-waiting.
+      // After an event-loop stall the target time can lag far behind `now`,
+      // which would make every subsequent setTimeout fire at the 1ms floor
+      // until it caught up (while the accumulator cap above already discarded
+      // the lost time). Re-anchor the target to `now` when more than 5 ticks
+      // behind so the loop returns to its nominal cadence immediately.
       this._physicsTargetTime += physicsMs;
+      if (now - this._physicsTargetTime > physicsMs * 5) {
+        this._physicsTargetTime = now;
+      }
       const delay = Math.max(1, this._physicsTargetTime - performance.now());
       this._physicsTimer = setTimeout(physicsLoop, delay);
     };
@@ -602,10 +646,6 @@ export class GameRoom {
     if (this._countdownInterval) {
       clearInterval(this._countdownInterval);
       this._countdownInterval = null;
-    }
-    if (this._overtimeTimeout) {
-      clearTimeout(this._overtimeTimeout);
-      this._overtimeTimeout = null;
     }
   }
 
@@ -676,15 +716,23 @@ export class GameRoom {
     // Apply inputs to cars (human players + AI bots)
     // Uses for-loop instead of .forEach to avoid closure allocation per tick
     const isActive = this.state === 'playing' || this.state === 'overtime';
+
+    // Refresh cached bot roles periodically or when the roster changed
+    if (isActive && this.botSlots.size > 0 &&
+        (this._aiRolesDirty || this.tick % AI_ROLE_REFRESH_TICKS === 0)) {
+      this._refreshAIRoles();
+    }
+
     for (let idx = 0; idx < this.maxPlayers; idx++) {
       const player = this.players[idx];
       if (!player) continue;
 
-      // Compute AI input for bot-controlled slots
+      // Compute AI input for bot-controlled slots, writing into the slot's
+      // existing latestInput object (no per-tick allocation)
       if (this.botSlots.has(idx) && isActive) {
         const teamDir = this._getDirection(idx);
         const role = this._getAIRole(idx);
-        player.latestInput = computeAIInput(this.cars[idx], this.ball, teamDir, role);
+        computeAIInput(this.cars[idx], this.ball, teamDir, role, player.latestInput);
       }
 
       const input = player.latestInput;
@@ -719,11 +767,17 @@ export class GameRoom {
       this._updateTimer(dt);
     }
 
-    // Goal reset countdown
+    // Goal reset countdown. After an overtime goal the countdown ends the
+    // match instead of resetting; replaySkip() shortening goalResetTime just
+    // ends it sooner.
     if (this.state === 'goal') {
       this.goalResetTime -= dt;
       if (this.goalResetTime <= 0) {
-        this._resetAfterGoal();
+        if (this._pendingGameOver) {
+          this._endGame();
+        } else {
+          this._resetAfterGoal();
+        }
       }
     }
 
@@ -798,22 +852,13 @@ export class GameRoom {
     // Allow time for client-side celebration (1.5s) + replay (~6.7s) + buffer
     this.goalResetTime = 9;
 
+    // Golden goal: once the goal countdown elapses (or every human skips the
+    // replay), _physicsTick ends the match rather than resetting for kickoff.
+    // This is driven by the tick instead of a wall-clock timeout so that a
+    // replay skip -> _resetAfterGoal -> _startLoops -> _stopLoops sequence can
+    // never clear the thing that ends the game.
     if (this.isOvertime) {
-      this._overtimeTimeout = setTimeout(() => {
-        this.state = 'ended';
-        const winningTeam = this.scores.blue > this.scores.orange ? 'blue' : 'orange';
-        const mvpIdx = this.perfTracker.computeMVP(winningTeam);
-        const stats = this.perfTracker.getStats();
-        this.io.to(this.roomId).emit('gameOver', {
-          blueScore: this.scores.blue,
-          orangeScore: this.scores.orange,
-          stats,
-          mvpIdx,
-        });
-        this._saveMatchToDatabase(stats, mvpIdx);
-        this._stopLoops();
-        this._scheduleForceCleanup();
-      }, 9 * 1000); // match goal reset time for replay
+      this._pendingGameOver = true;
     }
   }
 
@@ -828,21 +873,34 @@ export class GameRoom {
         this.state = 'overtime';
         this.io.to(this.roomId).emit('overtime', {});
       } else {
-        this.state = 'ended';
-        const winningTeam = this.scores.blue > this.scores.orange ? 'blue' : 'orange';
-        const mvpIdx = this.perfTracker.computeMVP(winningTeam);
-        const stats = this.perfTracker.getStats();
-        this.io.to(this.roomId).emit('gameOver', {
-          blueScore: this.scores.blue,
-          orangeScore: this.scores.orange,
-          stats,
-          mvpIdx,
-        });
-        this._saveMatchToDatabase(stats, mvpIdx);
-        this._stopLoops();
-        this._scheduleForceCleanup();
+        this._endGame();
       }
     }
+  }
+
+  /**
+   * End the match: compute winner/MVP, emit gameOver, persist, stop loops,
+   * and schedule forced cleanup. Idempotent (no-op once state is 'ended').
+   */
+  _endGame() {
+    if (this.state === 'ended') return;
+    this.state = 'ended';
+    this._pendingGameOver = false;
+    const winningTeam = this.scores.blue > this.scores.orange ? 'blue' : 'orange';
+    const mvpIdx = this.perfTracker.computeMVP(winningTeam);
+    const stats = this.perfTracker.getStats();
+    this.io.to(this.roomId).emit('gameOver', {
+      blueScore: this.scores.blue,
+      orangeScore: this.scores.orange,
+      stats,
+      mvpIdx,
+    });
+    this._stopLoops();
+    this._scheduleForceCleanup();
+    // Defer the synchronous SQLite work until after the current tick/loop
+    // iteration returns. `stats` is a fresh copy from getStats() and the
+    // room is ending, so nothing mutates the inputs in the meantime.
+    setImmediate(() => this._saveMatchToDatabase(stats, mvpIdx));
   }
 
   /**
@@ -974,12 +1032,15 @@ export class GameRoom {
       const blueWon = this.scores.blue > this.scores.orange;
       const playTimeMinutes = durationSeconds / 60;
 
-      // Gather current MMR for each human player to compute opponent MMR
+      // Read each human player's stats ONCE: used for opponent MMR now and
+      // reused below to build the post-match progression payload.
       const playerMMRs = {};
+      const preStats = new Array(this.maxPlayers).fill(null);
       for (let i = 0; i < this.maxPlayers; i++) {
         const p = this.players[i];
         if (!p || !p.playerId) continue;
         const pStats = getPlayerStats(p.playerId);
+        preStats[i] = pStats;
         playerMMRs[i] = pStats ? (pStats[mmrColumn] || 1000) : 1000;
       }
 
@@ -1036,25 +1097,55 @@ export class GameRoom {
           players,
         });
 
-        // Send updated progression + rank data to each human player
-        for (const p of this.players) {
+        // Send updated progression + rank data to each human player.
+        // Derived from the pre-match stats row + saveMatch's per-player
+        // result (which carries the new XP/level/MMR) instead of re-reading
+        // the database. Only the played mode's MMR/rank changes in a match.
+        for (let i = 0; i < this.maxPlayers; i++) {
+          const p = this.players[i];
           if (!p || !p.playerId || !p.socket) continue;
-          const updated = getPlayerStats(p.playerId);
-          if (updated) {
-            const rankResult = result && result.playerResults
-              ? result.playerResults[p.playerId]
-              : null;
+          const rankResult = result && result.playerResults
+            ? result.playerResults[p.playerId]
+            : null;
+          let before = preStats[i];
+          if (!before && rankResult) {
+            // No stats row existed pre-match (saveMatch just created one):
+            // fall back to fresh-account defaults for the unchanged fields.
+            before = {
+              xp: 0, level: 0, levelTitle: getLevelTitle(0),
+              mmr_1v1: 1000, mmr_2v2: 1000,
+              rank1v1: getRankFromMMR(1000), rank2v2: getRankFromMMR(1000),
+              displayName: p.playerName || '', prestige: 0,
+            };
+          }
+          if (before) {
+
+            let xp = before.xp, level = before.level, levelTitle = before.levelTitle;
+            let mmr1 = before.mmr_1v1, mmr2 = before.mmr_2v2;
+            let rank1 = before.rank1v1, rank2 = before.rank2v2;
+            if (rankResult) {
+              xp = rankResult.newTotalXP;
+              level = rankResult.newLevel;
+              levelTitle = getLevelTitle(level || 0);
+              if (mode === '2v2') {
+                mmr2 = rankResult.mmrAfter;
+                rank2 = getRankFromMMR(mmr2 || 1000);
+              } else {
+                mmr1 = rankResult.mmrAfter;
+                rank1 = getRankFromMMR(mmr1 || 1000);
+              }
+            }
 
             p.socket.emit('progression', {
-              xp: updated.xp,
-              level: updated.level,
-              displayName: updated.displayName,
-              mmr_1v1: updated.mmr_1v1,
-              mmr_2v2: updated.mmr_2v2,
-              rank1v1: updated.rank1v1,
-              rank2v2: updated.rank2v2,
-              levelTitle: updated.levelTitle,
-              prestige: updated.prestige || 0,
+              xp,
+              level,
+              displayName: before.displayName,
+              mmr_1v1: mmr1,
+              mmr_2v2: mmr2,
+              rank1v1: rank1,
+              rank2v2: rank2,
+              levelTitle,
+              prestige: before.prestige || 0,
               // Match-specific rank change info
               mmrDelta: rankResult ? rankResult.mmrDelta : null,
               mmrBefore: rankResult ? rankResult.mmrBefore : null,

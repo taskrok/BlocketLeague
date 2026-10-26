@@ -172,7 +172,8 @@ export class ReplayPlayer {
       const b = (bRaw && bRaw.active) ? bRaw : null;
 
       // Handle demolished visibility
-      car.mesh.visible = !a.demolished;
+      if (typeof car.setVisible === 'function') car.setVisible(!a.demolished);
+      else car.mesh.visible = !a.demolished;
       if (a.demolished) continue;
 
       // Lerp position

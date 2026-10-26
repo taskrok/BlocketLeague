@@ -10,7 +10,22 @@ import { ARENA } from '../../shared/constants.js';
 const R   = ARENA.CURVE_RADIUS;      // fillet radius for floor/wall/ceiling
 const CR  = ARENA.CORNER_RADIUS;    // vertical corner radius
 const GER = ARENA.GOAL_EDGE_RADIUS; // fillet radius on goal post / crossbar edges
-const S   = ARENA.CURVE_SEGMENTS;   // segments per quarter arc
+
+// Segment counts. These are module-level so the ~25 patch builders below can
+// read them without threading a parameter through every call. They are set at
+// the top of createArenaGeometry() (synchronous build) and restored afterwards.
+//   S  — segments per quarter arc for the small-radius fillets (R, GER, GFR)
+//   SC — segments per quarter arc for the large XZ corner sweep (CR)
+const DEFAULT_S = ARENA.CURVE_SEGMENTS;
+let S  = DEFAULT_S;
+let SC = DEFAULT_S;
+
+// Coarser tessellation used for the ball-collision trimesh. Same analytic
+// curves as the visual mesh, just fewer chords:
+//   R=11  @ 8 segs  -> max sag 0.21 units
+//   CR=50 @ 12 segs -> max sag 0.43 units   (ball radius is 2.3)
+export const PHYSICS_ARC_SEGMENTS = 8;
+export const PHYSICS_CORNER_SEGMENTS = 12;
 
 const HW = ARENA.WIDTH / 2;         // half width (X)
 const HL = ARENA.LENGTH / 2;        // half length (Z)
@@ -29,7 +44,71 @@ const flatH  = H - 2 * R; // flat wall height (between top of floor fillet and b
 const cornerFlatHW = HW - CR;  // X extent for end walls & end fillets
 const cornerFlatHL = HL - CR;  // Z extent for side walls & side fillets
 
-export function createArenaGeometry() {
+/**
+ * Build the arena as a single indexed BufferGeometry.
+ *
+ * @param {object} [options]
+ * @param {number}  [options.arcSegments]    segments per quarter arc for R/GER/GFR fillets (default ARENA.CURVE_SEGMENTS)
+ * @param {number}  [options.cornerSegments] segments per quarter arc for the CR corner sweep (default = arcSegments)
+ * @param {boolean} [options.computeNormals] compute smooth vertex normals (default true; the physics mesh skips this)
+ */
+export function createArenaGeometry(options = {}) {
+  const prevS = S, prevSC = SC;
+  S  = Math.max(2, Math.floor(options.arcSegments ?? DEFAULT_S));
+  SC = Math.max(2, Math.floor(options.cornerSegments ?? S));
+  try {
+    const merged = _buildArenaGeometry();
+    if (options.computeNormals !== false) merged.computeVertexNormals();
+    return merged;
+  } finally {
+    S = prevS;
+    SC = prevSC;
+  }
+}
+
+// ---- Module-level caches ----
+// The geometry depends only on ARENA constants (not on theme), so one copy per
+// process is enough. A new Arena is created per match; reusing these avoids
+// re-tessellating + computeVertexNormals on the client and re-building the
+// trimesh octree on the server. If a renderer disposes the cached visual
+// geometry (Game.destroy traverses the scene), three.js simply re-uploads the
+// retained CPU buffers on next use — dispose() does not free the arrays.
+let cachedVisualGeometry = null;
+let cachedTrimeshData = null;
+
+/** Full-detail visual geometry with vertex normals, built once per process. */
+export function getArenaVisualGeometry() {
+  if (!cachedVisualGeometry) {
+    cachedVisualGeometry = createArenaGeometry();
+  }
+  return cachedVisualGeometry;
+}
+
+/**
+ * Coarse physics tessellation for CANNON.Trimesh, built once per process.
+ * Returns { vertices: Float32Array (xyz triples), indices: Int32Array }.
+ * cannon-es copies both into its own Float32Array / Int16Array, so the
+ * returned arrays may be shared freely.
+ */
+export function getArenaTrimeshData() {
+  if (!cachedTrimeshData) {
+    const geo = createArenaGeometry({
+      arcSegments: PHYSICS_ARC_SEGMENTS,
+      cornerSegments: PHYSICS_CORNER_SEGMENTS,
+      computeNormals: false,
+    });
+    const vertices = geo.getAttribute('position').array;
+    const indices = new Int32Array(geo.index.array);
+    // cannon-es stores indices as Int16Array; guard against silent overflow.
+    if (vertices.length / 3 > 32767) {
+      console.warn(`[ArenaGeometry] physics mesh has ${vertices.length / 3} vertices; exceeds cannon-es Int16 index range`);
+    }
+    cachedTrimeshData = { vertices, indices };
+  }
+  return cachedTrimeshData;
+}
+
+function _buildArenaGeometry() {
   // ---- Phase 1: Arena shell (existing) ----
   // ensureInwardNormals points toward (0, H/2, 0) which is correct for the shell
   // but would break goal ceiling normals, so goals are built separately.
@@ -114,9 +193,7 @@ export function createArenaGeometry() {
     goalParts.push(goalGeo);
   }
 
-  const merged = mergeBufferGeometries([shell, ...goalParts]);
-  merged.computeVertexNormals();
-  return merged;
+  return mergeBufferGeometries([shell, ...goalParts]);
 }
 
 function ensureInwardNormals(geometry) {
@@ -730,8 +807,9 @@ function makeVerticalCorner(sx, sz) {
   const uvs = [];
   const indices = [];
 
-  for (let i = 0; i <= S; i++) {
-    const t = i / S;
+  // Large-radius (CR) sweep — uses the corner segment count
+  for (let i = 0; i <= SC; i++) {
+    const t = i / SC;
     const angle = (Math.PI / 2) * t;
     // Arc sweeps from end-wall-facing to side-wall-facing
     const lx = cx + sx * CR * Math.cos(angle);
@@ -744,7 +822,7 @@ function makeVerticalCorner(sx, sz) {
     }
   }
 
-  for (let i = 0; i < S; i++) {
+  for (let i = 0; i < SC; i++) {
     const a = i * 2;
     const b = a + 1;
     const c = a + 2;
@@ -771,15 +849,19 @@ function makeTripleCorner(sx, sz, position) {
   const cy = position === 'floor' ? R : H - R;
   const ySign = position === 'floor' ? -1 : 1;
 
-  const N = Math.max(S, 6);
+  // i sweeps the large CR corner arc (corner segment count), j sweeps the
+  // small R fillet profile (arc segment count). Must match makeVerticalCorner
+  // and the floor/ceiling fillets so the patch edges line up vertex-for-vertex.
+  const NC = Math.max(SC, 6);
+  const NP = Math.max(S, 6);
   const positions = [];
   const uvs = [];
   const indices = [];
 
-  for (let i = 0; i <= N; i++) {
-    for (let j = 0; j <= N; j++) {
-      const theta = (Math.PI / 2) * (i / N); // corner arc sweep in XZ (0=side wall, π/2=end wall)
-      const phi = (Math.PI / 2) * (j / N);   // fillet profile (0=floor/ceiling, π/2=wall)
+  for (let i = 0; i <= NC; i++) {
+    for (let j = 0; j <= NP; j++) {
+      const theta = (Math.PI / 2) * (i / NC); // corner arc sweep in XZ (0=side wall, π/2=end wall)
+      const phi = (Math.PI / 2) * (j / NP);   // fillet profile (0=floor/ceiling, π/2=wall)
 
       // Distance from corner center in XZ: ranges from CR-R (at floor) to CR (at wall)
       const d = CR - R + R * Math.sin(phi);
@@ -792,9 +874,9 @@ function makeTripleCorner(sx, sz, position) {
     }
   }
 
-  const stride = N + 1;
-  for (let i = 0; i < N; i++) {
-    for (let j = 0; j < N; j++) {
+  const stride = NP + 1;
+  for (let i = 0; i < NC; i++) {
+    for (let j = 0; j < NP; j++) {
       const a = i * stride + j;
       const b = a + 1;
       const c = a + stride;

@@ -1,9 +1,13 @@
 // ============================================
-// ModelLoader - Preloads GLB car models at startup
-// Singleton cache for cloning into Car instances
+// ModelLoader - Loads GLB car models on demand
+// Singleton cache for cloning into Car instances.
+// Models load lazily via ensureLoaded(); preloadAll() streams the rest in
+// the background. Cached scenes are the shared master copies: getModel()
+// clones the object tree and materials but shares geometry (nothing writes
+// to geometry attributes after cloning; body recoloring swaps the texture
+// on the cloned material in CarMeshBuilder._recolorBodyTexture).
 // ============================================
 
-import * as THREE from 'three';
 import { GLTFLoader } from 'three/examples/jsm/loaders/GLTFLoader.js';
 
 const CAR_MODELS = [
@@ -30,60 +34,124 @@ const CAR_MODELS = [
   { id: 'tractor-shovel', name: 'Shovel Tractor', path: 'models/tractor-shovel.glb' },
 ];
 
+const MODEL_BY_ID = new Map(CAR_MODELS.map((entry) => [entry.id, entry]));
+
 class ModelLoader {
   constructor() {
-    this._cache = new Map();       // id → gltf.scene
-    this._nameMap = new Map();     // id → display name
-    this._loadedIds = [];
+    this._cache = new Map();       // id → gltf.scene (shared master copy)
+    this._nameMap = new Map(CAR_MODELS.map((entry) => [entry.id, entry.name]));
+    this._promises = new Map();    // id → Promise<boolean> (cached; resolves false on failure)
+    this._preloadAllPromise = null;
     this._loader = new GLTFLoader();
   }
 
-  async preloadAll(onProgress) {
-    const total = CAR_MODELS.length;
-    let loaded = 0;
-
-    const results = await Promise.allSettled(
-      CAR_MODELS.map((entry) =>
-        this._loader.loadAsync(entry.path).then((gltf) => {
-          this._cache.set(entry.id, gltf.scene);
-          this._nameMap.set(entry.id, entry.name);
-          loaded++;
-          if (onProgress) onProgress(loaded, total);
-        })
-      )
-    );
-
-    // Collect successfully loaded IDs (preserve registry order)
-    this._loadedIds = CAR_MODELS
-      .filter((entry) => this._cache.has(entry.id))
-      .map((entry) => entry.id);
-
-    const failed = results.filter((r) => r.status === 'rejected');
-    if (failed.length > 0) {
-      console.warn(`ModelLoader: ${failed.length}/${total} models failed to load`);
-    }
+  /**
+   * Every model id in the registry, in display order, whether loaded or not.
+   * Use for the lobby car list; use getModelIds() where a loaded model is required.
+   */
+  getAllModelIds() {
+    return CAR_MODELS.map((entry) => entry.id);
   }
 
+  /**
+   * Ids of models that are loaded right now, in registry order.
+   * Callers that build meshes synchronously (Game.js random AI variants) use
+   * this so they never pick a model that would fall back to procedural.
+   */
+  getModelIds() {
+    return CAR_MODELS.filter((entry) => this._cache.has(entry.id)).map((entry) => entry.id);
+  }
+
+  isLoaded(id) {
+    return this._cache.has(id);
+  }
+
+  /**
+   * Load one model if needed. Returns a cached promise per id that resolves
+   * to true when the model is available and false if it failed or is unknown.
+   * Never rejects.
+   */
+  ensureLoaded(id) {
+    if (!id) return Promise.resolve(false);
+    if (this._cache.has(id)) return Promise.resolve(true);
+
+    const existing = this._promises.get(id);
+    if (existing) return existing;
+
+    const entry = MODEL_BY_ID.get(id);
+    if (!entry) return Promise.resolve(false);
+
+    const promise = this._loader.loadAsync(entry.path).then(
+      (gltf) => {
+        this._markSharedGeometry(gltf.scene);
+        this._cache.set(id, gltf.scene);
+        return true;
+      },
+      (err) => {
+        console.warn(`ModelLoader: failed to load model "${id}" (${entry.path})`, err);
+        return false;
+      }
+    );
+    this._promises.set(id, promise);
+    return promise;
+  }
+
+  /**
+   * Load several models; resolves true only if all of them loaded. Never rejects.
+   */
+  ensureLoadedAll(ids) {
+    const unique = Array.from(new Set((ids || []).filter(Boolean)));
+    return Promise.all(unique.map((id) => this.ensureLoaded(id)))
+      .then((results) => results.every(Boolean));
+  }
+
+  /**
+   * Load every registered model. Safe to call repeatedly: the first call's
+   * promise is cached and returned (later onProgress callbacks are ignored).
+   * onProgress(loadedOrFailed, total) counts settled models.
+   */
+  preloadAll(onProgress) {
+    if (this._preloadAllPromise) return this._preloadAllPromise;
+
+    const total = CAR_MODELS.length;
+    let settled = 0;
+
+    this._preloadAllPromise = Promise.all(
+      CAR_MODELS.map((entry) =>
+        this.ensureLoaded(entry.id).then((ok) => {
+          settled++;
+          if (onProgress) onProgress(settled, total);
+          return ok;
+        })
+      )
+    ).then((results) => {
+      const failed = results.filter((ok) => !ok).length;
+      if (failed > 0) {
+        console.warn(`ModelLoader: ${failed}/${total} models failed to load`);
+      }
+    });
+
+    return this._preloadAllPromise;
+  }
+
+  /**
+   * Clone a loaded model for one car instance, or null if not loaded.
+   * Geometry is shared with the cached master (flagged via
+   * geometry.userData.isSharedGeometry so disposers can skip it); materials
+   * are cloned so per-instance texture swaps don't touch the master.
+   */
   getModel(id) {
     const original = this._cache.get(id);
     if (!original) return null;
 
     const clone = original.clone(true);
 
-    // Deep-clone materials AND geometry so per-instance coloring works
-    // (clone(true) shares geometry by reference — vertex color edits
-    // would corrupt the cached original without this)
     clone.traverse((child) => {
-      if (child.isMesh) {
-        if (child.geometry) {
-          child.geometry = child.geometry.clone();
-        }
-        if (child.material) {
-          if (Array.isArray(child.material)) {
-            child.material = child.material.map((m) => m.clone());
-          } else {
-            child.material = child.material.clone();
-          }
+      if (child.isMesh && child.material) {
+        if (Array.isArray(child.material)) {
+          child.material = child.material.map((m) => m.clone());
+        } else {
+          child.material = child.material.clone();
         }
       }
     });
@@ -91,12 +159,16 @@ class ModelLoader {
     return clone;
   }
 
-  getModelIds() {
-    return this._loadedIds.slice();
-  }
-
   getModelName(id) {
     return this._nameMap.get(id) || id;
+  }
+
+  _markSharedGeometry(scene) {
+    scene.traverse((child) => {
+      if (child.isMesh && child.geometry) {
+        child.geometry.userData.isSharedGeometry = true;
+      }
+    });
   }
 }
 

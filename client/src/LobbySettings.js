@@ -13,6 +13,12 @@ const DISPLAY_STORAGE_KEY = 'blocket-display-settings';
 const KEY_BINDINGS_KEY = 'blocket-key-bindings';
 const GP_BINDINGS_KEY = 'blocket-gamepad-bindings';
 const GP_SETTINGS_KEY = 'blocket-gamepad-settings';
+// Slider 'input' events fire at pointer-move rate; persistence is trailing-debounced
+const SAVE_DEBOUNCE_MS = 250;
+
+// container → destroy() of the panel currently built into it, so rebuilding
+// the same container tears down the previous document listeners first.
+const builtPanels = new WeakMap();
 
 const CAMERA_DEFAULTS = {
   fov: 70,
@@ -91,6 +97,37 @@ function saveJSON(key, val) {
 }
 
 export function buildLobbySettings(container) {
+  // Tear down a previous build on this container (removes its document listeners)
+  const previousDestroy = builtPanels.get(container);
+  if (previousDestroy) previousDestroy();
+
+  // --- Debounced persistence (values are applied live; only the write waits) ---
+  const pendingSaves = new Map(); // storage key → { timer, getValue }
+  function cancelPendingSave(key) {
+    const p = pendingSaves.get(key);
+    if (!p) return;
+    clearTimeout(p.timer);
+    pendingSaves.delete(key);
+  }
+  function saveDebounced(key, getValue) {
+    cancelPendingSave(key);
+    const timer = setTimeout(() => {
+      pendingSaves.delete(key);
+      saveJSON(key, getValue());
+    }, SAVE_DEBOUNCE_MS);
+    pendingSaves.set(key, { timer, getValue });
+  }
+  function flushSave(key) {
+    const p = pendingSaves.get(key);
+    if (!p) return;
+    clearTimeout(p.timer);
+    pendingSaves.delete(key);
+    saveJSON(key, p.getValue());
+  }
+  function flushSaves() {
+    for (const key of Array.from(pendingSaves.keys())) flushSave(key);
+  }
+
   const state = {
     camera: loadJSON(CAMERA_STORAGE_KEY, CAMERA_DEFAULTS),
     keyBindings: loadJSON(KEY_BINDINGS_KEY, InputManager.getDefaultKeyBindings()),
@@ -187,8 +224,9 @@ export function buildLobbySettings(container) {
       const val = parseFloat(input.value);
       state.camera[cfg.key] = val;
       valSpan.textContent = val % 1 === 0 ? val : val.toFixed(1);
-      saveJSON(CAMERA_STORAGE_KEY, state.camera);
+      saveDebounced(CAMERA_STORAGE_KEY, () => state.camera);
     });
+    input.addEventListener('change', () => flushSave(CAMERA_STORAGE_KEY));
     cameraSliderEls[cfg.key] = { input, valSpan };
     row.appendChild(label);
     row.appendChild(input);
@@ -202,6 +240,7 @@ export function buildLobbySettings(container) {
   camResetBtn.textContent = 'Reset to Defaults';
   camResetBtn.addEventListener('click', () => {
     state.camera = { ...CAMERA_DEFAULTS };
+    cancelPendingSave(CAMERA_STORAGE_KEY);
     saveJSON(CAMERA_STORAGE_KEY, state.camera);
     for (const cfg of CAMERA_SLIDERS) {
       const el = cameraSliderEls[cfg.key];
@@ -303,8 +342,9 @@ export function buildLobbySettings(container) {
       const val = parseFloat(input.value);
       state.gpSettings[cfg.key] = val;
       valSpan.textContent = val.toFixed(2);
-      saveJSON(GP_SETTINGS_KEY, state.gpSettings);
+      saveDebounced(GP_SETTINGS_KEY, () => state.gpSettings);
     });
+    input.addEventListener('change', () => flushSave(GP_SETTINGS_KEY));
     gpSliderEls[cfg.key] = { input, valSpan };
     row.appendChild(label);
     row.appendChild(input);
@@ -319,6 +359,7 @@ export function buildLobbySettings(container) {
   gpResetBtn.addEventListener('click', () => {
     state.gpBindings = InputManager.getDefaultGpBindings();
     state.gpSettings = InputManager.getDefaultGpSettings();
+    cancelPendingSave(GP_SETTINGS_KEY);
     saveJSON(GP_BINDINGS_KEY, state.gpBindings);
     saveJSON(GP_SETTINGS_KEY, state.gpSettings);
     for (const action of Object.keys(GP_ACTION_LABELS)) {
@@ -357,12 +398,13 @@ export function buildLobbySettings(container) {
     const val = parseFloat(audioInput.value);
     state.audioVolume = val;
     audioVal.textContent = Math.round(val * 100);
-    saveJSON(AUDIO_STORAGE_KEY, { musicVolume: val });
+    saveDebounced(AUDIO_STORAGE_KEY, () => ({ musicVolume: state.audioVolume }));
     // Apply immediately to lobby music if playing
     if (window.__blocketTitleMusic) {
       window.__blocketTitleMusic.volume = val;
     }
   });
+  audioInput.addEventListener('change', () => flushSave(AUDIO_STORAGE_KEY));
   audioRow.appendChild(audioLabel);
   audioRow.appendChild(audioInput);
   audioRow.appendChild(audioVal);
@@ -377,6 +419,7 @@ export function buildLobbySettings(container) {
     state.audioVolume = 0.5;
     audioInput.value = 0.5;
     audioVal.textContent = '50';
+    cancelPendingSave(AUDIO_STORAGE_KEY);
     saveJSON(AUDIO_STORAGE_KEY, { musicVolume: 0.5 });
     if (window.__blocketTitleMusic) window.__blocketTitleMusic.volume = 0.5;
   });
@@ -407,6 +450,7 @@ export function buildLobbySettings(container) {
       }
     }
   });
+  // Removed again in destroy()
   const _onFSChange = () => {
     fsBtn.textContent = _isFS() ? 'Exit Fullscreen' : 'Enter Fullscreen';
   };
@@ -476,8 +520,9 @@ export function buildLobbySettings(container) {
     const v = parseFloat(rsInput.value);
     rsVal.textContent = v.toFixed(1) + 'x';
     d.renderScale = v;
-    saveJSON(DISPLAY_STORAGE_KEY, d);
+    saveDebounced(DISPLAY_STORAGE_KEY, () => d);
   });
+  rsInput.addEventListener('change', () => flushSave(DISPLAY_STORAGE_KEY));
   rsRow.appendChild(rsLabel);
   rsRow.appendChild(rsInput);
   rsRow.appendChild(rsVal);
@@ -491,6 +536,7 @@ export function buildLobbySettings(container) {
   displayResetBtn.textContent = 'Reset to Defaults';
   displayResetBtn.addEventListener('click', () => {
     Object.assign(d, DISPLAY_DEFAULTS);
+    cancelPendingSave(DISPLAY_STORAGE_KEY);
     saveJSON(DISPLAY_STORAGE_KEY, d);
     for (const [key, check] of Object.entries(displayCheckboxes)) {
       check.checked = DISPLAY_DEFAULTS[key];
@@ -640,6 +686,17 @@ export function buildLobbySettings(container) {
     cancelGpRebind();
   }
 
-  // Return cleanup function
-  return { cancelAnyRebind };
+  // Full teardown: cancel rebinds, write any pending slider value, and drop
+  // the document-level fullscreen listeners.
+  function destroy() {
+    cancelAnyRebind();
+    flushSaves();
+    document.removeEventListener('fullscreenchange', _onFSChange);
+    document.removeEventListener('webkitfullscreenchange', _onFSChange);
+    if (builtPanels.get(container) === destroy) builtPanels.delete(container);
+  }
+  builtPanels.set(container, destroy);
+
+  // Return cleanup functions
+  return { cancelAnyRebind, flushSaves, destroy };
 }

@@ -162,6 +162,11 @@ window.addEventListener('DOMContentLoaded', async () => {
   let activeGame = null;
   let matchEndTimeoutId = null;
 
+  // Lobby gamepad navigation poller controls; assigned in the
+  // GAMEPAD LOBBY NAVIGATION section below, called whenever the lobby is shown/hidden.
+  let startLobbyGamepadPoll = () => {};
+  let stopLobbyGamepadPoll = () => {};
+
   // Persist car selection
   const CAR_MODEL_KEY = 'blocket-car-model';
   try {
@@ -368,19 +373,23 @@ window.addEventListener('DOMContentLoaded', async () => {
   }
   animateParticles();
 
-  // --- Preload models ---
-  // Hide lobby content while loading
+  // --- Load the selected car model, then show the lobby ---
+  // Only the saved/selected model gates the lobby; the remaining models
+  // stream in the background. Anything that needs another model awaits it
+  // via modelLoader.ensureLoaded() (preview switch, match start).
   lobbyButtons.style.display = 'none';
   lobbyTitle.style.display = 'none';
 
-  await modelLoader.preloadAll((loaded, total) => {
-    const pct = Math.round((loaded / total) * 100);
-    loadingFill.style.width = pct + '%';
-  });
-
-  availableModelIds = modelLoader.getModelIds();
+  availableModelIds = modelLoader.getAllModelIds();
   // Clamp saved model index
-  if (currentModelIndex >= availableModelIds.length) currentModelIndex = 0;
+  if (currentModelIndex < 0 || currentModelIndex >= availableModelIds.length) currentModelIndex = 0;
+
+  loadingFill.style.width = '15%';
+  await modelLoader.ensureLoaded(availableModelIds[currentModelIndex]);
+  loadingFill.style.width = '100%';
+
+  // Kick off the rest without awaiting (never rejects)
+  modelLoader.preloadAll();
 
   // Hide loading, show lobby
   loadingScreen.classList.add('hidden');
@@ -437,7 +446,25 @@ window.addEventListener('DOMContentLoaded', async () => {
     previewScene.add(warmLight);
   }
 
+  // Monotonic token so a slow model load can't replace a newer selection
+  let previewLoadToken = 0;
+
   function setPreviewCar(variant) {
+    const token = ++previewLoadToken;
+    const modelId = variant && variant.modelId;
+
+    if (modelId && !modelLoader.isLoaded(modelId)) {
+      // Keep showing the current car until the requested model is ready
+      modelLoader.ensureLoaded(modelId).then(() => {
+        if (token !== previewLoadToken || !previewScene) return;
+        applyPreviewCar(variant);
+      });
+      return;
+    }
+    applyPreviewCar(variant);
+  }
+
+  function applyPreviewCar(variant) {
     // Remove old car mesh
     if (previewCarMesh) {
       previewScene.remove(previewCarMesh);
@@ -503,7 +530,10 @@ window.addEventListener('DOMContentLoaded', async () => {
 
   function disposeObject(obj) {
     obj.traverse((child) => {
-      if (child.geometry) child.geometry.dispose();
+      // GLB geometry is shared with the ModelLoader cache; only dispose per-instance geometry
+      if (child.geometry && !(child.geometry.userData && child.geometry.userData.isSharedGeometry)) {
+        child.geometry.dispose();
+      }
       if (child.material) {
         if (Array.isArray(child.material)) {
           child.material.forEach(m => m.dispose());
@@ -583,6 +613,7 @@ window.addEventListener('DOMContentLoaded', async () => {
       networkManager = null;
     }
     lobby.style.display = '';
+    startLobbyGamepadPoll();
     if (musicStarted) titleMusic.play().catch(() => {});
     showScreen(lobbyButtons);
     roomLobby.style.display = 'none';
@@ -697,6 +728,38 @@ window.addEventListener('DOMContentLoaded', async () => {
     }).catch(() => {});
   });
 
+  // --- Model readiness gating ---
+  // Game.js / CarMeshBuilder fetch models synchronously (modelLoader.getModel),
+  // so every variant a match will render must be loaded before `new Game(...)`.
+  // Runs fn synchronously when everything is already cached (the common case,
+  // since the background preload starts at page load).
+  function whenModelsReady(modelIds, fn) {
+    const ids = (modelIds || []).filter(Boolean);
+    if (ids.every((id) => modelLoader.isLoaded(id))) {
+      fn();
+      return;
+    }
+    // A failed load still proceeds: buildCarMesh falls back to the procedural car
+    modelLoader.ensureLoadedAll(ids).then(fn, fn);
+  }
+
+  function hideLobbyForMatch() {
+    lobby.style.display = 'none';
+    stopLobbyGamepadPoll();
+  }
+
+  // Model ids of every player in a multiplayer 'joined' payload
+  function collectJoinedModelIds(data) {
+    const ids = [chosenVariant && chosenVariant.modelId];
+    const others = (data && data.otherPlayers) || [];
+    for (const other of others) {
+      if (other && other.variantConfig) ids.push(other.variantConfig.modelId);
+    }
+    // Legacy 1v1 payload
+    if (data && data.opponentVariant) ids.push(data.opponentVariant.modelId);
+    return ids;
+  }
+
   // --- Start game (singleplayer, freeplay, or multiplayer after room is ready) ---
 
   function startGame() {
@@ -721,34 +784,43 @@ window.addEventListener('DOMContentLoaded', async () => {
     }
 
     const selectedArena = ARENA_THEMES[currentArenaIndex];
+    const localModelId = chosenVariant && chosenVariant.modelId;
 
+    // Offline modes: AI cars pick from modelLoader.getModelIds() (loaded models
+    // only), so the player's own model is the only one that must be awaited.
     if (selectedMode === 'singleplayer') {
-      lobby.style.display = 'none';
+      hideLobbyForMatch();
       requestFullscreen();
-      const game = new Game(canvas, { mode: 'singleplayer', playerVariant: chosenVariant, aiDifficulty: selectedDifficulty, aiMode: selectedAIMode, arenaTheme: selectedArena });
-      game.hud.onBackToLobby = () => returnToLobby();
-      activeGame = game;
-      window.game = game;
+      whenModelsReady([localModelId], () => {
+        const game = new Game(canvas, { mode: 'singleplayer', playerVariant: chosenVariant, aiDifficulty: selectedDifficulty, aiMode: selectedAIMode, arenaTheme: selectedArena });
+        game.hud.onBackToLobby = () => returnToLobby();
+        activeGame = game;
+        window.game = game;
+      });
       return;
     }
 
     if (selectedMode === 'freeplay') {
-      lobby.style.display = 'none';
+      hideLobbyForMatch();
       requestFullscreen();
-      const game = new Game(canvas, { mode: 'freeplay', playerVariant: chosenVariant, arenaTheme: selectedArena });
-      game.hud.onBackToLobby = () => returnToLobby();
-      activeGame = game;
-      window.game = game;
+      whenModelsReady([localModelId], () => {
+        const game = new Game(canvas, { mode: 'freeplay', playerVariant: chosenVariant, arenaTheme: selectedArena });
+        game.hud.onBackToLobby = () => returnToLobby();
+        activeGame = game;
+        window.game = game;
+      });
       return;
     }
 
     if (selectedMode === 'training') {
-      lobby.style.display = 'none';
+      hideLobbyForMatch();
       requestFullscreen();
-      const game = new Game(canvas, { mode: 'training', playerVariant: chosenVariant, trainingOpts: { type: selectedTrainingType, difficulty: selectedTrainingDifficulty }, arenaTheme: selectedArena });
-      game.hud.onBackToLobby = () => returnToLobby();
-      activeGame = game;
-      window.game = game;
+      whenModelsReady([localModelId], () => {
+        const game = new Game(canvas, { mode: 'training', playerVariant: chosenVariant, trainingOpts: { type: selectedTrainingType, difficulty: selectedTrainingDifficulty }, arenaTheme: selectedArena });
+        game.hud.onBackToLobby = () => returnToLobby();
+        activeGame = game;
+        window.game = game;
+      });
       return;
     }
 
@@ -845,16 +917,21 @@ window.addEventListener('DOMContentLoaded', async () => {
     network.on('joined', (data) => {
       // All players are in - launch the game
       stopQueueTimer();
-      lobby.style.display = 'none';
+      hideLobbyForMatch();
       requestFullscreen();
-      const game = new Game(canvas, { mode: 'multiplayer', networkManager: network, playerVariant: chosenVariant, joinedData: data, arenaTheme: selectedArena });
-      game.hud.onBackToLobby = () => returnToLobby();
-      game.onMatchEnd = () => {
-        matchEndTimeoutId = setTimeout(() => returnToLobby(), 4000);
-      };
-      activeGame = game;
-      window.game = game;
-      networkManager = null; // Game owns the network now
+      // Every player's car model must be cached before Game builds the cars
+      whenModelsReady(collectJoinedModelIds(data), () => {
+        // Bail if the connection was torn down while a model was still loading
+        if (networkManager !== network) return;
+        const game = new Game(canvas, { mode: 'multiplayer', networkManager: network, playerVariant: chosenVariant, joinedData: data, arenaTheme: selectedArena });
+        game.hud.onBackToLobby = () => returnToLobby();
+        game.onMatchEnd = () => {
+          matchEndTimeoutId = setTimeout(() => returnToLobby(), 4000);
+        };
+        activeGame = game;
+        window.game = game;
+        networkManager = null; // Game owns the network now
+      });
     });
 
     network.on('playerDisconnected', (data) => {
@@ -1234,38 +1311,73 @@ window.addEventListener('DOMContentLoaded', async () => {
   });
 
   // ========== GAMEPAD LOBBY NAVIGATION ==========
+  // Polls at 20Hz only while the lobby is visible (start/stop are wired to
+  // lobby show/hide). The focusable-button list is cached and only rebuilt
+  // after the lobby DOM changes (screen switch, slot re-render, focus move).
   {
+    const GP_POLL_MS = 50; // 20Hz: fast enough for edge-detected button taps
     let gpFocusIdx = 0;
+    let gpFocusEl = null;
     let gpPrevUp = false, gpPrevDown = false, gpPrevLeft = false, gpPrevRight = false;
     let gpPrevA = false, gpPrevB = false;
     const STICK_THRESHOLD = 0.5;
 
-    // Get all visible, clickable buttons on the current lobby screen
+    let gpPollTimer = null;
+    let gpRefocusTimer = null;
+    let gpButtons = [];
+    let gpButtonsDirty = true;
+
+    // Any style/class/child change in the lobby may change which buttons are
+    // visible; just flag the cache and let the next poll tick rebuild it.
+    const gpDomObserver = new MutationObserver(() => { gpButtonsDirty = true; });
+    gpDomObserver.observe(lobby, {
+      subtree: true,
+      childList: true,
+      attributes: true,
+      attributeFilter: ['style', 'class', 'disabled'],
+    });
+
+    // Get all visible, clickable buttons on the current lobby screen (cached)
     function getVisibleButtons() {
+      if (!gpButtonsDirty) return gpButtons;
       const btns = [];
       lobby.querySelectorAll('.lobby-btn, .lobby-btn-nav, .lobby-link-btn').forEach(el => {
         if (el.offsetParent !== null && !el.disabled && el.style.display !== 'none') {
           btns.push(el);
         }
       });
+      gpButtons = btns;
+      gpButtonsDirty = false;
       return btns;
     }
 
     function setGpFocus(btns, idx) {
-      // Remove previous focus
-      lobby.querySelectorAll('.gp-focus').forEach(el => el.classList.remove('gp-focus'));
+      // Remove previous focus (this code is the only writer of .gp-focus)
+      if (gpFocusEl) {
+        gpFocusEl.classList.remove('gp-focus');
+        gpFocusEl = null;
+      }
       if (btns.length === 0) return;
       gpFocusIdx = ((idx % btns.length) + btns.length) % btns.length;
-      btns[gpFocusIdx].classList.add('gp-focus');
-      btns[gpFocusIdx].scrollIntoView({ block: 'nearest' });
+      gpFocusEl = btns[gpFocusIdx];
+      gpFocusEl.classList.add('gp-focus');
+      gpFocusEl.scrollIntoView({ block: 'nearest' });
+    }
+
+    // After a click changes screens, refocus the first button of the new screen
+    function scheduleRefocus() {
+      gpFocusIdx = 0;
+      if (gpRefocusTimer) clearTimeout(gpRefocusTimer);
+      gpRefocusTimer = setTimeout(() => {
+        gpRefocusTimer = null;
+        gpButtonsDirty = true;
+        const newBtns = getVisibleButtons();
+        if (newBtns.length > 0) setGpFocus(newBtns, 0);
+      }, 100);
     }
 
     function pollLobbyGamepad() {
-      // Only poll when lobby is visible
-      if (lobby.style.display === 'none') {
-        requestAnimationFrame(pollLobbyGamepad);
-        return;
-      }
+      if (document.hidden || lobby.style.display === 'none') return;
 
       const gamepads = navigator.getGamepads ? navigator.getGamepads() : [];
       let gp = null;
@@ -1273,10 +1385,7 @@ window.addEventListener('DOMContentLoaded', async () => {
         if (g) { gp = g; break; }
       }
 
-      if (!gp) {
-        requestAnimationFrame(pollLobbyGamepad);
-        return;
-      }
+      if (!gp) return;
 
       // Read inputs
       const stickY = gp.axes[1] || 0;
@@ -1326,29 +1435,21 @@ window.addEventListener('DOMContentLoaded', async () => {
         if (gpFocusIdx < btns.length) {
           btns[gpFocusIdx].click();
           // Reset focus for new screen
-          gpFocusIdx = 0;
-          setTimeout(() => {
-            const newBtns = getVisibleButtons();
-            if (newBtns.length > 0) setGpFocus(newBtns, 0);
-          }, 100);
+          scheduleRefocus();
         }
       }
 
-      // B = back (find visible back button and click it)
+      // B = back (click the visible back button, if any)
       if (bBtn && !gpPrevB) {
-        const backBtn = lobby.querySelector('.lobby-btn-back:not([style*="display: none"])');
-        if (backBtn && backBtn.offsetParent !== null) {
+        const backBtn = btns.find(el => el.classList.contains('lobby-btn-back'));
+        if (backBtn) {
           backBtn.click();
-          gpFocusIdx = 0;
-          setTimeout(() => {
-            const newBtns = getVisibleButtons();
-            if (newBtns.length > 0) setGpFocus(newBtns, 0);
-          }, 100);
+          scheduleRefocus();
         }
       }
 
-      // Show focus if not already visible
-      if (btns.length > 0 && !lobby.querySelector('.gp-focus')) {
+      // Show focus if nothing is focused yet
+      if (btns.length > 0 && (!gpFocusEl || !gpFocusEl.isConnected)) {
         setGpFocus(btns, gpFocusIdx);
       }
 
@@ -1358,10 +1459,26 @@ window.addEventListener('DOMContentLoaded', async () => {
       gpPrevRight = right;
       gpPrevA = aBtn;
       gpPrevB = bBtn;
-
-      requestAnimationFrame(pollLobbyGamepad);
     }
 
-    requestAnimationFrame(pollLobbyGamepad);
+    startLobbyGamepadPoll = () => {
+      if (gpPollTimer !== null) return;
+      gpButtonsDirty = true;
+      gpPollTimer = setInterval(pollLobbyGamepad, GP_POLL_MS);
+    };
+
+    stopLobbyGamepadPoll = () => {
+      if (gpPollTimer !== null) {
+        clearInterval(gpPollTimer);
+        gpPollTimer = null;
+      }
+      if (gpRefocusTimer) {
+        clearTimeout(gpRefocusTimer);
+        gpRefocusTimer = null;
+      }
+    };
+
+    // Lobby is visible at this point (loading finished above)
+    startLobbyGamepadPoll();
   }
 });

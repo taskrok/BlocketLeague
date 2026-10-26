@@ -1,13 +1,37 @@
 // ============================================
 // ExplosionManager - Explosion/VFX and landing ring effects
 // Extracted from Game.js with material pooling optimization
+//
+// Pooling strategy (allocation-free after warm-up):
+//  - Every particle/flash/ring is a pooled Mesh that owns its own
+//    MeshBasicMaterial. Pooled meshes live permanently under a single
+//    container Group in the scene and are toggled via `visible`, so no
+//    scene.add/remove churn per explosion.
+//  - Point lights: a fixed pool of 2 PointLights added to the scene once
+//    with intensity 0. Adding/removing lights forces every lit material to
+//    re-evaluate (often recompile) its shader program in three r161, so the
+//    light count must never change at runtime. An explosion borrows a
+//    light if one is idle; otherwise it simply has no light.
+//  - Explosion records and per-particle records are pooled as well.
 // ============================================
 
 import * as THREE from 'three';
 import { DEMOLITION, COLORS } from '../../shared/constants.js';
 
-// Material pool size for particle reuse
-const MATERIAL_POOL_SIZE = 30;
+// Pool warm-up sizes: sized for 2 concurrent goal explosions
+// (1 flash + 50 sparks + 20 debris + 2 rings each) plus a couple of
+// demolition explosions (1 flash + PARTICLE_COUNT debris each).
+// Pools grow on demand if ever exhausted, so these only set the warm-up.
+const FLASH_POOL_SIZE = 4;
+const SPARK_POOL_SIZE = 100;
+const DEBRIS_POOL_SIZE = 40 + DEMOLITION.PARTICLE_COUNT * 2;
+const GOAL_RING_POOL_SIZE = 4;
+const LANDING_RING_POOL_SIZE = 12;
+const LIGHT_POOL_SIZE = 2;
+
+// Reusable scratch colors (never retained)
+const _tmpColor = new THREE.Color();
+const _white = new THREE.Color(0xffffff);
 
 export class ExplosionManager {
   /**
@@ -22,34 +46,136 @@ export class ExplosionManager {
     this._sharedFlashGeo = new THREE.SphereGeometry(1, 12, 12);
     this._sharedDebrisGeo = new THREE.BoxGeometry(0.3, 0.3, 0.3);
     this._sharedSparkGeo = new THREE.BoxGeometry(0.15, 0.15, 0.6);
-    this._sharedRingGeo = new THREE.RingGeometry(0.8, 1.2, 24);
+    this._sharedRingGeo = new THREE.RingGeometry(0.8, 1.2, 24);      // landing rings
+    this._sharedGoalRingGeo = new THREE.RingGeometry(0.5, 1.0, 32);  // goal shockwave rings
 
-    // Material pool: reusable MeshBasicMaterial instances to avoid per-particle allocation
-    this._materialPool = [];
-    this._materialPoolIndex = 0;
-    for (let i = 0; i < MATERIAL_POOL_SIZE; i++) {
-      this._materialPool.push(new THREE.MeshBasicMaterial({
-        color: 0xffffff,
-        transparent: true,
-        opacity: 1,
-      }));
+    // Container for all pooled meshes; lives in the scene permanently.
+    this._fxRoot = new THREE.Group();
+    this._fxRoot.name = 'ExplosionFX';
+    this.scene.add(this._fxRoot);
+
+    // Mesh pools: free-list stacks of pooled entries { mesh, vx, vy, vz, spin, isSpark }
+    this._flashPool = this._createMeshPool(this._sharedFlashGeo, FLASH_POOL_SIZE, false);
+    this._sparkPool = this._createMeshPool(this._sharedSparkGeo, SPARK_POOL_SIZE, false);
+    this._debrisPool = this._createMeshPool(this._sharedDebrisGeo, DEBRIS_POOL_SIZE, false);
+    this._goalRingPool = this._createMeshPool(this._sharedGoalRingGeo, GOAL_RING_POOL_SIZE, true);
+    this._landingRingPool = this._createMeshPool(this._sharedRingGeo, LANDING_RING_POOL_SIZE, true);
+
+    // Explosion record pool (free list)
+    this._explosionRecordPool = [];
+    // Landing ring record pool (free list)
+    this._landingRecordPool = [];
+
+    // Fixed light pool: created once, added to the scene once, never removed/hidden.
+    this._lights = [];
+    for (let i = 0; i < LIGHT_POOL_SIZE; i++) {
+      const light = new THREE.PointLight(0xffffff, 0, 30);
+      light.name = 'ExplosionLight' + i;
+      light.userData.busy = false;
+      this.scene.add(light);
+      this._lights.push(light);
     }
   }
 
-  /** Borrow a material from the pool, setting color and opacity. */
-  _borrowMaterial(color, opacity = 1) {
-    const mat = this._materialPool[this._materialPoolIndex];
-    this._materialPoolIndex = (this._materialPoolIndex + 1) % MATERIAL_POOL_SIZE;
-    mat.color.set(color);
-    mat.opacity = opacity;
-    mat.visible = true;
-    return mat;
+  // ========== POOL HELPERS ==========
+
+  _createMeshPool(geometry, size, doubleSide) {
+    const pool = { geometry, doubleSide, free: [] };
+    for (let i = 0; i < size; i++) {
+      pool.free.push(this._createPoolEntry(pool));
+    }
+    return pool;
   }
 
-  /** Return a material to idle state (no disposal needed since pool owns them). */
-  _releaseMaterial(mat) {
-    mat.opacity = 0;
-    mat.visible = false;
+  _createPoolEntry(pool) {
+    const mat = new THREE.MeshBasicMaterial({
+      color: 0xffffff,
+      transparent: true,
+      opacity: 1,
+      side: pool.doubleSide ? THREE.DoubleSide : THREE.FrontSide,
+    });
+    const mesh = new THREE.Mesh(pool.geometry, mat);
+    mesh.visible = false;
+    this._fxRoot.add(mesh);
+    return { mesh, vx: 0, vy: 0, vz: 0, spin: 0, isSpark: false };
+  }
+
+  /**
+   * Borrow a pooled mesh entry; resets transform, sets color/opacity, makes it visible.
+   * Grows the pool if exhausted (rare; warm-up sizes cover normal play).
+   * @param {number|THREE.Color} color
+   */
+  _acquire(pool, color, opacity) {
+    const entry = pool.free.length > 0 ? pool.free.pop() : this._createPoolEntry(pool);
+    const mesh = entry.mesh;
+    mesh.position.set(0, 0, 0);
+    mesh.rotation.set(0, 0, 0);
+    mesh.scale.set(1, 1, 1);
+    mesh.material.color.set(color);
+    mesh.material.opacity = opacity;
+    mesh.visible = true;
+    entry.vx = 0; entry.vy = 0; entry.vz = 0; entry.spin = 0; entry.isSpark = false;
+    return entry;
+  }
+
+  /** Return a pooled mesh entry to idle state. */
+  _release(pool, entry) {
+    entry.mesh.visible = false;
+    entry.mesh.material.opacity = 0;
+    pool.free.push(entry);
+  }
+
+  /** Borrow an idle pooled light, or null if both are busy. */
+  _borrowLight(color, intensity, distance, x, y, z) {
+    for (let i = 0; i < this._lights.length; i++) {
+      const light = this._lights[i];
+      if (light.userData.busy) continue;
+      light.userData.busy = true;
+      light.color.set(color);
+      light.intensity = intensity;
+      light.distance = distance;
+      light.position.set(x, y, z);
+      return light;
+    }
+    return null;
+  }
+
+  _releaseLight(light) {
+    if (!light) return;
+    light.intensity = 0;
+    light.userData.busy = false;
+  }
+
+  _acquireExplosionRecord() {
+    if (this._explosionRecordPool.length > 0) return this._explosionRecordPool.pop();
+    return {
+      x: 0, y: 0, z: 0,
+      flash: null,
+      light: null,
+      lightIntensity: 0,
+      particles: [],
+      elapsed: 0,
+      isGoal: false,
+      ring: null,
+      ring2: null,
+    };
+  }
+
+  _releaseExplosionRecord(ex) {
+    this._release(this._flashPool, ex.flash);
+    ex.flash = null;
+    for (let i = 0; i < ex.particles.length; i++) {
+      const p = ex.particles[i];
+      this._release(p.isSpark ? this._sparkPool : this._debrisPool, p);
+    }
+    ex.particles.length = 0;
+    if (ex.ring) { this._release(this._goalRingPool, ex.ring); ex.ring = null; }
+    if (ex.ring2) { this._release(this._goalRingPool, ex.ring2); ex.ring2 = null; }
+    this._releaseLight(ex.light);
+    ex.light = null;
+    ex.isGoal = false;
+    ex.elapsed = 0;
+    this._explosionRecordPool.push(ex);
   }
 
   get activeExplosions() {
@@ -60,109 +186,88 @@ export class ExplosionManager {
     return this._activeLandingRings;
   }
 
+  // ========== EXPLOSIONS ==========
+
   spawnExplosion(pos, color) {
-    const group = new THREE.Group();
-    group.position.set(pos.x, pos.y, pos.z);
+    const ex = this._acquireExplosionRecord();
+    ex.x = pos.x; ex.y = pos.y; ex.z = pos.z;
+    ex.isGoal = false;
+    ex.elapsed = 0;
 
     // Flash sphere
-    const flashMat = this._borrowMaterial(color, 1);
-    const flash = new THREE.Mesh(this._sharedFlashGeo, flashMat);
-    group.add(flash);
+    ex.flash = this._acquire(this._flashPool, color, 1);
+    ex.flash.mesh.position.set(ex.x, ex.y, ex.z);
 
-    // Point light
-    const light = new THREE.PointLight(color, 5, 30);
-    group.add(light);
+    // Point light (borrowed from the fixed pool; may be null)
+    ex.lightIntensity = 5;
+    ex.light = this._borrowLight(color, 5, 30, ex.x, ex.y, ex.z);
 
     // Debris particles
-    const particles = [];
     for (let i = 0; i < DEMOLITION.PARTICLE_COUNT; i++) {
-      const mat = this._borrowMaterial(color, 1);
-      const p = new THREE.Mesh(this._sharedDebrisGeo, mat);
-      p.position.set(0, 0, 0);
-      const vx = (Math.random() - 0.5) * 2 * DEMOLITION.PARTICLE_SPEED;
-      const vy = Math.random() * DEMOLITION.PARTICLE_SPEED;
-      const vz = (Math.random() - 0.5) * 2 * DEMOLITION.PARTICLE_SPEED;
-      group.add(p);
-      particles.push({ mesh: p, vx, vy, vz });
+      const p = this._acquire(this._debrisPool, color, 1);
+      p.mesh.position.set(ex.x, ex.y, ex.z);
+      p.vx = (Math.random() - 0.5) * 2 * DEMOLITION.PARTICLE_SPEED;
+      p.vy = Math.random() * DEMOLITION.PARTICLE_SPEED;
+      p.vz = (Math.random() - 0.5) * 2 * DEMOLITION.PARTICLE_SPEED;
+      ex.particles.push(p);
     }
 
-    this.scene.add(group);
-    this._activeExplosions.push({
-      group,
-      flash,
-      flashMat,
-      light,
-      particles,
-      elapsed: 0,
-    });
+    this._activeExplosions.push(ex);
   }
 
   spawnGoalExplosion(pos, color) {
-    const group = new THREE.Group();
-    group.position.set(pos.x, pos.y, pos.z);
-    const c = new THREE.Color(color);
+    const ex = this._acquireExplosionRecord();
+    ex.x = pos.x; ex.y = pos.y; ex.z = pos.z;
+    ex.isGoal = true;
+    ex.elapsed = 0;
 
     // Core flash sphere
-    const flashMat = this._borrowMaterial(color, 1);
-    const flash = new THREE.Mesh(this._sharedFlashGeo, flashMat);
-    group.add(flash);
+    ex.flash = this._acquire(this._flashPool, color, 1);
+    ex.flash.mesh.position.set(ex.x, ex.y, ex.z);
 
-    // Bright point light
-    const light = new THREE.PointLight(color, 10, 80);
-    group.add(light);
+    // Bright point light (borrowed from the fixed pool; may be null)
+    ex.lightIntensity = 10;
+    ex.light = this._borrowLight(color, 10, 80, ex.x, ex.y, ex.z);
 
     // Expanding shockwave ring (horizontal)
-    const ringGeo = new THREE.RingGeometry(0.5, 1.0, 32);
-    const ringMat = new THREE.MeshBasicMaterial({
-      color, transparent: true, opacity: 0.9, side: THREE.DoubleSide,
-    });
-    const ring = new THREE.Mesh(ringGeo, ringMat);
-    ring.rotation.x = -Math.PI / 2;
-    group.add(ring);
+    ex.ring = this._acquire(this._goalRingPool, color, 0.9);
+    ex.ring.mesh.position.set(ex.x, ex.y, ex.z);
+    ex.ring.mesh.rotation.x = -Math.PI / 2;
 
     // Second ring (vertical)
-    const ring2Mat = new THREE.MeshBasicMaterial({
-      color, transparent: true, opacity: 0.9, side: THREE.DoubleSide,
-    });
-    const ring2 = new THREE.Mesh(ringGeo, ring2Mat);
-    group.add(ring2);
-
-    const particles = [];
+    ex.ring2 = this._acquire(this._goalRingPool, color, 0.9);
+    ex.ring2.mesh.position.set(ex.x, ex.y, ex.z);
 
     // Outer sparks -- fast, small, elongated
     for (let i = 0; i < 50; i++) {
-      const bright = c.clone().lerp(new THREE.Color(0xffffff), 0.4 + Math.random() * 0.4);
-      const mat = this._borrowMaterial(bright, 1);
-      const p = new THREE.Mesh(this._sharedSparkGeo, mat);
+      _tmpColor.set(color).lerp(_white, 0.4 + Math.random() * 0.4);
+      const p = this._acquire(this._sparkPool, _tmpColor, 1);
+      p.isSpark = true;
       const theta = Math.random() * Math.PI * 2;
       const phi = (Math.random() - 0.5) * Math.PI;
       const spd = 20 + Math.random() * 25;
-      const vx = Math.cos(theta) * Math.cos(phi) * spd;
-      const vy = Math.sin(phi) * spd * 0.6 + Math.random() * 8;
-      const vz = Math.sin(theta) * Math.cos(phi) * spd;
-      p.lookAt(vx, vy, vz);
-      group.add(p);
-      particles.push({ mesh: p, vx, vy, vz, isSpark: true });
+      p.vx = Math.cos(theta) * Math.cos(phi) * spd;
+      p.vy = Math.sin(phi) * spd * 0.6 + Math.random() * 8;
+      p.vz = Math.sin(theta) * Math.cos(phi) * spd;
+      // Orient along velocity (lookAt from origin, as before), then move to the origin point
+      p.mesh.lookAt(p.vx, p.vy, p.vz);
+      p.mesh.position.set(ex.x, ex.y, ex.z);
+      ex.particles.push(p);
     }
 
     // Chunky debris -- slower, heavier
     for (let i = 0; i < 20; i++) {
-      const mat = this._borrowMaterial(color, 1);
-      const p = new THREE.Mesh(this._sharedDebrisGeo, mat);
-      const scale = 0.5 + Math.random() * 1.5;
-      p.scale.setScalar(scale);
-      const vx = (Math.random() - 0.5) * 20;
-      const vy = 5 + Math.random() * 15;
-      const vz = (Math.random() - 0.5) * 20;
-      group.add(p);
-      particles.push({ mesh: p, vx, vy, vz, spin: (Math.random() - 0.5) * 10 });
+      const p = this._acquire(this._debrisPool, color, 1);
+      p.mesh.position.set(ex.x, ex.y, ex.z);
+      p.mesh.scale.setScalar(0.5 + Math.random() * 1.5);
+      p.vx = (Math.random() - 0.5) * 20;
+      p.vy = 5 + Math.random() * 15;
+      p.vz = (Math.random() - 0.5) * 20;
+      p.spin = (Math.random() - 0.5) * 10;
+      ex.particles.push(p);
     }
 
-    this.scene.add(group);
-    this._activeExplosions.push({
-      group, flash, flashMat, light, particles, elapsed: 0,
-      isGoal: true, ring, ringMat, ring2, ring2Mat, ringGeo,
-    });
+    this._activeExplosions.push(ex);
   }
 
   updateExplosions(dt) {
@@ -176,22 +281,24 @@ export class ExplosionManager {
       // Flash: scale up and fade out
       const flashT = Math.min(ex.elapsed / duration, 1);
       const flashScale = ex.isGoal ? 2 + flashT * 18 : 1 + flashT * 8;
-      ex.flash.scale.setScalar(flashScale);
-      ex.flash.material.opacity = Math.max(0, 1 - flashT);
-      ex.light.intensity = Math.max(0, (ex.isGoal ? 10 : 5) * (1 - flashT));
+      ex.flash.mesh.scale.setScalar(flashScale);
+      ex.flash.mesh.material.opacity = Math.max(0, 1 - flashT);
+      if (ex.light) ex.light.intensity = Math.max(0, ex.lightIntensity * (1 - flashT));
 
       // Goal: expanding shockwave rings
       if (ex.isGoal && ex.ring) {
         const ringScale = 2 + flashT * 40;
-        ex.ring.scale.setScalar(ringScale);
-        ex.ring.material.opacity = Math.max(0, 0.9 * (1 - flashT));
-        ex.ring2.scale.setScalar(ringScale * 0.8);
-        ex.ring2.material.opacity = Math.max(0, 0.7 * (1 - flashT * 1.2));
+        ex.ring.mesh.scale.setScalar(ringScale);
+        ex.ring.mesh.material.opacity = Math.max(0, 0.9 * (1 - flashT));
+        ex.ring2.mesh.scale.setScalar(ringScale * 0.8);
+        ex.ring2.mesh.material.opacity = Math.max(0, 0.7 * (1 - flashT * 1.2));
       }
 
       // Particles: move + gravity + fade
       const particleT = Math.min(ex.elapsed / lifetime, 1);
-      for (const p of ex.particles) {
+      const particles = ex.particles;
+      for (let j = 0; j < particles.length; j++) {
+        const p = particles[j];
         p.mesh.position.x += p.vx * dt;
         p.mesh.position.y += p.vy * dt;
         p.mesh.position.z += p.vz * dt;
@@ -208,19 +315,9 @@ export class ExplosionManager {
         }
       }
 
-      // Cleanup when done
+      // Cleanup when done: everything goes back to its pool
       if (ex.elapsed >= lifetime) {
-        this.scene.remove(ex.group);
-        // Release pooled materials back
-        this._releaseMaterial(ex.flashMat);
-        for (const p of ex.particles) {
-          this._releaseMaterial(p.mesh.material);
-        }
-        // Goal ring materials + geometry are not pooled (created fresh for rings)
-        if (ex.ringMat) ex.ringMat.dispose();
-        if (ex.ring2Mat) ex.ring2Mat.dispose();
-        if (ex.ringGeo) ex.ringGeo.dispose();
-        ex.light.dispose();
+        this._releaseExplosionRecord(ex);
         this._activeExplosions.splice(i, 1);
       }
     }
@@ -241,24 +338,21 @@ export class ExplosionManager {
   }
 
   spawnLandingRing(x, z, strength, color) {
-    const mat = new THREE.MeshBasicMaterial({
-      color: color,
-      transparent: true,
-      opacity: 0.6 * strength,
-      side: THREE.DoubleSide,
-    });
-    const ring = new THREE.Mesh(this._sharedRingGeo, mat);
-    ring.rotation.x = -Math.PI / 2;
-    ring.position.set(x, 0.08, z);
-    this.scene.add(ring);
+    const startOpacity = 0.6 * strength;
+    const entry = this._acquire(this._landingRingPool, color, startOpacity);
+    entry.mesh.rotation.x = -Math.PI / 2;
+    entry.mesh.position.set(x, 0.08, z);
 
-    this._activeLandingRings.push({
-      mesh: ring,
-      elapsed: 0,
-      duration: 0.3,
-      maxScale: 2 + strength * 4,
-      startOpacity: mat.opacity,
-    });
+    const r = this._landingRecordPool.length > 0
+      ? this._landingRecordPool.pop()
+      : { entry: null, mesh: null, elapsed: 0, duration: 0.3, maxScale: 0, startOpacity: 0 };
+    r.entry = entry;
+    r.mesh = entry.mesh;
+    r.elapsed = 0;
+    r.duration = 0.3;
+    r.maxScale = 2 + strength * 4;
+    r.startOpacity = startOpacity;
+    this._activeLandingRings.push(r);
   }
 
   updateLandingRings(dt) {
@@ -271,36 +365,51 @@ export class ExplosionManager {
       r.mesh.material.opacity = r.startOpacity * (1 - t);
 
       if (t >= 1) {
-        this.scene.remove(r.mesh);
-        r.mesh.material.dispose();
+        this._release(this._landingRingPool, r.entry);
+        r.entry = null;
+        r.mesh = null;
+        this._landingRecordPool.push(r);
         this._activeLandingRings.splice(i, 1);
       }
     }
   }
 
-  /** Clear all active effects (used on destroy). */
+  /**
+   * Clear all active effects and tear down pooled resources (used on destroy).
+   * Removes the pooled meshes and lights from the scene and disposes the
+   * shared geometries and pooled materials. The manager is not usable afterwards.
+   */
   clear() {
-    for (const ex of this._activeExplosions) {
-      this.scene.remove(ex.group);
-      ex.light.dispose();
-      if (ex.ringMat) ex.ringMat.dispose();
-      if (ex.ring2Mat) ex.ring2Mat.dispose();
-      if (ex.ringGeo) ex.ringGeo.dispose();
-      // Release pooled materials
-      this._releaseMaterial(ex.flashMat);
-      for (const p of ex.particles) {
-        this._releaseMaterial(p.mesh.material);
-      }
-      // Dispose any non-pooled child geometries/materials
-      ex.group.traverse((child) => {
-        if (child.geometry && !child.geometry._isShared) child.geometry.dispose();
-      });
+    // Return every active effect to idle
+    for (let i = this._activeExplosions.length - 1; i >= 0; i--) {
+      this._releaseExplosionRecord(this._activeExplosions[i]);
     }
-    for (const ring of this._activeLandingRings) {
-      this.scene.remove(ring.mesh);
-      ring.mesh.material.dispose();
+    this._activeExplosions.length = 0;
+    for (let i = this._activeLandingRings.length - 1; i >= 0; i--) {
+      const r = this._activeLandingRings[i];
+      this._release(this._landingRingPool, r.entry);
+      r.entry = null;
+      r.mesh = null;
     }
-    this._activeExplosions = [];
-    this._activeLandingRings = [];
+    this._activeLandingRings.length = 0;
+    for (const light of this._lights) this._releaseLight(light);
+
+    // Tear down pooled GPU resources (safe to double-dispose)
+    const pools = [this._flashPool, this._sparkPool, this._debrisPool, this._goalRingPool, this._landingRingPool];
+    for (const pool of pools) {
+      for (const entry of pool.free) entry.mesh.material.dispose();
+      pool.free.length = 0;
+    }
+    this._sharedFlashGeo.dispose();
+    this._sharedDebrisGeo.dispose();
+    this._sharedSparkGeo.dispose();
+    this._sharedRingGeo.dispose();
+    this._sharedGoalRingGeo.dispose();
+
+    if (this.scene) {
+      this.scene.remove(this._fxRoot);
+      for (const light of this._lights) this.scene.remove(light);
+    }
+    this._fxRoot.clear();
   }
 }

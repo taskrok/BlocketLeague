@@ -26,6 +26,23 @@ export class Ball {
     this._flashDecayRate = 0;
     this._originalEmissiveColor = new THREE.Color(COLORS.BALL);
     this._flashColor = new THREE.Color(0xffffff);
+
+    // Visual visibility (see setVisible). The point light is never hidden via
+    // `visible` because changing the visible light count forces every lit
+    // material in the scene to recompile; its intensity is driven instead.
+    this._visible = true;
+  }
+
+  /**
+   * Show/hide the ball visuals. The glow light stays in the scene (constant
+   * light count) and is dimmed to 0 instead of being hidden.
+   */
+  setVisible(visible) {
+    visible = !!visible;
+    this._visible = visible;
+    this.sphere.visible = visible;
+    this.shadowIndicator.visible = visible;
+    if (!visible) this.light.intensity = 0;
   }
 
   _createPhysics() {
@@ -175,10 +192,14 @@ export class Ball {
     }
     this.mesh.quaternion.copy(this._spinQuat);
 
-    // Update light intensity based on speed
-    this.light.intensity = this.light.distance <= 8
-      ? 0.3 + Math.min(curSpeed * 0.02, 0.5)   // mobile: subtle
-      : 0.8 + Math.min(curSpeed * 0.05, 1.5);   // desktop: full glow
+    // Update light intensity based on speed (0 while hidden — see setVisible)
+    if (!this._visible) {
+      this.light.intensity = 0;
+    } else {
+      this.light.intensity = this.light.distance <= 8
+        ? 0.3 + Math.min(curSpeed * 0.02, 0.5)   // mobile: subtle
+        : 0.8 + Math.min(curSpeed * 0.05, 1.5);   // desktop: full glow
+    }
 
     // Emissive intensity based on speed
     let intensity = 0.3 + Math.min(curSpeed * 0.02, 0.8);

@@ -7,7 +7,8 @@
 import * as THREE from 'three';
 import * as CANNON from 'cannon-es';
 import { ARENA, COLORS, COLLISION_GROUPS, BOOST_PAD_LAYOUT } from '../../shared/constants.js';
-import { createArenaGeometry } from './ArenaGeometry.js';
+import { mergeGeometries } from 'three/examples/jsm/utils/BufferGeometryUtils.js';
+import { getArenaVisualGeometry, getArenaTrimeshData } from './ArenaGeometry.js';
 import { createArenaMaterial } from './ArenaShader.js';
 import { ARENA_THEMES } from './ArenaThemes.js';
 const logoSvgUrl = '/BlocketLeagueLogo.svg';
@@ -20,6 +21,125 @@ const GH = ARENA.GOAL_HEIGHT;
 const GD = ARENA.GOAL_DEPTH;
 const R  = ARENA.CURVE_RADIUS;
 const CR = ARENA.CORNER_RADIUS;  // XZ corner radius
+
+// ============================================
+// Module-level caches — shared across `new Arena()` calls (one Game per match).
+//
+// Game.destroy() traverses the scene and calls dispose() on every geometry,
+// material and texture it finds, including these cached objects. That is safe:
+// three's dispose() only releases GPU-side resources and keeps the CPU data
+// (BufferAttribute arrays / the canvas backing a CanvasTexture), so the next
+// renderer that encounters the object simply re-uploads it. Nothing here needs
+// to be re-created after a dispose.
+// ============================================
+
+// Ball-collision trimesh shape. Trimesh builds an octree in its constructor,
+// so share one instance between bodies. cannon-es Body.addShape only writes
+// `shape.body` (never read back), so a Shape can belong to several bodies.
+let cachedTrimeshShape = null;
+function getArenaTrimeshShape() {
+  if (!cachedTrimeshShape) {
+    const { vertices, indices } = getArenaTrimeshData();
+    cachedTrimeshShape = new CANNON.Trimesh(vertices, indices);
+  }
+  return cachedTrimeshShape;
+}
+
+// Field logo (SVG -> canvas -> texture). Async; cached as a promise so a
+// second Arena resolves immediately and never re-rasterises the SVG.
+const LOGO_SVG_W = 889;   // SVG viewBox dimensions
+const LOGO_SVG_H = 507;
+const LOGO_TEX_W = 1024;  // was 2048 — logo is 28.5 units tall on the field, this is plenty
+let logoTexturePromise = null;
+function loadLogoTexture() {
+  if (!logoTexturePromise) {
+    logoTexturePromise = new Promise((resolve, reject) => {
+      const img = new Image();
+      img.onload = () => {
+        const canvas = document.createElement('canvas');
+        canvas.width = LOGO_TEX_W;
+        canvas.height = Math.round(LOGO_TEX_W * (LOGO_SVG_H / LOGO_SVG_W));
+        const ctx = canvas.getContext('2d');
+        ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
+
+        const texture = new THREE.CanvasTexture(canvas);
+        texture.minFilter = THREE.LinearFilter;
+        texture.magFilter = THREE.LinearFilter;
+        resolve(texture);
+      };
+      img.onerror = (e) => {
+        logoTexturePromise = null; // allow a retry next match
+        reject(e);
+      };
+      img.src = logoSvgUrl;
+    });
+  }
+  return logoTexturePromise;
+}
+
+// Exterior neon text, keyed by text + glow colour (theme-dependent).
+const EXT_TEXT_W = 2048;  // was 4096x512
+const EXT_TEXT_H = 256;
+const exteriorTextTextures = new Map();
+function getExteriorTextTexture(text, glowColor) {
+  const key = `${text}|${glowColor}`;
+  let texture = exteriorTextTextures.get(key);
+  if (texture) return texture;
+
+  const canvas = document.createElement('canvas');
+  canvas.width = EXT_TEXT_W;
+  canvas.height = EXT_TEXT_H;
+  const ctx = canvas.getContext('2d');
+
+  // Black fill — additive blending makes black invisible
+  ctx.fillStyle = '#000';
+  ctx.fillRect(0, 0, canvas.width, canvas.height);
+
+  const cx = canvas.width / 2;
+  const cy = canvas.height / 2;
+  // Font + blur radii are half the old 4096x512 values so the look is unchanged
+  ctx.font = '900 130px "Arial Black", Arial, sans-serif';
+  ctx.textAlign = 'center';
+  ctx.textBaseline = 'middle';
+
+  const glowHex = '#' + new THREE.Color(glowColor).getHexString();
+  const glowBright = '#' + new THREE.Color(glowColor).lerp(new THREE.Color(0xffffff), 0.4).getHexString();
+  const coreColor = '#' + new THREE.Color(glowColor).lerp(new THREE.Color(0xffffff), 0.8).getHexString();
+
+  // Neon glow: layered soft shadows (outer -> inner)
+  [
+    { blur: 40, color: glowHex, alpha: 0.08 },
+    { blur: 20, color: glowHex, alpha: 0.15 },
+    { blur: 10, color: glowHex, alpha: 0.3 },
+    { blur: 4,  color: glowBright, alpha: 0.6 },
+  ].forEach(({ blur, color, alpha }) => {
+    ctx.save();
+    ctx.shadowColor = color;
+    ctx.shadowBlur = blur;
+    ctx.globalAlpha = alpha;
+    ctx.fillStyle = color;
+    ctx.fillText(text, cx, cy);
+    ctx.restore();
+  });
+
+  // Bright core
+  ctx.globalAlpha = 1.0;
+  ctx.fillStyle = coreColor;
+  ctx.fillText(text, cx, cy);
+
+  texture = new THREE.CanvasTexture(canvas);
+  texture.minFilter = THREE.LinearFilter;
+  texture.magFilter = THREE.LinearFilter;
+  exteriorTextTextures.set(key, texture);
+  return texture;
+}
+
+// Unlit stand-in for the old `MeshStandardMaterial({ color: c, emissive: c,
+// emissiveIntensity: k })` decals: emissive k plus roughly 0.35 of ambient-lit
+// base colour. Values above 1 still feed the bloom pass like the originals.
+function emissiveBasicColor(hex, emissiveIntensity) {
+  return new THREE.Color(hex).multiplyScalar(emissiveIntensity + 0.35);
+}
 
 export class Arena {
   constructor(scene, world, theme = null) {
@@ -113,11 +233,11 @@ export class Arena {
   // ========== VISUAL MESH (single curved geometry) ==========
 
   _buildArenaShell() {
-    const geometry = createArenaGeometry();
+    // Geometry is theme-independent and cached at module scope (see ArenaGeometry.js)
+    const geometry = getArenaVisualGeometry();
     const material = createArenaMaterial(this.theme);
 
     const mesh = new THREE.Mesh(geometry, material);
-    mesh.receiveShadow = true;
     this.scene.add(mesh);
     this.meshes.push(mesh);
     this.arenaMesh = mesh;
@@ -126,24 +246,14 @@ export class Arena {
   // ========== TRIMESH COLLIDER (ball only) ==========
 
   _buildTrimeshCollider() {
-    const geometry = this.arenaMesh.geometry;
-    const posAttr = geometry.getAttribute('position');
-    const index = geometry.index;
-
-    const vertices = new Float32Array(posAttr.array);
-    const indices = new Int32Array(index.array);
-
-    const trimesh = new CANNON.Trimesh(
-      Array.from(vertices),
-      Array.from(indices)
-    );
-
+    // Coarser tessellation than the visual mesh (same analytic curves), built
+    // and octree'd once per process — see getArenaTrimeshShape().
     this.trimeshBody = new CANNON.Body({
       type: CANNON.Body.STATIC,
       collisionFilterGroup: COLLISION_GROUPS.ARENA_TRIMESH,
       collisionFilterMask: COLLISION_GROUPS.BALL,
     });
-    this.trimeshBody.addShape(trimesh);
+    this.trimeshBody.addShape(getArenaTrimeshShape());
     this.world.addBody(this.trimeshBody);
 
     // Backup planes for ball — cannon-es trimesh can be unreliable,
@@ -338,23 +448,7 @@ export class Arena {
     const mask = COLLISION_GROUPS.CAR;
     const fr = ARENA.GOAL_FILLET_RADIUS; // interior corner rounding radius
     const SEGS = 5; // segments per quarter-arc fillet
-
-    const goalMaterials = [
-      new THREE.MeshStandardMaterial({
-        color: COLORS.GOAL_BLUE,
-        emissive: COLORS.GOAL_BLUE,
-        emissiveIntensity: 0.3,
-        transparent: true,
-        opacity: 0.3,
-      }),
-      new THREE.MeshStandardMaterial({
-        color: COLORS.GOAL_ORANGE,
-        emissive: COLORS.GOAL_ORANGE,
-        emissiveIntensity: 0.3,
-        transparent: true,
-        opacity: 0.3,
-      }),
-    ];
+    const postW = 0.3;
 
     [-1, 1].forEach((side, idx) => {
       const zMouth = side * HL;
@@ -424,33 +518,21 @@ export class Arena {
 
       // --- Visual overlays (decoration only, no physics) ---
 
-      // Goal frame — neon posts + crossbar outline at the goal mouth
+      // Goal frame — neon posts + crossbar outline + goal line at the goal mouth.
+      // Purely emissive, so unlit; the four static boxes share one material and
+      // are merged into a single draw call per goal.
       const gc = idx === 0 ? COLORS.GOAL_BLUE : COLORS.GOAL_ORANGE;
-      const frameMat = new THREE.MeshStandardMaterial({
-        color: gc, emissive: gc, emissiveIntensity: 2,
-      });
-      const postW = 0.3;
+      const frameMat = new THREE.MeshBasicMaterial({ color: emissiveBasicColor(gc, 2) });
 
-      // Left post
-      const lPost = new THREE.Mesh(new THREE.BoxGeometry(postW, GH, postW), frameMat);
-      lPost.position.set(-GW, GH / 2, zMouth);
-      this.scene.add(lPost);
-
-      // Right post
-      const rPost = new THREE.Mesh(new THREE.BoxGeometry(postW, GH, postW), frameMat);
-      rPost.position.set(GW, GH / 2, zMouth);
-      this.scene.add(rPost);
-
-      // Crossbar
-      const crossbar = new THREE.Mesh(new THREE.BoxGeometry(GW * 2 + postW, postW, postW), frameMat);
-      crossbar.position.set(0, GH, zMouth);
-      this.scene.add(crossbar);
-
-      // Goal line glow on floor
-      const lineGeo = new THREE.BoxGeometry(GW * 2, 0.05, 0.3);
-      const line = new THREE.Mesh(lineGeo, frameMat);
-      line.position.set(0, 0.06, zMouth);
-      this.scene.add(line);
+      const frameGeo = mergeGeometries([
+        new THREE.BoxGeometry(postW, GH, postW).translate(-GW, GH / 2, zMouth),          // left post
+        new THREE.BoxGeometry(postW, GH, postW).translate(GW, GH / 2, zMouth),           // right post
+        new THREE.BoxGeometry(GW * 2 + postW, postW, postW).translate(0, GH, zMouth),    // crossbar
+        new THREE.BoxGeometry(GW * 2, 0.05, 0.3).translate(0, 0.06, zMouth),             // goal line glow on floor
+      ]);
+      const frame = new THREE.Mesh(frameGeo, frameMat);
+      this.scene.add(frame);
+      this.meshes.push(frame);
     });
   }
 
@@ -484,15 +566,17 @@ export class Arena {
 
   // ========== FIELD MARKINGS ==========
 
+  // All markings are flat emissive decals: unlit MeshBasicMaterial, one
+  // material per distinct colour/opacity, static geometry merged per material.
+  // None of these materials are mutated at runtime, so sharing is safe.
+
   _buildFieldMarkings() {
     const blueColor = this.theme.markingBlue;
     const redColor = this.theme.markingRed;
 
     // Center line — neutral white divider
-    const centerMat = new THREE.MeshStandardMaterial({
-      color: 0xffffff,
-      emissive: 0xffffff,
-      emissiveIntensity: 0.6,
+    const centerMat = new THREE.MeshBasicMaterial({
+      color: emissiveBasicColor(0xffffff, 0.6),
       transparent: true,
       opacity: 0.5,
     });
@@ -500,14 +584,13 @@ export class Arena {
     const centerLine = new THREE.Mesh(centerGeo, centerMat);
     centerLine.position.y = 0.06;
     this.scene.add(centerLine);
+    this.meshes.push(centerLine);
 
     // Center circle — blue half (negative Z, player 1 side)
     // After rotation.x = -PI/2: theta=PI..2PI maps to -Z half
     const blueRingGeo = new THREE.RingGeometry(13, 13.4, 32, 1, Math.PI, Math.PI);
-    const blueRingMat = new THREE.MeshStandardMaterial({
-      color: blueColor,
-      emissive: blueColor,
-      emissiveIntensity: 0.8,
+    const blueRingMat = new THREE.MeshBasicMaterial({
+      color: emissiveBasicColor(blueColor, 0.8),
       transparent: true,
       opacity: 0.5,
       side: THREE.DoubleSide,
@@ -516,14 +599,13 @@ export class Arena {
     blueRing.rotation.x = -Math.PI / 2;
     blueRing.position.y = 0.06;
     this.scene.add(blueRing);
+    this.meshes.push(blueRing);
 
     // Center circle — red half (positive Z, player 2 side)
     // After rotation.x = -PI/2: theta=0..PI maps to +Z half
     const redRingGeo = new THREE.RingGeometry(13, 13.4, 32, 1, 0, Math.PI);
-    const redRingMat = new THREE.MeshStandardMaterial({
-      color: redColor,
-      emissive: redColor,
-      emissiveIntensity: 0.8,
+    const redRingMat = new THREE.MeshBasicMaterial({
+      color: emissiveBasicColor(redColor, 0.8),
       transparent: true,
       opacity: 0.5,
       side: THREE.DoubleSide,
@@ -532,38 +614,18 @@ export class Arena {
     redRing.rotation.x = -Math.PI / 2;
     redRing.position.y = 0.06;
     this.scene.add(redRing);
+    this.meshes.push(redRing);
 
-    // Circles around large (100%) boost pads
-    const HW = ARENA.WIDTH / 2;
-    const HL = ARENA.LENGTH / 2;
+    // ---- White 40%-opacity markings: 6 boost-pad circles + 2 arched boundary
+    //      lines. Same colour/opacity, so one material and one merged mesh. ----
     const boostCircleRadius = 6;
     const boostCircleThickness = 0.3;
+    const markY = 0.12;
 
-    BOOST_PAD_LAYOUT.large.forEach((pos) => {
-      const wx = pos.x * HW;
-      const wz = pos.z * HL;
-      const circleGeo = new THREE.RingGeometry(
-        boostCircleRadius, boostCircleRadius + boostCircleThickness, 32
-      );
-      const circleMat = new THREE.MeshStandardMaterial({
-        color: 0xffffff,
-        emissive: 0xffffff,
-        emissiveIntensity: 0.6,
-        transparent: true,
-        opacity: 0.4,
-        side: THREE.DoubleSide,
-      });
-      const circle = new THREE.Mesh(circleGeo, circleMat);
-      circle.rotation.x = -Math.PI / 2;
-      circle.position.set(wx, 0.12, wz);
-      this.scene.add(circle);
-    });
-
-    // Arched boundary lines — one continuous arch per side through all 3 large pads,
-    // bowing outward toward the wall
-    const lineThickness = 0.25;
-    const lineY = 0.12;
-    const arcSegments = 64;
+    // One ring geometry, pre-rotated flat, cloned+translated per pad
+    const circleGeo = new THREE.RingGeometry(
+      boostCircleRadius, boostCircleRadius + boostCircleThickness, 32
+    ).rotateX(-Math.PI / 2);
 
     // Large pad world positions: [0]=back-left, [1]=back-right, [2]=mid-left, [3]=mid-right, [4]=front-left, [5]=front-right
     const largePads = BOOST_PAD_LAYOUT.large.map(p => ({
@@ -571,27 +633,38 @@ export class Arena {
       z: p.z * HL,
     }));
 
+    const whiteParts = largePads.map(p => circleGeo.clone().translate(p.x, markY, p.z));
+
+    // Arched boundary lines — one continuous arch per side through all 3 large pads,
+    // bowing outward toward the wall
+    const lineThickness = 0.25;
+    const arcSegments = 64;
+
     // Left chain: pads 0 → 2 → 4 (back-left → mid-left → front-left)
     // Right chain: pads 1 → 3 → 5 (back-right → mid-right → front-right)
     const chains = [
-      { pads: [largePads[0], largePads[2], largePads[4]], side: -1 },
-      { pads: [largePads[1], largePads[3], largePads[5]], side: 1 },
+      [largePads[0], largePads[2], largePads[4]],
+      [largePads[1], largePads[3], largePads[5]],
     ];
 
-    chains.forEach(({ pads: chainPads }) => {
+    chains.forEach((chainPads) => {
       // Use the 3 pad positions as control points — CatmullRom will arch through all of them
-      const controlPoints = chainPads.map(p => new THREE.Vector3(p.x, lineY, p.z));
+      const controlPoints = chainPads.map(p => new THREE.Vector3(p.x, markY, p.z));
       const curve = new THREE.CatmullRomCurve3(controlPoints);
-      const tubeGeo = new THREE.TubeGeometry(curve, arcSegments, lineThickness / 2, 4, false);
-      const tubeMat = new THREE.MeshStandardMaterial({
-        color: 0xffffff,
-        emissive: 0xffffff,
-        emissiveIntensity: 0.5,
-        transparent: true,
-        opacity: 0.4,
-      });
-      this.scene.add(new THREE.Mesh(tubeGeo, tubeMat));
+      whiteParts.push(new THREE.TubeGeometry(curve, arcSegments, lineThickness / 2, 4, false));
     });
+
+    const whiteMat = new THREE.MeshBasicMaterial({
+      color: emissiveBasicColor(0xffffff, 0.6),
+      transparent: true,
+      opacity: 0.4,
+      side: THREE.DoubleSide, // rings are single-sided planes; tubes don't care
+    });
+    const whiteGeo = mergeGeometries(whiteParts); // sources were never uploaded; nothing to dispose
+
+    const whiteMarkings = new THREE.Mesh(whiteGeo, whiteMat);
+    this.scene.add(whiteMarkings);
+    this.meshes.push(whiteMarkings);
   }
 
   // ========== FIELD TEXT (painted on grass) ==========
@@ -600,38 +673,23 @@ export class Arena {
     const scene = this.scene;
     const meshes = this.meshes;
 
-    // SVG dimensions from viewBox
-    const svgW = 889;
-    const svgH = 507;
-
     // Height stays the same, narrow the width to fix stretched look
     const planeWidth = 28.5;
-    const planeLength = planeWidth * (svgW / svgH);
+    const planeLength = planeWidth * (LOGO_SVG_W / LOGO_SVG_H);
 
     const geo = new THREE.PlaneGeometry(planeLength, planeWidth);
     geo.rotateX(-Math.PI / 2);
 
-    // Load SVG as image → canvas → texture
-    const img = new Image();
-    img.onload = () => {
-      const canvas = document.createElement('canvas');
-      canvas.width = 2048;
-      canvas.height = Math.round(2048 * (svgH / svgW));
-      const ctx = canvas.getContext('2d');
-      ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
-
-      const texture = new THREE.CanvasTexture(canvas);
-      texture.minFilter = THREE.LinearFilter;
-      texture.magFilter = THREE.LinearFilter;
-
-      const mat = new THREE.MeshStandardMaterial({
+    // Texture is rasterised once per process and cached (see loadLogoTexture)
+    loadLogoTexture().then((texture) => {
+      // Unlit: old material was textured colour under ambient (~0.35) plus the
+      // same texture as emissive at 0.2 — fold both into a single tint.
+      const mat = new THREE.MeshBasicMaterial({
         map: texture,
+        color: new THREE.Color(0xffffff).multiplyScalar(0.55),
         transparent: true,
         opacity: 0.5,
         depthWrite: false,
-        emissive: 0xffffff,
-        emissiveIntensity: 0.2,
-        emissiveMap: texture,
         polygonOffset: true,
         polygonOffsetFactor: -1,
         polygonOffsetUnits: -1,
@@ -647,94 +705,53 @@ export class Arena {
         scene.add(mesh);
         meshes.push(mesh);
       });
-    };
-    img.src = logoSvgUrl;
+    }).catch((e) => {
+      console.warn('[Arena] field logo failed to load', e);
+    });
   }
 
   // ========== EXTERIOR NEON TEXT ==========
 
   _buildExteriorText() {
     const text = this.theme.exteriorText || 'HIGH PING HEROES';
-
-    // Render neon block letters to canvas
-    const canvas = document.createElement('canvas');
-    canvas.width = 4096;
-    canvas.height = 512;
-    const ctx = canvas.getContext('2d');
-
-    // Black fill — additive blending makes black invisible
-    ctx.fillStyle = '#000';
-    ctx.fillRect(0, 0, canvas.width, canvas.height);
-
-    const cx = canvas.width / 2;
-    const cy = canvas.height / 2;
-    ctx.font = '900 260px "Arial Black", Arial, sans-serif';
-    ctx.textAlign = 'center';
-    ctx.textBaseline = 'middle';
-
-    // Convert theme glow color to CSS hex
     const gc = this.theme.exteriorGlow || 0x00ffff;
-    const glowHex = '#' + new THREE.Color(gc).getHexString();
-    const glowBright = '#' + new THREE.Color(gc).lerp(new THREE.Color(0xffffff), 0.4).getHexString();
-    const coreColor = '#' + new THREE.Color(gc).lerp(new THREE.Color(0xffffff), 0.8).getHexString();
 
-    // Neon glow: layered soft shadows (outer → inner)
-    [
-      { blur: 80, color: glowHex, alpha: 0.08 },
-      { blur: 40, color: glowHex, alpha: 0.15 },
-      { blur: 20, color: glowHex, alpha: 0.3 },
-      { blur: 8,  color: glowBright, alpha: 0.6 },
-    ].forEach(({ blur, color, alpha }) => {
-      ctx.save();
-      ctx.shadowColor = color;
-      ctx.shadowBlur = blur;
-      ctx.globalAlpha = alpha;
-      ctx.fillStyle = color;
-      ctx.fillText(text, cx, cy);
-      ctx.restore();
-    });
-
-    // Bright core
-    ctx.globalAlpha = 1.0;
-    ctx.fillStyle = coreColor;
-    ctx.fillText(text, cx, cy);
-
-    const texture = new THREE.CanvasTexture(canvas);
-    texture.minFilter = THREE.LinearFilter;
-    texture.magFilter = THREE.LinearFilter;
+    // Neon block letters rendered to a canvas once per (text, glow) and cached
+    const texture = getExteriorTextTexture(text, gc);
 
     const mat = new THREE.MeshBasicMaterial({
       map: texture,
       transparent: true,
       blending: THREE.AdditiveBlending,
       depthWrite: false,
-      depthTest: false,
+      depthTest: false, // glows through the (transparent) wall shell regardless of draw order
       side: THREE.DoubleSide,
     });
 
-    const aspect = canvas.width / canvas.height;
+    const aspect = EXT_TEXT_W / EXT_TEXT_H;
     const textH = 12;
     const textW = textH * aspect;
     const geo = new THREE.PlaneGeometry(textW, textH);
     const offset = 1.5;
     const yPos = H * 0.45;
 
-    // Place on side walls only (not goal ends)
+    // Place on side walls only (not goal ends). Frustum culling is left on:
+    // the plane has a proper bounding sphere, so it is only drawn when in view.
     // Right wall — faces +X (toward inside of arena)
     const right = new THREE.Mesh(geo, mat);
     right.position.set(HW + offset, yPos, 0);
     right.rotation.y = -Math.PI / 2;
-    right.frustumCulled = false;
     right.renderOrder = 999;
     this.scene.add(right);
+    this.meshes.push(right);
 
     // Left wall — faces -X (toward inside of arena)
     const left = new THREE.Mesh(geo, mat);
     left.position.set(-HW - offset, yPos, 0);
     left.rotation.y = Math.PI / 2;
-    left.frustumCulled = false;
     left.renderOrder = 999;
     this.scene.add(left);
+    this.meshes.push(left);
   }
 
   // ========== GOAL DETECTION ==========

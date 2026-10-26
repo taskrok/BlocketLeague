@@ -1,8 +1,9 @@
 // ============================================
 // Binary Protocol for network serialization
 // ~80% smaller than JSON, works in Node.js + browser
-// v2: server timestamp for clock-synced interpolation,
-//     fresh objects per decode (required for ring buffer interpolation)
+// v2: server timestamp for clock-synced interpolation.
+//     decodeGameStateInto() writes into a caller-owned snapshot object so the
+//     client can decode straight into its ring buffer with zero allocation.
 // ============================================
 
 export const PROTOCOL_VERSION = 2;
@@ -99,43 +100,99 @@ export function encodeGameState(gs, playerCount) {
   return buf.slice(0);
 }
 
-export function decodeGameState(data) {
-  let v, bytes;
-  if (typeof Buffer !== 'undefined' && Buffer.isBuffer(data)) {
-    v = new DataView(data.buffer, data.byteOffset, data.byteLength);
-    bytes = new Uint8Array(data.buffer, data.byteOffset, data.byteLength);
-  } else if (data instanceof ArrayBuffer) {
-    v = new DataView(data);
-    bytes = new Uint8Array(data);
-  } else {
-    return data; // fallback: already an object
-  }
+// ---- Decode-side DataView cache ----
+// A DataView is only reused when the incoming message shares the same
+// underlying ArrayBuffer as the previous one (true for Node Buffers carved
+// from the shared pool; browsers hand us a fresh ArrayBuffer per message, in
+// which case one DataView per packet is unavoidable).
+let _decodeBuf = null;   // underlying ArrayBuffer of the cached view
+let _decodeView = null;  // DataView over the WHOLE underlying buffer
+let _decodeBase = 0;     // byte offset of the current message inside it
 
-  let o = 0;
+// Returns true when `data` is binary and _decodeView/_decodeBase are ready.
+function _prepareDecodeView(data) {
+  let ab, base;
+  if (typeof Buffer !== 'undefined' && Buffer.isBuffer(data)) {
+    ab = data.buffer; base = data.byteOffset;
+  } else if (data instanceof ArrayBuffer) {
+    ab = data; base = 0;
+  } else if (ArrayBuffer.isView(data)) {
+    ab = data.buffer; base = data.byteOffset;
+  } else {
+    return false;
+  }
+  if (ab !== _decodeBuf) {
+    _decodeBuf = ab;
+    _decodeView = new DataView(ab);
+  }
+  _decodeBase = base;
+  return true;
+}
+
+function _newPlayerState() {
+  return {
+    px: 0, py: 0, pz: 0,
+    vx: 0, vy: 0, vz: 0,
+    qx: 0, qy: 0, qz: 0, qw: 1,
+    avx: 0, avy: 0, avz: 0,
+    boost: 0, demolished: false, lastProcessedInput: 0,
+  };
+}
+
+// Allocates a snapshot object with the shape decodeGameStateInto() expects.
+// `playerSlots` player objects are pre-created so decoding never allocates.
+export function createGameStateTarget(playerSlots = 0) {
+  const players = new Array(playerSlots);
+  for (let i = 0; i < playerSlots; i++) players[i] = _newPlayerState();
+  return {
+    tick: 0,
+    state: 'waiting',
+    timer: 0,
+    score: { blue: 0, orange: 0 },
+    boostPads: new Uint8Array(5),
+    ball: { px: 0, py: 0, pz: 0, vx: 0, vy: 0, vz: 0, qx: 0, qy: 0, qz: 0, qw: 1 },
+    players,
+    playerCount: 0,
+    serverTime: 0,
+  };
+}
+
+/**
+ * Decode a binary game state packet directly into `target` (zero allocation
+ * in steady state). `target` must have the shape produced by
+ * createGameStateTarget(): ball, players[] (grown lazily if the packet has
+ * more players than slots, never shrunk), score, boostPads Uint8Array(5),
+ * tick, timer, state, serverTime, playerCount.
+ *
+ * Returns `target` on success, or null if `data` is not binary or carries a
+ * different protocol version. `target.playerCount` holds the decoded player
+ * count; `target.players.length` may be larger (pre-allocated slots).
+ */
+export function decodeGameStateInto(data, target) {
+  if (!_prepareDecodeView(data)) return null;
+  const v = _decodeView;
+  let o = _decodeBase;
 
   // Header
   const version = v.getUint8(o); o += 1;
   if (version !== PROTOCOL_VERSION) {
     return null;
   }
-  const tick = v.getUint32(o, true); o += 4;
-  const stateId = v.getUint8(o); o += 1;
+  target.tick = v.getUint32(o, true); o += 4;
+  target.state = ID_TO_STATE[v.getUint8(o)] || 'waiting'; o += 1;
   const playerCount = v.getUint8(o); o += 1;
-  const timer = v.getFloat32(o, true); o += 4;
-  const blueScore = v.getUint8(o); o += 1;
-  const orangeScore = v.getUint8(o); o += 1;
-  const serverTime = v.getFloat32(o, true); o += 4;
+  target.timer = v.getFloat32(o, true); o += 4;
+  target.score.blue = v.getUint8(o); o += 1;
+  target.score.orange = v.getUint8(o); o += 1;
+  target.serverTime = v.getFloat32(o, true); o += 4;
 
   // Boost pad bitmask
-  const boostPads = new Uint8Array(5);
-  for (let i = 0; i < 5; i++) boostPads[i] = bytes[o + i];
+  const boostPads = target.boostPads;
+  for (let i = 0; i < 5; i++) boostPads[i] = v.getUint8(o + i);
   o += 5;
 
-  // Ball — MUST create fresh objects per decode.
-  // The client stores decoded snapshots in a ring buffer for interpolation.
-  // Pooled/reused objects would cause all ring buffer entries to alias the
-  // same memory, making interpolation between snapshots impossible.
-  const ball = {};
+  // Ball
+  const ball = target.ball;
   ball.px = v.getFloat32(o, true); o += 4;
   ball.py = v.getFloat32(o, true); o += 4;
   ball.pz = v.getFloat32(o, true); o += 4;
@@ -145,9 +202,11 @@ export function decodeGameState(data) {
   readQuatInto(v, o, ball); o += 6;
 
   // Players
-  const players = new Array(playerCount);
+  const players = target.players;
+  target.playerCount = playerCount;
   for (let i = 0; i < playerCount; i++) {
-    const p = {};
+    let p = players[i];
+    if (p === undefined) p = players[i] = _newPlayerState(); // one-time growth
     p.px = v.getFloat32(o, true); o += 4;
     p.py = v.getFloat32(o, true); o += 4;
     p.pz = v.getFloat32(o, true); o += 4;
@@ -161,19 +220,20 @@ export function decodeGameState(data) {
     p.boost = v.getUint8(o); o += 1;
     p.demolished = v.getUint8(o) !== 0; o += 1;
     p.lastProcessedInput = v.getUint32(o, true); o += 4;
-    players[i] = p;
   }
 
-  return {
-    tick,
-    state: ID_TO_STATE[stateId] || 'waiting',
-    timer,
-    score: { blue: blueScore, orange: orangeScore },
-    boostPads,
-    ball,
-    players,
-    serverTime,
-  };
+  return target;
+}
+
+// Allocating convenience wrapper: returns a fresh snapshot whose
+// players.length === decoded player count. Prefer decodeGameStateInto()
+// on hot paths.
+export function decodeGameState(data) {
+  if (!(typeof Buffer !== 'undefined' && Buffer.isBuffer(data)) &&
+      !(data instanceof ArrayBuffer) && !ArrayBuffer.isView(data)) {
+    return data; // fallback: already an object
+  }
+  return decodeGameStateInto(data, createGameStateTarget(0));
 }
 
 // ========== INPUT ==========
@@ -203,8 +263,37 @@ export function encodeInput(input) {
   return _inputBuf.slice(0);
 }
 
-// Pre-allocated decode input object (server processes one at a time,
-// GameRoom.receiveInput copies fields out before next decode)
+/**
+ * Decode a binary input packet into `target` (zero allocation in steady
+ * state; the DataView is reused while messages share an underlying buffer).
+ * Returns `target`, or null if `data` is not binary.
+ */
+export function decodeInputInto(data, target) {
+  if (!_prepareDecodeView(data)) return null;
+  const v = _decodeView;
+  const o = _decodeBase;
+
+  const flags = v.getUint8(o + 9);
+
+  target.seq = v.getUint32(o, true);
+  target.throttle = v.getInt8(o + 4) / ANALOG_SCALE;
+  target.steer = v.getInt8(o + 5) / ANALOG_SCALE;
+  target.airRoll = v.getInt8(o + 6) / ANALOG_SCALE;
+  target.dodgeForward = v.getInt8(o + 7) / ANALOG_SCALE;
+  target.dodgeSteer = v.getInt8(o + 8) / ANALOG_SCALE;
+  target.jump = !!(flags & 1);
+  target.jumpPressed = !!(flags & 2);
+  target.boost = !!(flags & 4);
+  target.pitchUp = !!(flags & 8);
+  target.pitchDown = !!(flags & 16);
+  target.handbrake = !!(flags & 32);
+
+  return target;
+}
+
+// Module-level reusable result for decodeInput(). The SAME object is returned
+// on every call and overwritten by the next decode — callers that retain the
+// input must copy its fields out (server/GameRoom.receiveInput does this).
 const _decodedInput = {
   seq: 0, throttle: 0, steer: 0, airRoll: 0,
   dodgeForward: 0, dodgeSteer: 0,
@@ -213,31 +302,8 @@ const _decodedInput = {
 };
 
 export function decodeInput(data) {
-  let v;
-  if (typeof Buffer !== 'undefined' && Buffer.isBuffer(data)) {
-    v = new DataView(data.buffer, data.byteOffset, data.byteLength);
-  } else if (data instanceof ArrayBuffer) {
-    v = new DataView(data);
-  } else {
-    return data;
-  }
-
-  const flags = v.getUint8(9);
-
-  _decodedInput.seq = v.getUint32(0, true);
-  _decodedInput.throttle = v.getInt8(4) / ANALOG_SCALE;
-  _decodedInput.steer = v.getInt8(5) / ANALOG_SCALE;
-  _decodedInput.airRoll = v.getInt8(6) / ANALOG_SCALE;
-  _decodedInput.dodgeForward = v.getInt8(7) / ANALOG_SCALE;
-  _decodedInput.dodgeSteer = v.getInt8(8) / ANALOG_SCALE;
-  _decodedInput.jump = !!(flags & 1);
-  _decodedInput.jumpPressed = !!(flags & 2);
-  _decodedInput.boost = !!(flags & 4);
-  _decodedInput.pitchUp = !!(flags & 8);
-  _decodedInput.pitchDown = !!(flags & 16);
-  _decodedInput.handbrake = !!(flags & 32);
-
-  return _decodedInput;
+  const r = decodeInputInto(data, _decodedInput);
+  return r === null ? data : r; // non-binary fallback: already an object
 }
 
 // ========== QUATERNION COMPRESSION ==========

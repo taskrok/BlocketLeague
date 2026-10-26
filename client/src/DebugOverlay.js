@@ -28,9 +28,10 @@ export class DebugOverlay {
     this._createEl();
     this._bindKey();
 
-    // Hook into gameState to count packets
+    // Hook into gameState to count packets (handler kept so destroy() can detach it)
+    this._onGameState = () => { this._packetCount++; };
     if (this.network) {
-      this.network.on('gameState', () => { this._packetCount++; });
+      this.network.on('gameState', this._onGameState);
     }
   }
 
@@ -47,12 +48,13 @@ export class DebugOverlay {
   }
 
   _bindKey() {
-    window.addEventListener('keydown', (e) => {
-      if (e.code === 'Backquote') {
+    this._onKeydown = (e) => {
+      if (e.code === 'Backquote' && this.el) {
         this.visible = !this.visible;
         this.el.style.display = this.visible ? 'block' : 'none';
       }
-    });
+    };
+    window.addEventListener('keydown', this._onKeydown);
   }
 
   update() {
@@ -132,8 +134,19 @@ export class DebugOverlay {
   }
 
   destroy() {
+    if (this._onKeydown) {
+      window.removeEventListener('keydown', this._onKeydown);
+      this._onKeydown = null;
+    }
+    // NetworkManager currently has no off(); detach if one is ever added
+    if (this.network && this._onGameState && typeof this.network.off === 'function') {
+      this.network.off('gameState', this._onGameState);
+    }
+    this._onGameState = null;
     if (this.el && this.el.parentNode) {
       this.el.parentNode.removeChild(this.el);
     }
+    this.el = null;
+    this.visible = false;
   }
 }

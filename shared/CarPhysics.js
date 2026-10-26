@@ -30,6 +30,16 @@ const _filletNormalCeilSide    = new CANNON.Vec3();
 const _filletNormalSideBack    = new CANNON.Vec3();
 const _filletNormalCorner      = new CANNON.Vec3();
 
+// Hoisted loop constants for checkGoalSurface (iterating `[-1, 1]` literals
+// allocated an array + iterator per loop, per tick, per car).
+const _SIDES = [-1, 1];
+
+// Single pre-allocated result object for checkGoalSurface. Written in place and
+// returned, so the RETURN VALUE IS REUSED ACROSS CALLS: callers must copy what
+// they need before the next call and never retain the reference across ticks.
+// `normal` always points at one of the pre-allocated normals above.
+const _goalResult = { sx: 0, sy: 0, sz: 0, dist: 0, normal: _normalDown };
+
 /**
  * CarPhysics operates on a car state object and a cannon-es Body.
  * It contains ALL shared physics methods extracted from Car.js / ServerCar.js.
@@ -57,9 +67,9 @@ export class CarPhysics {
     body.force.y -= PHYSICS.GRAVITY * CAR.MASS * (1 - CAR.GRAVITY_SCALE);
 
     this.checkGround(body, state, simTime);
+    this.handleJump(body, state, input, dt, simTime);
     this.handleSelfRight(body, state, input, dt);
     this.handleMovement(body, state, input, dt);
-    this.handleJump(body, state, input, dt, simTime);
     this.handleBoost(body, state, input, dt);
     this.handleAirThrottle(body, state, input, dt);
     this.handleAirControl(body, state, input, dt);
@@ -94,7 +104,11 @@ export class CarPhysics {
     const wasGrounded = state.isGrounded;
     const pos = body.position;
 
-    // Try analytical curve detection (arena walls) and goal surfaces
+    // Try analytical curve detection (arena walls) and goal surfaces.
+    // NOTE: both functions return a module-level result object that is reused
+    // on every call (two distinct objects, so holding both here is safe). The
+    // normal is copied into state.surfaceNormal below; nothing from `hit` is
+    // retained past this tick.
     const curveHit = checkCurveSurface(pos);
     const goalHit = this.checkGoalSurface(pos);
 
@@ -162,13 +176,15 @@ export class CarPhysics {
     const HL = ARENA.LENGTH / 2;
     const detectRange = CAR.HEIGHT * 3.5;
 
-    let best = null;
+    const best = _goalResult;
+    let found = false;
     let bestDist = Infinity;
 
     // Early exit: skip if car isn't near either goal
     if (Math.abs(pos.x) > GW + detectRange || pos.y > GH + detectRange) return null;
 
-    for (const side of [-1, 1]) {
+    for (let si = 0; si < 2; si++) {
+      const side = _SIDES[si];
       // Signed distance into the goal (positive = deeper inside)
       const depthInGoal = side * (pos.z - side * HL);
       // Car must be near/past the goal mouth
@@ -185,7 +201,8 @@ export class CarPhysics {
         const dist = Math.abs(pos.y - GH);
         if (dist < detectRange && dist < bestDist) {
           bestDist = dist;
-          best = { sx: pos.x, sy: GH, sz: pos.z, normal: _normalDown, dist };
+          found = true;
+          best.sx = pos.x; best.sy = GH; best.sz = pos.z; best.normal = _normalDown;
         }
       }
 
@@ -194,18 +211,21 @@ export class CarPhysics {
         const dist = Math.abs(pos.z - zBack);
         if (dist < detectRange && dist < bestDist) {
           bestDist = dist;
-          best = { sx: pos.x, sy: pos.y, sz: zBack, normal: side === 1 ? _normalNegZ : _normalPosZ, dist };
+          found = true;
+          best.sx = pos.x; best.sy = pos.y; best.sz = zBack; best.normal = side === 1 ? _normalNegZ : _normalPosZ;
         }
       }
 
       // -- Goal side walls flat (2): x=+/-GW --
-      for (const ps of [-1, 1]) {
+      for (let pi = 0; pi < 2; pi++) {
+        const ps = _SIDES[pi];
         const wallX = ps * GW;
         if (pos.y > GFR && pos.y < GH - GFR && side * pos.z > side * zMouth && side * pos.z < side * zFilletStart) {
           const dist = Math.abs(pos.x - wallX);
           if (dist < detectRange && dist < bestDist) {
             bestDist = dist;
-            best = { sx: wallX, sy: pos.y, sz: pos.z, normal: ps === 1 ? _normalNegX : _normalPosX, dist };
+            found = true;
+            best.sx = wallX; best.sy = pos.y; best.sz = pos.z; best.normal = ps === 1 ? _normalNegX : _normalPosX;
           }
         }
       }
@@ -228,7 +248,8 @@ export class CarPhysics {
               const sy = cy + GFR * uy;
               const sz = cz + GFR * uz;
               _filletNormalFloorBack.set(0, -uy, -uz);
-              best = { sx: pos.x, sy, sz, normal: _filletNormalFloorBack, dist };
+              found = true;
+              best.sx = pos.x; best.sy = sy; best.sz = sz; best.normal = _filletNormalFloorBack;
             }
           }
         }
@@ -252,14 +273,16 @@ export class CarPhysics {
               const sy = cy + GFR * uy;
               const sz = cz + GFR * uz;
               _filletNormalCeilBack.set(0, -uy, -uz);
-              best = { sx: pos.x, sy, sz, normal: _filletNormalCeilBack, dist };
+              found = true;
+              best.sx = pos.x; best.sy = sy; best.sz = sz; best.normal = _filletNormalCeilBack;
             }
           }
         }
       }
 
       // -- Floor-to-side fillets (2): arc in XY plane --
-      for (const ps of [-1, 1]) {
+      for (let pi = 0; pi < 2; pi++) {
+        const ps = _SIDES[pi];
         if (side * pos.z > side * zMouth && side * pos.z < side * zFilletStart) {
           const cx = ps * (GW - GFR);
           const cy = GFR;
@@ -277,7 +300,8 @@ export class CarPhysics {
                 const sx = cx + GFR * ux;
                 const sy = cy + GFR * uy;
                 _filletNormalFloorSide.set(-ux, -uy, 0);
-                best = { sx, sy, sz: pos.z, normal: _filletNormalFloorSide, dist };
+                found = true;
+                best.sx = sx; best.sy = sy; best.sz = pos.z; best.normal = _filletNormalFloorSide;
               }
             }
           }
@@ -285,7 +309,8 @@ export class CarPhysics {
       }
 
       // -- Ceiling-to-side fillets (2): arc in XY plane --
-      for (const ps of [-1, 1]) {
+      for (let pi = 0; pi < 2; pi++) {
+        const ps = _SIDES[pi];
         if (side * pos.z > side * zMouth && side * pos.z < side * zFilletStart) {
           const cx = ps * (GW - GFR);
           const cy = GH - GFR;
@@ -303,7 +328,8 @@ export class CarPhysics {
                 const sx = cx + GFR * ux;
                 const sy = cy + GFR * uy;
                 _filletNormalCeilSide.set(-ux, -uy, 0);
-                best = { sx, sy, sz: pos.z, normal: _filletNormalCeilSide, dist };
+                found = true;
+                best.sx = sx; best.sy = sy; best.sz = pos.z; best.normal = _filletNormalCeilSide;
               }
             }
           }
@@ -311,7 +337,8 @@ export class CarPhysics {
       }
 
       // -- Side-to-back fillets (2): arc in XZ plane --
-      for (const ps of [-1, 1]) {
+      for (let pi = 0; pi < 2; pi++) {
+        const ps = _SIDES[pi];
         if (pos.y > GFR && pos.y < GH - GFR) {
           const cx = ps * (GW - GFR);
           const cz = side * (HL + GD - GFR);
@@ -329,7 +356,8 @@ export class CarPhysics {
                 const sx = cx + GFR * ux;
                 const sz = cz + GFR * uz;
                 _filletNormalSideBack.set(-ux, 0, -uz);
-                best = { sx, sy: pos.y, sz, normal: _filletNormalSideBack, dist };
+                found = true;
+                best.sx = sx; best.sy = pos.y; best.sz = sz; best.normal = _filletNormalSideBack;
               }
             }
           }
@@ -337,12 +365,14 @@ export class CarPhysics {
       }
 
       // -- 1/8 sphere corner patches (4 per goal): floor+side+back & ceiling+side+back --
-      for (const ps of [-1, 1]) {
-        for (const yPos of ['floor', 'ceiling']) {
+      for (let pi = 0; pi < 2; pi++) {
+        const ps = _SIDES[pi];
+        // ySign = -1 -> floor patch, +1 -> ceiling patch (same order as before)
+        for (let yi = 0; yi < 2; yi++) {
+          const ySign = _SIDES[yi];
           const cx = ps * (GW - GFR);
-          const cy = yPos === 'floor' ? GFR : GH - GFR;
+          const cy = ySign === -1 ? GFR : GH - GFR;
           const cz = side * (HL + GD - GFR);
-          const ySign = yPos === 'floor' ? -1 : 1;
 
           const dcx = pos.x - cx;
           const dcy = pos.y - cy;
@@ -363,26 +393,28 @@ export class CarPhysics {
               const sy = cy + GFR * uy;
               const sz = cz + GFR * uz;
               _filletNormalCorner.set(-ux, -uy, -uz);
-              best = { sx, sy, sz, normal: _filletNormalCorner, dist };
+              found = true;
+              best.sx = sx; best.sy = sy; best.sz = sz; best.normal = _filletNormalCorner;
             }
           }
         }
       }
     }
 
-    if (best) best.dist = bestDist;
+    if (!found) return null;
+    best.dist = bestDist;
     return best;
   }
 
   handleSelfRight(body, state, input, dt) {
     if (state.onWall) return;
     if (state.isDodging || state._dodgeDecaying) return;
-    // Don't fight intentional aerial tilt -- but allow self-right if
-    // the car has come back down near the floor (failed aerial / landed on head)
-    if (state.hasJumped && body.position.y > CAR.HEIGHT * 3) return;
+    // Never fight aerial orientation -- only self-right when the car is
+    // grounded or very close to the floor (landed on head / failed aerial)
+    if (!state.isGrounded && body.position.y > CAR.HEIGHT * 2) return;
 
     _v1.set(0, 1, 0);
-    const up = body.quaternion.vmult(_v1);
+    const up = body.quaternion.vmult(_v1, _v2);
     const nearFloor = body.position.y < CAR.HEIGHT * 3;
 
     const isTilted = up.y < 0.1; // only when on back, side, or nose -- not slight tilt
@@ -393,9 +425,9 @@ export class CarPhysics {
 
     // Determine roll/pitch axis to right the car
     _v1.set(0, 0, 1);
-    const forward = body.quaternion.vmult(_v1);
+    const forward = body.quaternion.vmult(_v1, _v3);
     _v1.set(1, 0, 0);
-    const right = body.quaternion.vmult(_v1);
+    const right = body.quaternion.vmult(_v1, _v4);
     const rollSpeed = 8;
 
     if (Math.abs(forward.y) < 0.7) {
@@ -662,7 +694,10 @@ export class CarPhysics {
         _v4.set(df, 0, -ds);
         const spinLen = _v4.length();
         if (spinLen > 0) _v4.scale(CAR.DODGE_SPIN_SPEED / spinLen, _v4);
-        state._dodgeAngVel = body.quaternion.vmult(_v4);
+        // Retained across ticks (see isDodging branch below) so it cannot be a
+        // shared temp; allocate once per state and reuse thereafter.
+        if (!state._dodgeAngVel) state._dodgeAngVel = new CANNON.Vec3();
+        body.quaternion.vmult(_v4, state._dodgeAngVel);
         body.angularVelocity.copy(state._dodgeAngVel);
 
         state.isDodging = true;
@@ -763,9 +798,10 @@ export class CarPhysics {
     if (state.isDodging) return;
 
     const av = body.angularVelocity;
-    const mag = Math.sqrt(av.x * av.x + av.y * av.y + av.z * av.z);
-    if (mag > CAR.MAX_ANGULAR_VELOCITY) {
-      const scale = CAR.MAX_ANGULAR_VELOCITY / mag;
+    const magSq = av.x * av.x + av.y * av.y + av.z * av.z;
+    // Compare squared magnitudes; only pay for the sqrt when actually clamping
+    if (magSq > CAR.MAX_ANGULAR_VELOCITY * CAR.MAX_ANGULAR_VELOCITY) {
+      const scale = CAR.MAX_ANGULAR_VELOCITY / Math.sqrt(magSq);
       av.x *= scale;
       av.y *= scale;
       av.z *= scale;
@@ -780,11 +816,11 @@ export class CarPhysics {
 
     // Get car's local axes in world space
     _v1.set(1, 0, 0);
-    const rightAxis = quat.vmult(_v1);
+    const rightAxis = quat.vmult(_v1, _v2);
     _v1.set(0, 1, 0);
-    const upAxis = quat.vmult(_v1);
+    const upAxis = quat.vmult(_v1, _v3);
     _v1.set(0, 0, 1);
-    const forwardAxis = quat.vmult(_v1);
+    const forwardAxis = quat.vmult(_v1, _v4);
 
     // Decompose world angular velocity into local axes
     const localPitch = angVel.x * rightAxis.x + angVel.y * rightAxis.y + angVel.z * rightAxis.z;

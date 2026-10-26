@@ -48,13 +48,17 @@ export class QuickChat {
     this._categoryOpen = false;
     this._selectedCategory = -1;
 
-    // Keyboard edge detection for number keys
-    this._prevKeys = {};
+    // Keyboard edge detection: only the handful of keys we care about
+    this._prevKeys = { Digit1: false, Digit2: false, Digit3: false, Digit4: false, Escape: false };
 
     // Gamepad quick-chat state
     this._gpQuickChatOpen = false;
     this._gpCategorySelected = -1;
-    this._gpPrevDpad = { up: false, down: false, left: false, right: false };
+    this._gpPrevDpad = { up: false, down: false, left: false, right: false }; // persistent, written in place
+
+    // Overlay DOM dirty tracking: only write styles/innerHTML on state change
+    this._overlayVisible = null;      // last applied visibility (null = never applied)
+    this._overlayRenderedCat = null;  // category index whose HTML is in the overlay (-1 = category list)
 
     // Cooldown to prevent spam
     this._cooldown = 0;
@@ -265,18 +269,24 @@ export class QuickChat {
       }
     }
 
-    // Update prev keys
-    this._prevKeys = { ...keys };
+    // Update prev keys (just the tracked ones, written in place)
+    const prev = this._prevKeys;
+    prev.Digit1 = !!keys.Digit1;
+    prev.Digit2 = !!keys.Digit2;
+    prev.Digit3 = !!keys.Digit3;
+    prev.Digit4 = !!keys.Digit4;
+    prev.Escape = !!keys.Escape;
   }
 
   _processGamepadInput(allCars) {
-    if (!navigator.getGamepads) return;
-    const gamepads = navigator.getGamepads();
-    let gp = null;
-    for (const g of gamepads) {
-      if (g) { gp = g; break; }
+    // Reuse the gamepad InputManager already polled this frame (no second getGamepads call)
+    const gp = this.input && typeof this.input.getGamepad === 'function' ? this.input.getGamepad() : null;
+    if (!gp) {
+      // No gamepad: clear held state so a reconnect does not read stale "pressed" flags
+      const pd = this._gpPrevDpad;
+      pd.up = false; pd.down = false; pd.left = false; pd.right = false;
+      return;
     }
-    if (!gp) return;
 
     const dpadUp = gp.buttons[12] && gp.buttons[12].pressed;
     const dpadDown = gp.buttons[13] && gp.buttons[13].pressed;
@@ -334,7 +344,11 @@ export class QuickChat {
       }
     }
 
-    this._gpPrevDpad = { up: dpadUp, down: dpadDown, left: dpadLeft, right: dpadRight };
+    const pd = this._gpPrevDpad;
+    pd.up = !!dpadUp;
+    pd.down = !!dpadDown;
+    pd.left = !!dpadLeft;
+    pd.right = !!dpadRight;
   }
 
   _keyPressed(keys, code) {
@@ -352,13 +366,24 @@ export class QuickChat {
 
   _updateOverlay() {
     if (!this._categoryOpen) {
-      this._overlayEl.style.display = 'none';
-      this._promptEl.style.opacity = '1';
+      if (this._overlayVisible !== false) {
+        this._overlayVisible = false;
+        this._overlayEl.style.display = 'none';
+        this._promptEl.style.opacity = '1';
+      }
       return;
     }
 
-    this._overlayEl.style.display = '';
-    this._promptEl.style.opacity = '0.15';
+    if (this._overlayVisible !== true) {
+      this._overlayVisible = true;
+      this._overlayEl.style.display = '';
+      this._promptEl.style.opacity = '0.15';
+    }
+
+    // Rebuild the list only when the displayed category changes
+    const cat = this._selectedCategory < 0 ? -1 : this._selectedCategory;
+    if (cat === this._overlayRenderedCat) return;
+    this._overlayRenderedCat = cat;
 
     if (this._selectedCategory < 0) {
       // Show category list (gamepad opened without choosing yet)

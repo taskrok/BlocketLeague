@@ -37,16 +37,20 @@ const PRO_PARAMS = {
  * @param {object} ball    - ServerBall instance
  * @param {number} teamDir - 1 = blue (attacks toward +Z), -1 = orange (attacks toward -Z)
  * @param {string} role    - 'attacker' or 'support'
- * @returns {object} input state (throttle, steer, boost, etc.)
+ * @param {object} out     - input object to write into (same shape as GameRoom._emptyInput()).
+ *                           Written in place to avoid a per-bot, per-tick allocation.
+ * @returns {object} `out`
  */
-export function computeAIInput(car, ball, teamDir, role) {
+export function computeAIInput(car, ball, teamDir, role, out) {
   const p = PRO_PARAMS;
 
   const ENEMY_GOAL_Z = teamDir === 1 ? ARENA.LENGTH / 2 : -ARENA.LENGTH / 2;
   const OWN_GOAL_Z = teamDir === 1 ? -ARENA.LENGTH / 2 : ARENA.LENGTH / 2;
 
   const ballBody = ball.body;
-  const ballPos = { x: ballBody.position.x, y: ballBody.position.y, z: ballBody.position.z };
+  // Read the live body position directly (plain x/y/z property reads); the
+  // physics world is not stepped while this runs so no snapshot is needed.
+  const ballPos = ballBody.position;
   const ballVel = ballBody.velocity;
   const carPos = car.body.position;
 
@@ -69,12 +73,7 @@ export function computeAIInput(car, ball, teamDir, role) {
     const sBoost = p.useBoost && sDist > 30 && sAbsAngle < 0.3;
     const sHandbrake = sAbsAngle > p.handbrakeAngle && car.body.velocity.length() > p.handbrakeSpeed;
 
-    return {
-      seq: 0,
-      throttle: sThrottle, steer: sSteer, jump: false, jumpPressed: false,
-      boost: sBoost, airRoll: 0, pitchUp: false, pitchDown: false,
-      handbrake: sHandbrake, dodgeForward: 0, dodgeSteer: 0,
-    };
+    return _writeInput(out, sThrottle, sSteer, false, sBoost, sHandbrake);
   }
 
   const toBallX = ballPos.x - carPos.x;
@@ -180,18 +179,25 @@ export function computeAIInput(car, ball, teamDir, role) {
     jumpPressed = true;
   }
 
-  return {
-    seq: 0,
-    throttle,
-    steer,
-    jump: false,
-    jumpPressed,
-    boost,
-    airRoll: 0,
-    pitchUp: false,
-    pitchDown: false,
-    handbrake,
-    dodgeForward: 0,
-    dodgeSteer: 0,
-  };
+  return _writeInput(out, throttle, steer, jumpPressed, boost, handbrake);
+}
+
+/**
+ * Fill `out` with a complete bot input state. Fields the AI never uses are
+ * reset explicitly so the object always matches GameRoom._emptyInput().
+ */
+function _writeInput(out, throttle, steer, jumpPressed, boost, handbrake) {
+  out.seq = 0;
+  out.throttle = throttle;
+  out.steer = steer;
+  out.jump = false;
+  out.jumpPressed = jumpPressed;
+  out.boost = boost;
+  out.airRoll = 0;
+  out.pitchUp = false;
+  out.pitchDown = false;
+  out.handbrake = handbrake;
+  out.dodgeForward = 0;
+  out.dodgeSteer = 0;
+  return out;
 }

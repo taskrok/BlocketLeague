@@ -4,6 +4,7 @@
 // ============================================
 
 const STORAGE_KEY = 'blocket-camera-settings';
+const SAVE_DEBOUNCE_MS = 250;
 
 const DEFAULTS = {
   fov: 70,
@@ -25,6 +26,7 @@ export class CameraSettings {
     this.open = false;
     this.values = { ...DEFAULTS };
     this.sliders = {};
+    this._saveTimer = null;
 
     this._loadFromStorage();
     this._buildDOM();
@@ -48,8 +50,30 @@ export class CameraSettings {
     } catch { /* ignore corrupt data */ }
   }
 
+  // Immediate persist (cancels any pending debounced save)
   _save() {
-    localStorage.setItem(STORAGE_KEY, JSON.stringify(this.values));
+    this._cancelScheduledSave();
+    try { localStorage.setItem(STORAGE_KEY, JSON.stringify(this.values)); } catch {}
+  }
+
+  // Trailing-debounced persist for pointer-move-rate slider input
+  _scheduleSave() {
+    this._cancelScheduledSave();
+    this._saveTimer = setTimeout(() => {
+      this._saveTimer = null;
+      this._save();
+    }, SAVE_DEBOUNCE_MS);
+  }
+
+  _cancelScheduledSave() {
+    if (this._saveTimer !== null) {
+      clearTimeout(this._saveTimer);
+      this._saveTimer = null;
+    }
+  }
+
+  _flushSave() {
+    if (this._saveTimer !== null) this._save();
   }
 
   _buildDOM() {
@@ -88,13 +112,15 @@ export class CameraSettings {
       input.step = cfg.step;
       input.value = this.values[cfg.key];
 
+      // Apply live on every input event; persist debounced, flushed on release
       input.addEventListener('input', () => {
         const v = parseFloat(input.value);
         this.values[cfg.key] = v;
         valSpan.textContent = v % 1 === 0 ? v : v.toFixed(1);
         this.controller.setSettings({ [cfg.key]: v });
-        this._save();
+        this._scheduleSave();
       });
+      input.addEventListener('change', () => this._flushSave());
 
       this.sliders[cfg.key] = { input, valSpan };
 
@@ -158,6 +184,7 @@ export class CameraSettings {
   }
 
   close() {
+    this._flushSave();
     this.open = false;
     this.panel.classList.remove('open');
     this.gearBtn.classList.remove('active');
@@ -177,6 +204,7 @@ export class CameraSettings {
   }
 
   destroy() {
+    this._flushSave();
     document.removeEventListener('keydown', this._onKeydown);
     document.removeEventListener('pointerdown', this._onPointerdown);
     if (this.panel && this.panel.parentNode) {

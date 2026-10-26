@@ -8,6 +8,7 @@ import * as CANNON from 'cannon-es';
 import { EffectComposer } from 'three/examples/jsm/postprocessing/EffectComposer.js';
 import { RenderPass } from 'three/examples/jsm/postprocessing/RenderPass.js';
 import { UnrealBloomPass } from 'three/examples/jsm/postprocessing/UnrealBloomPass.js';
+import { OutputPass } from 'three/examples/jsm/postprocessing/OutputPass.js';
 
 import { Arena } from './Arena.js';
 import { Car } from './Car.js';
@@ -42,6 +43,12 @@ import { DebugOverlay } from './DebugOverlay.js';
 // Reusable temp vectors
 const _aimEuler = new CANNON.Vec3();
 const _npVec = new THREE.Vector3(); // reusable vector for nameplate projection
+const _fwdLocal = new CANNON.Vec3(0, 0, 1); // car-local forward axis
+const _carForward = new CANNON.Vec3();      // world-space car forward (collide handler)
+const _rtSize = new THREE.Vector2();        // drawing-buffer size for the composer target
+const _noCars = [];                          // empty car list for visual-only boost pad updates (never mutated)
+
+const TIMESTEP_MS = PHYSICS.TIMESTEP * 1000;
 
 
 export class Game {
@@ -98,6 +105,16 @@ export class Game {
     // Deferred countdown events (buffered during replay/celebration)
     this._deferredCountdown = null;
 
+    // Body -> car / slot lookups for collide handlers (rebuilt whenever allCars changes)
+    this._carByBody = new Map();
+    this._carIndexByBody = new Map();
+
+    // Reused per-frame buffer for replay snapshot recording
+    this._carsDataBuf = [];
+
+    // Input send throttle (multiplayer): never more than one send per physics step
+    this._lastInputSendTime = 0;
+
     // Explosion and landing ring VFX (delegated to ExplosionManager, created after scene init)
 
     this._initRenderer();
@@ -152,7 +169,7 @@ export class Game {
       if (this.hud.onBackToLobby) this.hud.onBackToLobby();
     };
     this.gameSettings.onDisplaySettingsChanged = () => {
-      if (this.composer) this.composer.dispose();
+      this._disposePostProcessing();
       this._initPostProcessing();
     };
 
@@ -183,9 +200,12 @@ export class Game {
       (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1);
     this._isIOS = isIOS;
 
+    // Everything is rendered through the EffectComposer, so canvas-level MSAA
+    // would be wasted (the scene is drawn into an offscreen target). AA comes
+    // from the composer's multisampled render target instead (see _initPostProcessing).
     this.renderer = new THREE.WebGLRenderer({
       canvas: this.canvas,
-      antialias: !isIOS,
+      antialias: false,
       powerPreference: isIOS ? 'default' : 'high-performance',
     });
     this.renderer.setSize(window.innerWidth, window.innerHeight);
@@ -194,24 +214,43 @@ export class Game {
     this.renderer.toneMapping = THREE.ACESFilmicToneMapping;
     this.renderer.toneMappingExposure = 1.2;
 
-    // Handle WebGL context loss (common on iOS when backgrounding)
-    this.canvas.addEventListener('webglcontextlost', (e) => {
+    // Handle WebGL context loss (common on iOS when backgrounding).
+    // Handlers are stored so destroy() can remove them — otherwise every match
+    // stacks another set on the shared canvas and a stale click handler from a
+    // destroyed game reloads the page.
+    this._onContextLost = (e) => {
       e.preventDefault();
       this.hud.showStatus('WebGL context lost — tap to reload');
       this._destroyed = true;
-    });
-    this.canvas.addEventListener('webglcontextrestored', () => {
+    };
+    this._onContextRestored = () => {
       window.location.reload();
-    });
-    this.canvas.addEventListener('click', () => {
+    };
+    this._onCanvasClick = () => {
       if (this._destroyed) window.location.reload();
-    });
+    };
+    this.canvas.addEventListener('webglcontextlost', this._onContextLost);
+    this.canvas.addEventListener('webglcontextrestored', this._onContextRestored);
+    this.canvas.addEventListener('click', this._onCanvasClick);
 
+    this._composerResizeTimer = null;
     this._onResize = () => {
-      this.camera.aspect = window.innerWidth / window.innerHeight;
-      this.camera.updateProjectionMatrix();
-      this.renderer.setSize(window.innerWidth, window.innerHeight);
-      if (this.composer) this.composer.setSize(window.innerWidth, window.innerHeight);
+      const w = window.innerWidth;
+      const h = window.innerHeight;
+      if (this.camera) {
+        this.camera.aspect = w / h;
+        this.camera.updateProjectionMatrix();
+      }
+      this.renderer.setSize(w, h);
+      // Resizing the composer re-allocates full-screen render targets; debounce
+      // it so a drag-resize doesn't do that on every event.
+      if (this._composerResizeTimer !== null) clearTimeout(this._composerResizeTimer);
+      this._composerResizeTimer = setTimeout(() => {
+        this._composerResizeTimer = null;
+        if (!this._destroyed && this.composer) {
+          this.composer.setSize(window.innerWidth, window.innerHeight);
+        }
+      }, 100);
     };
     window.addEventListener('resize', this._onResize);
   }
@@ -385,6 +424,7 @@ export class Game {
       audioManager.setCarModel(playerVariant.modelId);
     }
 
+    this._rebuildCarLookup();
     this._initBallCollisionHandler();
     this._initCarCollisionHandler();
 
@@ -442,9 +482,16 @@ export class Game {
 
   _initNameplates() {
     this._nameplates = [];
+    // Per-nameplate cache of the boost-fill element and last written values,
+    // so _updateNameplates only touches the DOM when something changed.
+    this._nameplateState = [];
     const container = document.getElementById('game-container');
     for (let i = 0; i < this.allCars.length; i++) {
-      if (i === 0) { this._nameplates.push(null); continue; } // skip player car
+      if (i === 0) { // skip player car
+        this._nameplates.push(null);
+        this._nameplateState.push(null);
+        continue;
+      }
 
       const el = document.createElement('div');
       el.className = 'car-nameplate';
@@ -453,11 +500,21 @@ export class Game {
       const isBlue = i < half;
       const teamColor = isBlue ? '#4dc8ff' : '#ff8844';
       el.style.color = teamColor;
+      // Anchor at the container origin; placement is done entirely via transform
+      el.style.left = '0';
+      el.style.top = '0';
       // Boost indicator circle (SVG) + name
       const circ = 2 * Math.PI * 5; // r=5
       el.innerHTML = `<svg class="np-boost" width="14" height="14" viewBox="0 0 14 14"><circle cx="7" cy="7" r="5" fill="none" stroke="rgba(255,255,255,0.25)" stroke-width="2"/><circle class="np-boost-fill" cx="7" cy="7" r="5" fill="none" stroke="${teamColor}" stroke-width="2" stroke-dasharray="${circ}" stroke-dashoffset="0" transform="rotate(-90 7 7)"/></svg><span class="np-name">${this._carNames[i] || ''}</span>`;
       container.appendChild(el);
       this._nameplates.push(el);
+      this._nameplateState.push({
+        fill: el.querySelector('.np-boost-fill'),
+        shown: true,
+        x: NaN, y: NaN, scale: NaN,
+        opacity: '',
+        dash: '0',
+      });
     }
   }
 
@@ -466,40 +523,54 @@ export class Game {
     const cam = this.camera;
     const halfW = this.canvas.clientWidth / 2;
     const halfH = this.canvas.clientHeight / 2;
+    const NP_CIRC = 2 * Math.PI * 5;
 
     for (let i = 1; i < this.allCars.length; i++) {
       const el = this._nameplates[i];
       if (!el) continue;
+      const st = this._nameplateState[i];
       const car = this.allCars[i];
-      if (!car || !car.mesh) { el.style.display = 'none'; continue; }
 
-      // Project car position to screen (offset up above the car)
-      _npVec.set(car.mesh.position.x, car.mesh.position.y + 3.5, car.mesh.position.z);
-      _npVec.project(cam);
+      let hide = !car || !car.mesh;
+      if (!hide) {
+        // Project car position to screen (offset up above the car)
+        _npVec.set(car.mesh.position.x, car.mesh.position.y + 3.5, car.mesh.position.z);
+        _npVec.project(cam);
+        // Behind camera check
+        hide = _npVec.z > 1;
+      }
+      if (hide) {
+        if (st.shown) { st.shown = false; el.style.display = 'none'; }
+        continue;
+      }
+      if (!st.shown) { st.shown = true; el.style.display = ''; }
 
-      // Behind camera check
-      if (_npVec.z > 1) { el.style.display = 'none'; continue; }
-
-      const sx = (_npVec.x * halfW) + halfW;
-      const sy = -((_npVec.y * halfH) - halfH);
+      // Round to 0.1px / 0.01 so sub-visible jitter doesn't cause style writes
+      const sx = Math.round(((_npVec.x * halfW) + halfW) * 10) / 10;
+      const sy = Math.round((-((_npVec.y * halfH) - halfH)) * 10) / 10;
 
       // Distance-based scale and opacity
       const dist = cam.position.distanceTo(car.mesh.position);
-      const scale = Math.max(0.5, Math.min(1, 20 / dist));
-      const opacity = Math.max(0.3, Math.min(0.9, 25 / dist));
+      const scale = Math.round(Math.max(0.5, Math.min(1, 20 / dist)) * 100) / 100;
+      const opacity = Math.max(0.3, Math.min(0.9, 25 / dist)).toFixed(2);
 
-      el.style.display = '';
-      el.style.left = `${sx}px`;
-      el.style.top = `${sy}px`;
-      el.style.transform = `translate(-50%, -100%) scale(${scale.toFixed(2)})`;
-      el.style.opacity = opacity.toFixed(2);
+      if (sx !== st.x || sy !== st.y || scale !== st.scale) {
+        st.x = sx; st.y = sy; st.scale = scale;
+        el.style.transform = `translate3d(${sx}px, ${sy}px, 0) translate(-50%, -100%) scale(${scale})`;
+      }
+      if (opacity !== st.opacity) {
+        st.opacity = opacity;
+        el.style.opacity = opacity;
+      }
 
       // Update boost circle
-      const fill = el.querySelector('.np-boost-fill');
-      if (fill) {
+      if (st.fill) {
         const pct = (car.boost || 0) / 100;
-        const circ = 2 * Math.PI * 5;
-        fill.setAttribute('stroke-dashoffset', (circ * (1 - pct)).toFixed(1));
+        const dash = (NP_CIRC * (1 - pct)).toFixed(1);
+        if (dash !== st.dash) {
+          st.dash = dash;
+          st.fill.setAttribute('stroke-dashoffset', dash);
+        }
       }
     }
   }
@@ -646,7 +717,8 @@ export class Game {
         const interpState = this.network.getInterpolatedState();
         if (interpState) {
           const ballData = interpState.ball;
-          const carsData = [];
+          const carsData = this._carsDataBuf;
+          carsData.length = this.maxPlayers;
           for (let i = 0; i < this.maxPlayers; i++) {
             carsData[i] = interpState.players[i] || null;
           }
@@ -775,27 +847,92 @@ export class Game {
       this.opponentCar = this.remoteCars[0].car;
     }
 
+    this._rebuildCarLookup();
     this.cameraController.setTarget(this.playerCar);
   }
 
+  /** Rebuild the body -> car / slot maps used by the collide handlers. */
+  _rebuildCarLookup() {
+    this._carByBody.clear();
+    this._carIndexByBody.clear();
+    const cars = this.allCars || [];
+    for (let i = 0; i < cars.length; i++) {
+      const car = cars[i];
+      if (!car) continue;
+      this._carByBody.set(car.body, car);
+      this._carIndexByBody.set(car.body, i);
+    }
+  }
+
+  /** Slot index of a car in allCars, or -1. */
+  _carIndex(car) {
+    if (!car) return -1;
+    const idx = this._carIndexByBody.get(car.body);
+    return idx === undefined ? -1 : idx;
+  }
+
   _initPostProcessing() {
-    this.composer = new EffectComposer(this.renderer);
-
-    const renderPass = new RenderPass(this.scene, this.camera);
-    this.composer.addPass(renderPass);
-
-    // Skip bloom on iOS or if disabled in display settings
     const displaySettings = getDisplaySettings();
-    if (!this._isIOS && displaySettings.bloom) {
+    const useBloom = !this._isIOS && displaySettings.bloom;
+
+    // Multisampled HDR target so anti-aliasing actually happens inside the
+    // composer (the canvas itself is created without MSAA — see _initRenderer).
+    const size = this.renderer.getDrawingBufferSize(_rtSize);
+    const target = new THREE.WebGLRenderTarget(size.x, size.y, {
+      samples: this._isIOS ? 0 : 4,
+      type: THREE.HalfFloatType,
+    });
+    target.texture.name = 'EffectComposer.rt1';
+
+    this.composer = new EffectComposer(this.renderer, target);
+    // EffectComposer takes the custom target's pixel size as its CSS size;
+    // normalise its bookkeeping (no-op re-size for the targets themselves).
+    this.composer.setSize(window.innerWidth, window.innerHeight);
+
+    this._renderPass = new RenderPass(this.scene, this.camera);
+    this.composer.addPass(this._renderPass);
+    this._bloomPass = null;
+    this._outputPass = null;
+
+    if (useBloom) {
       // Use half-resolution for bloom to reduce GPU cost
-      const bloomPass = new UnrealBloomPass(
+      this._bloomPass = new UnrealBloomPass(
         new THREE.Vector2(
           Math.floor(window.innerWidth / 2),
           Math.floor(window.innerHeight / 2)
         ),
         0.8, 0.4, 0.85
       );
-      this.composer.addPass(bloomPass);
+      this.composer.addPass(this._bloomPass);
+    } else if (!this._isIOS) {
+      // Without bloom the RenderPass would be the last pass and draw straight
+      // to the non-antialiased canvas. Resolve the multisampled target to the
+      // screen instead (OutputPass applies the renderer's tone mapping + sRGB,
+      // exactly as rendering to the canvas would).
+      this._outputPass = new OutputPass();
+      this.composer.addPass(this._outputPass);
+    }
+    // iOS: RenderPass only, rendered straight to the canvas (no MSAA, no bloom) as before.
+  }
+
+  _disposePostProcessing() {
+    // EffectComposer.dispose() only frees its own two targets + copy pass;
+    // UnrealBloomPass owns ~7 render targets of its own that would leak.
+    if (this._bloomPass) {
+      this._bloomPass.dispose();
+      this._bloomPass = null;
+    }
+    if (this._outputPass) {
+      this._outputPass.dispose();
+      this._outputPass = null;
+    }
+    if (this._renderPass) {
+      this._renderPass.dispose();
+      this._renderPass = null;
+    }
+    if (this.composer) {
+      this.composer.dispose();
+      this.composer = null;
     }
   }
 
@@ -805,21 +942,19 @@ export class Game {
       // Check if the other body is a car (collision filter group)
       if (!(other.collisionFilterGroup & COLLISION_GROUPS.CAR)) return;
 
-      const car = this.allCars
-        ? this.allCars.find(c => c && c.body === other)
-        : (this.playerCar && this.playerCar.body === other ? this.playerCar : this.opponentCar);
+      const car = this._carByBody.get(other) || null;
 
       const ballPos = this.ball.body.position;
       const ballVel = this.ball.body.velocity;
       const carPos = other.position;
       const carVel = other.velocity;
-      const carForward = other.quaternion.vmult(new CANNON.Vec3(0, 0, 1));
+      const carForward = other.quaternion.vmult(_fwdLocal, _carForward);
 
       // Track touch BEFORE impulse (singleplayer only)
       let carIdx = -1;
       if (this.perfTracker) {
-        carIdx = this.allCars ? this.allCars.findIndex(c => c && c.body === other) : -1;
-        if (carIdx < 0) carIdx = other === this.playerCar.body ? 0 : 1;
+        const idx = this._carIndexByBody.get(other);
+        carIdx = idx !== undefined ? idx : (this.playerCar && other === this.playerCar.body ? 0 : 1);
         this.perfTracker.recordTouch(carIdx, ballPos, ballVel, carPos);
       }
 
@@ -855,9 +990,9 @@ export class Game {
       carA.body.addEventListener('collide', (e) => {
         if (!(e.body.collisionFilterGroup & COLLISION_GROUPS.CAR)) return;
         // Find the other car
-        const carB = this.allCars.find(c => c && c !== carA && c.body === e.body);
-        if (!carB) return;
-        const idxB = this.allCars.indexOf(carB);
+        const carB = this._carByBody.get(e.body);
+        if (!carB || carB === carA) return;
+        const idxB = this._carIndexByBody.get(e.body);
         // Cross-team only: indices < half are blue, >= half are orange
         const sameTeam = (i < half) === (idxB < half);
         if (sameTeam) return;
@@ -870,7 +1005,7 @@ export class Game {
     const result = checkDemolition(carA, carB);
     if (result) {
       if (this.perfTracker) {
-        const idx = this.allCars.indexOf(result.attacker);
+        const idx = this._carIndex(result.attacker);
         if (idx >= 0) this.perfTracker.recordDemolition(idx);
       }
       this._demolishCar(result.victim);
@@ -884,7 +1019,7 @@ export class Game {
   _demolishCar(car) {
     const pos = { x: car.body.position.x, y: car.body.position.y, z: car.body.position.z };
     const half = Math.floor(this.allCars.length / 2);
-    const idx = this.allCars.indexOf(car);
+    const idx = this._carIndex(car);
     const color = idx < half ? COLORS.CYAN : COLORS.ORANGE;
     car.demolish();
     this.explosionManager.spawnExplosion(pos, color);
@@ -1029,7 +1164,9 @@ export class Game {
       this.accumulator -= PHYSICS.TIMESTEP;
     }
 
-    for (const car of this.allCars) car._syncMesh();
+    // Sync meshes only for cars that will NOT run update() this frame
+    // (update() syncs its own mesh; syncing twice double-applies wheel spin).
+    this._syncIdleCarMeshes();
     this.ball.update(dt);
 
     // Post-game celebration: allow player to jump, flip, and boost
@@ -1046,7 +1183,6 @@ export class Game {
         handbrake: false,
       };
       this.playerCar.update(celebInput, dt);
-      for (const car of this.allCars) car._syncMesh();
       this.explosionManager.updateExplosions(dt);
       return;
     }
@@ -1115,6 +1251,32 @@ export class Game {
     this.explosionManager.updateExplosions(dt);
     this.explosionManager.checkLandingEffects(this.allCars);
     this.explosionManager.updateLandingRings(dt);
+  }
+
+  /**
+   * Singleplayer: sync body -> mesh for every car that will not call update()
+   * this frame (demolished cars, AI cars when the AI is not running, all cars
+   * during countdown/goal/celebration states). Cars that do update() sync
+   * themselves inside Car.update().
+   */
+  _syncIdleCarMeshes() {
+    const st = this.state;
+    const inPlay = st === 'playing' || st === 'overtime';
+    const playerCar = this.playerCar;
+    const playerUpdates = st === 'ended' || (inPlay && playerCar && !playerCar.demolished);
+    const aiUpdates = inPlay && this.mode !== 'freeplay' && !!this.aiController;
+    const aiCars = this.aiCars;
+    const cars = this.allCars;
+    for (let i = 0; i < cars.length; i++) {
+      const car = cars[i];
+      if (!car) continue;
+      if (car === playerCar) {
+        if (playerUpdates) continue;
+      } else if (aiUpdates && !car.demolished && aiCars && aiCars.indexOf(car) !== -1) {
+        continue;
+      }
+      car._syncMesh();
+    }
   }
 
   // ========== MULTIPLAYER LOOP ==========
@@ -1200,12 +1362,14 @@ export class Game {
       // by the accumulator — we may run 0, 1, or 2 steps per render frame.
       this.accumulator += dt;
       let steppedThisFrame = false;
+      const now = performance.now();
       while (this.accumulator >= PHYSICS.TIMESTEP) {
         // Send input to server once per fixed step (matches server processing rate).
         // Sending per-step instead of per-frame avoids flooding at high frame rates
         // and ensures each pending input corresponds to exactly one physics step.
         const input = this.network.sendInput(assisted);
         this.network.addPendingInput(input);
+        this._lastInputSendTime = now;
 
         this.playerCar.update(assisted, PHYSICS.TIMESTEP);
         this.world.step(PHYSICS.TIMESTEP);
@@ -1213,11 +1377,14 @@ export class Game {
         steppedThisFrame = true;
       }
 
-      // If no physics step this frame (high framerate), still send input
-      // so the server stays responsive, but don't add to pending buffer
-      // (no physics step = no prediction to reconcile)
-      if (!steppedThisFrame) {
+      // If no physics step this frame (high framerate), still send input so
+      // the server stays responsive, but don't add to pending buffer (no
+      // physics step = no prediction to reconcile). Throttled so the total
+      // send rate never exceeds one per physics timestep — at 144Hz this
+      // path used to fire on every non-stepping frame.
+      if (!steppedThisFrame && now - this._lastInputSendTime >= TIMESTEP_MS) {
         this.network.sendInput(assisted);
+        this._lastInputSendTime = now;
       }
     }
 
@@ -1237,10 +1404,12 @@ export class Game {
       // Sync boost pads
       this._syncBoostPads(interpState.boostPads);
 
-      // Record frame for replay (from interpolated state the player sees)
+      // Record frame for replay (from interpolated state the player sees).
+      // recordFromSnapshot copies fields, so the scratch array is reused.
       if (this.state === 'playing' || this.state === 'overtime') {
         const ballData = interpState.ball;
-        const carsData = [];
+        const carsData = this._carsDataBuf;
+        carsData.length = this.maxPlayers;
         for (let i = 0; i < this.maxPlayers; i++) {
           const p = interpState.players[i];
           carsData[i] = p || null;
@@ -1286,7 +1455,7 @@ export class Game {
     this._updateBallVisual(dt);
 
     // Animate boost pads (visual only)
-    this.boostPads.update(dt, []);
+    this.boostPads.update(dt, _noCars);
 
     this.explosionManager.updateExplosions(dt);
     this.explosionManager.checkLandingEffects(this.allCars);
@@ -1307,11 +1476,11 @@ export class Game {
     // Sync demolished state from server
     if (myState.demolished && !this.playerCar.demolished) {
       this.playerCar.demolished = true;
-      this.playerCar.mesh.visible = false;
+      this.playerCar.setVisible(false);
       this.playerCar.body.collisionFilterMask = 0;
     } else if (!myState.demolished && this.playerCar.demolished) {
       this.playerCar.demolished = false;
-      this.playerCar.mesh.visible = true;
+      this.playerCar.setVisible(true);
       this.playerCar.body.collisionFilterMask = COLLISION_GROUPS.ARENA_BOXES | COLLISION_GROUPS.BALL | COLLISION_GROUPS.CAR;
     }
 
@@ -1377,11 +1546,11 @@ export class Game {
       // Sync demolished state
       if (carData.demolished && !car.demolished) {
         car.demolished = true;
-        car.mesh.visible = false;
+        car.setVisible(false);
         car.body.collisionFilterMask = 0;
       } else if (!carData.demolished && car.demolished) {
         car.demolished = false;
-        car.mesh.visible = true;
+        car.setVisible(true);
         car.body.collisionFilterMask = COLLISION_GROUPS.ARENA_BOXES | COLLISION_GROUPS.BALL | COLLISION_GROUPS.CAR;
       }
 
@@ -1693,7 +1862,7 @@ export class Game {
     // Restore demolished car visibility to match actual state
     for (const car of cars) {
       if (car) {
-        car.mesh.visible = !car.demolished;
+        car.setVisible(!car.demolished);
       }
     }
 
@@ -1771,7 +1940,7 @@ export class Game {
         car.demolished = false;
         car.respawnTimer = 0;
         car.body.collisionFilterMask = COLLISION_GROUPS.ARENA_BOXES | COLLISION_GROUPS.BALL | COLLISION_GROUPS.CAR;
-        car.mesh.visible = true;
+        car.setVisible(true);
       }
     }
 
@@ -1791,7 +1960,7 @@ export class Game {
         car.demolished = false;
         car.respawnTimer = 0;
         car.body.collisionFilterMask = COLLISION_GROUPS.ARENA_BOXES | COLLISION_GROUPS.BALL | COLLISION_GROUPS.CAR;
-        car.mesh.visible = true;
+        car.setVisible(true);
       }
     }
     this.ball.reset();
@@ -1838,7 +2007,7 @@ export class Game {
     // Hide the ball off-screen
     this.ball.body.position.set(0, -50, 0);
     this.ball.body.velocity.set(0, 0, 0);
-    this.ball.mesh.visible = false;
+    this.ball.setVisible(false);
 
     // Line up all cars at midfield facing the camera
     const carCount = this.allCars.filter(c => c).length;
@@ -1852,7 +2021,7 @@ export class Game {
         car.demolished = false;
         car.respawnTimer = 0;
         car.body.collisionFilterMask = COLLISION_GROUPS.ARENA_BOXES | COLLISION_GROUPS.BALL | COLLISION_GROUPS.CAR;
-        car.mesh.visible = true;
+        car.setVisible(true);
       }
       const x = startX + i * spacing;
       car.body.position.set(x, 2, 0);
@@ -2018,10 +2187,25 @@ export class Game {
       this._replaySkipHandler = null;
     }
 
-    // Remove resize listener
+    // Remove resize listener and any pending debounced composer resize
     if (this._onResize) {
       window.removeEventListener('resize', this._onResize);
+      this._onResize = null;
     }
+    if (this._composerResizeTimer !== null) {
+      clearTimeout(this._composerResizeTimer);
+      this._composerResizeTimer = null;
+    }
+
+    // Remove canvas listeners (the canvas outlives this Game instance)
+    if (this.canvas) {
+      if (this._onContextLost) this.canvas.removeEventListener('webglcontextlost', this._onContextLost);
+      if (this._onContextRestored) this.canvas.removeEventListener('webglcontextrestored', this._onContextRestored);
+      if (this._onCanvasClick) this.canvas.removeEventListener('click', this._onCanvasClick);
+    }
+    this._onContextLost = null;
+    this._onContextRestored = null;
+    this._onCanvasClick = null;
 
     // Stop ALL continuous audio
     audioManager.stopAll();
@@ -2059,7 +2243,8 @@ export class Game {
     if (this.scene) {
       const texProps = ['map', 'emissiveMap', 'normalMap', 'roughnessMap', 'metalnessMap', 'aoMap', 'bumpMap', 'alphaMap', 'envMap', 'lightMap', 'displacementMap'];
       this.scene.traverse((obj) => {
-        if (obj.geometry) obj.geometry.dispose();
+        // Shared GLB geometry is cached by ModelLoader across matches; don't dispose it
+        if (obj.geometry && !(obj.geometry.userData && obj.geometry.userData.isSharedGeometry)) obj.geometry.dispose();
         if (obj.material) {
           if (Array.isArray(obj.material)) {
             obj.material.forEach(m => {
@@ -2074,10 +2259,8 @@ export class Game {
       });
     }
 
-    // Dispose renderer and composer
-    if (this.composer) {
-      this.composer.dispose();
-    }
+    // Dispose composer (incl. bloom pass targets) and renderer
+    this._disposePostProcessing();
     if (this.renderer) {
       this.renderer.dispose();
     }
@@ -2099,6 +2282,8 @@ export class Game {
     this.opponentCar = null;
     this.remoteCars = [];
     this.allCars = [];
+    this._carByBody.clear();
+    this._carIndexByBody.clear();
     this.ball = null;
     this.scene = null;
     this.world = null;

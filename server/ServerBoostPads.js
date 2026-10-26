@@ -19,6 +19,7 @@ export class ServerBoostPads {
         z: pos.z * ARENA.LENGTH / 2,
         isLarge: true,
         radius: BOOST_PAD.LARGE_RADIUS,
+        radiusSq: BOOST_PAD.LARGE_RADIUS * BOOST_PAD.LARGE_RADIUS,
         amount: BOOST_PAD.LARGE_AMOUNT,
         respawnTime: BOOST_PAD.LARGE_RESPAWN_TIME,
         active: true,
@@ -33,6 +34,7 @@ export class ServerBoostPads {
         z: pos.z * ARENA.LENGTH / 2,
         isLarge: false,
         radius: BOOST_PAD.SMALL_RADIUS,
+        radiusSq: BOOST_PAD.SMALL_RADIUS * BOOST_PAD.SMALL_RADIUS,
         amount: BOOST_PAD.SMALL_AMOUNT,
         respawnTime: BOOST_PAD.SMALL_RESPAWN_TIME,
         active: true,
@@ -45,32 +47,37 @@ export class ServerBoostPads {
   }
 
   update(dt, cars) {
-    this.pads.forEach(pad => {
+    // Indexed loops (no per-pad/per-car closures) and squared-distance
+    // comparison against the precomputed radiusSq (no Math.sqrt per pair).
+    const pads = this.pads;
+    const numPads = pads.length;
+    const numCars = cars.length;
+    for (let i = 0; i < numPads; i++) {
+      const pad = pads[i];
       if (!pad.active) {
         pad.respawnTimer -= dt;
         if (pad.respawnTimer <= 0) {
           pad.active = true;
         }
-        return;
+        continue;
       }
 
-      // Check car pickups
-      cars.forEach(car => {
-        if (!pad.active) return;
-        const carPos = car.getPosition();
+      // Check car pickups; the first car to pick up deactivates the pad
+      for (let j = 0; j < numCars; j++) {
+        const car = cars[j];
+        const carPos = car.body.position;
         const dx = carPos.x - pad.x;
         const dz = carPos.z - pad.z;
-        const dist = Math.sqrt(dx * dx + dz * dz);
-
-        if (dist < pad.radius) {
+        if (dx * dx + dz * dz < pad.radiusSq) {
           if (car.boost < 100 || pad.isLarge) {
             car.addBoost(pad.amount);
             pad.active = false;
             pad.respawnTimer = pad.respawnTime;
+            break;
           }
         }
-      });
-    });
+      }
+    }
   }
 
   getActiveBitmask() {
@@ -96,9 +103,10 @@ export class ServerBoostPads {
   }
 
   resetAll() {
-    this.pads.forEach(pad => {
-      pad.active = true;
-      pad.respawnTimer = 0;
-    });
+    const pads = this.pads;
+    for (let i = 0; i < pads.length; i++) {
+      pads[i].active = true;
+      pads[i].respawnTimer = 0;
+    }
   }
 }

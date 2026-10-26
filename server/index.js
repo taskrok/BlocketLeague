@@ -7,6 +7,7 @@ import { createServer } from 'http';
 import { Server } from 'socket.io';
 import { fileURLToPath } from 'url';
 import { dirname, join } from 'path';
+import { performance } from 'perf_hooks';
 import { GameRoom } from './GameRoom.js';
 import { decodeInput } from '../shared/BinaryProtocol.js';
 import {
@@ -61,6 +62,12 @@ const playerRooms = new Map(); // socketId -> GameRoom
 const ROOM_CODE_CHARS = 'ABCDEFGHJKLMNPQRSTUVWXYZ'; // exclude I, O
 const ROOM_EXPIRY_MS = 5 * 60 * 1000; // 5 minutes
 
+// Per-socket message rate limits (see connection handler)
+const INPUT_WINDOW_MS = 1000 / 60;        // one physics tick
+const INPUT_MAX_PER_WINDOW = 3;           // inputs accepted per tick window
+const QUICKCHAT_MIN_INTERVAL_MS = 500;    // max 2 quick-chats per second
+const PING_MIN_INTERVAL_MS = 250;         // max 4 ping_measure per second
+
 function generateRoomCode() {
   let code;
   do {
@@ -70,6 +77,41 @@ function generateRoomCode() {
     }
   } while (rooms.has(code));
   return code;
+}
+
+/**
+ * Create a GameRoom registered in `rooms`. Room codes are reused after a room
+ * is deleted, so every deferred path that removes a room (expiry timer,
+ * forceCleanup, disconnect) must check it is removing THIS room object and
+ * not a newer room that inherited the code.
+ */
+function createGameRoom(code, maxPlayers) {
+  const room = new GameRoom(io, code, maxPlayers, () => deleteRoom(room));
+  room.expiryTimer = null;
+  rooms.set(code, room);
+  return room;
+}
+
+/** Cancel the unfilled-room expiry timer (room filled, started or deleted). */
+function clearRoomExpiry(room) {
+  if (room.expiryTimer) {
+    clearTimeout(room.expiryTimer);
+    room.expiryTimer = null;
+  }
+}
+
+/**
+ * Remove a room from the registry and drop its players' playerRooms entries.
+ * No-op if the registry already holds a different room under the same code.
+ */
+function deleteRoom(room) {
+  clearRoomExpiry(room);
+  for (const [socketId, r] of playerRooms) {
+    if (r === room) playerRooms.delete(socketId);
+  }
+  if (rooms.get(room.roomId) === room) {
+    rooms.delete(room.roomId);
+  }
 }
 
 // ========== MATCHMAKING QUEUE ==========
@@ -178,16 +220,7 @@ function broadcastQueueUpdate(mode) {
 function startMatchedGame(players, mode) {
   const maxPlayers = mode === '2v2' ? 4 : 2;
   const code = generateRoomCode();
-  const room = new GameRoom(io, code, maxPlayers, (roomId) => {
-    // onCleanup callback: clean playerRooms entries for all players in this room
-    for (const [socketId, r] of playerRooms) {
-      if (r.roomId === roomId) {
-        playerRooms.delete(socketId);
-      }
-    }
-    rooms.delete(roomId);
-  });
-  rooms.set(code, room);
+  const room = createGameRoom(code, maxPlayers);
 
   // Add real players
   for (const entry of players) {
@@ -258,16 +291,7 @@ io.on('connection', (socket) => {
     const playerName = (data && data.playerName) || '';
 
     const code = generateRoomCode();
-    const room = new GameRoom(io, code, maxPlayers, (roomId) => {
-      // onCleanup callback: clean playerRooms entries for all players in this room
-      for (const [socketId, r] of playerRooms) {
-        if (r.roomId === roomId) {
-          playerRooms.delete(socketId);
-        }
-      }
-      rooms.delete(roomId);
-    });
-    rooms.set(code, room);
+    const room = createGameRoom(code, maxPlayers);
 
     room.addPlayer(socket, variantConfig, playerName, playerIds.get(socket.id));
     playerRooms.set(socket.id, room);
@@ -275,23 +299,18 @@ io.on('connection', (socket) => {
     socket.emit('roomCreated', { code, mode });
     console.log(`Room ${code} created (${mode}) by ${socket.id}`);
 
-    // Expire unfilled rooms after 5 minutes
-    setTimeout(() => {
-      if (rooms.has(code) && !rooms.get(code).isFull()) {
-        const r = rooms.get(code);
-        // Clean playerRooms for players in this expiring room
-        for (const p of r.players) {
-          if (p && p.socketId) {
-            playerRooms.delete(p.socketId);
-          }
-        }
-        r.players.filter(p => p && p.socket).forEach(p => {
-          p.socket.emit('roomExpired', {});
-        });
-        r._stopLoops();
-        rooms.delete(code);
-        console.log(`Room ${code} expired`);
+    // Expire unfilled rooms after 5 minutes. The handle is stored on the room
+    // and cleared when it fills or is deleted; the callback also verifies the
+    // registry still holds this exact room (codes are recycled).
+    room.expiryTimer = setTimeout(() => {
+      room.expiryTimer = null;
+      if (rooms.get(code) !== room || room.isFull()) return;
+      for (const p of room.players) {
+        if (p && p.socket) p.socket.emit('roomExpired', {});
       }
+      room._stopLoops();
+      deleteRoom(room);
+      console.log(`Room ${code} expired`);
     }, ROOM_EXPIRY_MS);
   });
 
@@ -312,6 +331,7 @@ io.on('connection', (socket) => {
 
     room.addPlayer(socket, variantConfig, playerName, playerIds.get(socket.id));
     playerRooms.set(socket.id, room);
+    if (room.isFull()) clearRoomExpiry(room); // match is starting; no longer expires
     console.log(`Player ${socket.id} joined room ${code}`);
   });
 
@@ -336,7 +356,22 @@ io.on('connection', (socket) => {
     }
   });
 
+  // --- Per-socket rate limiting (fixed windows; excess messages dropped silently) ---
+  // Inputs: the room only keeps the latest input per physics tick, so anything
+  // beyond a few messages per tick is wasted decode work. Allow a small burst.
+  let inputWindowStart = 0;
+  let inputWindowCount = 0;
+  let lastQuickChatAt = -Infinity;
+  let lastPingAt = -Infinity;
+
   socket.on('input', (data) => {
+    const now = performance.now();
+    if (now - inputWindowStart >= INPUT_WINDOW_MS) {
+      inputWindowStart = now;
+      inputWindowCount = 0;
+    }
+    if (++inputWindowCount > INPUT_MAX_PER_WINDOW) return;
+
     const room = playerRooms.get(socket.id);
     if (room) {
       // Support both binary (ArrayBuffer/Buffer) and legacy JSON input
@@ -349,6 +384,9 @@ io.on('connection', (socket) => {
 
   // RTT measurement
   socket.on('ping_measure', () => {
+    const now = performance.now();
+    if (now - lastPingAt < PING_MIN_INTERVAL_MS) return;
+    lastPingAt = now;
     socket.volatile.emit('pong_measure');
   });
 
@@ -366,19 +404,19 @@ io.on('connection', (socket) => {
   });
 
   socket.on('quickChat', (data) => {
+    const now = performance.now();
+    if (now - lastQuickChatAt < QUICKCHAT_MIN_INTERVAL_MS) return;
     const room = playerRooms.get(socket.id);
     if (!room) return;
-    // Find the player's slot index
-    const playerIdx = room.players.findIndex(p => p && p.socket && p.socket.id === socket.id);
-    if (playerIdx < 0) return;
-    const msgIndex = typeof data === 'object' ? data.msgIndex : data;
+    // O(1) slot lookup (only connected humans are in socketIdToSlot)
+    const playerIdx = room.socketIdToSlot.get(socket.id);
+    if (playerIdx === undefined) return;
+    const msgIndex = data !== null && typeof data === 'object' ? data.msgIndex : data;
     if (typeof msgIndex !== 'number' || msgIndex < 0 || msgIndex > 11) return;
-    // Broadcast to all players in the room (including sender for consistency)
-    room.players.forEach(p => {
-      if (p && p.socket) {
-        p.socket.emit('quickChat', { msgIndex, playerIdx });
-      }
-    });
+    lastQuickChatAt = now;
+    // Same payload for everyone: broadcast to the socket.io room (every
+    // connected human has joined it; bots have no socket) instead of N emits
+    io.to(room.roomId).emit('quickChat', { msgIndex, playerIdx });
   });
 
   // --- Stats & Progression API ---
@@ -446,7 +484,7 @@ io.on('connection', (socket) => {
 
       // Clean up empty rooms (check all players including bots)
       if (room.isEmpty()) {
-        rooms.delete(room.roomId);
+        deleteRoom(room);
         console.log(`Removed empty room: ${room.roomId}`);
       }
     }

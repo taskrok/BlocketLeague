@@ -65,6 +65,11 @@ export class TrainingMode {
     this._trainingCompleteOverlay = null;
     this._trainingKeyHandler = null;
     this._trainingCompleteKeyHandler = null;
+
+    // Last HUD strings written to the DOM (textContent assigned only on change)
+    this._hudShotText = null;
+    this._hudScoreText = null;
+    this._hudTimerText = null;
   }
 
   get isValid() {
@@ -184,13 +189,28 @@ export class TrainingMode {
   }
 
   _updateHUD() {
+    // Called every frame while a shot is active; only touch the DOM when a string changes.
     const idx = this._trainingShotIndex;
     const total = this._trainingPack.length;
-    this._trainingShotLabel.textContent = `SHOT ${idx + 1} / ${total}`;
-    this._trainingScoreLabel.textContent = `${this._trainingScore.hit} / ${this._trainingScore.total}`;
+
+    const shotText = `SHOT ${idx + 1} / ${total}`;
+    if (shotText !== this._hudShotText) {
+      this._hudShotText = shotText;
+      this._trainingShotLabel.textContent = shotText;
+    }
+
+    const scoreText = `${this._trainingScore.hit} / ${this._trainingScore.total}`;
+    if (scoreText !== this._hudScoreText) {
+      this._hudScoreText = scoreText;
+      this._trainingScoreLabel.textContent = scoreText;
+    }
 
     const t = Math.ceil(this._trainingShotTimer);
-    this._trainingTimerLabel.textContent = this._trainingShotActive ? `${t}s` : '';
+    const timerText = this._trainingShotActive ? `${t}s` : '';
+    if (timerText !== this._hudTimerText) {
+      this._hudTimerText = timerText;
+      this._trainingTimerLabel.textContent = timerText;
+    }
   }
 
   _loadShot(index) {
@@ -393,7 +413,10 @@ export class TrainingMode {
       acc -= PHYSICS.TIMESTEP;
     }
 
-    for (const car of this.allCars) car._syncMesh();
+    // Only sync cars that won't run update() below (update() syncs its own mesh)
+    for (const car of this.allCars) {
+      if (car !== this.playerCar || car.demolished) car._syncMesh();
+    }
     this.ball.update(dt);
 
     // Update explosions and landing effects

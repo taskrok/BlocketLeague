@@ -40,12 +40,89 @@ export class Car {
     // Whether this car is the local player (set externally by Game)
     this.isLocalPlayer = false;
 
+    // Visual visibility (see setVisible). Lights are never hidden via
+    // `visible` — changing the visible light count forces every lit material
+    // to recompile its shader program. Intensity is driven instead.
+    this._visible = true;
+
     this._createPhysics(position);
     this._createMesh();
+    this._detachBottomLight();
+    this._collectEmissiveMaterials();
     this._createBoostTrail();
 
     // Raycast result object (reused)
     this._rayResult = new CANNON.RaycastResult();
+  }
+
+  /**
+   * Move the bottom glow light out of the car mesh and into the scene so that
+   * hiding `this.mesh` (here or in ReplayPlayer) never removes a light from
+   * the scene's light list. Its world position is updated in _syncMesh().
+   */
+  _detachBottomLight() {
+    const light = this.bottomLight;
+    if (!light) return;
+    this._bottomLightOffset = light.position.clone();
+    this._bottomLightIntensity = light.intensity;
+    if (light.parent) light.parent.remove(light);
+    this.scene.add(light);
+    this._syncBottomLight();
+  }
+
+  _syncBottomLight() {
+    const light = this.bottomLight;
+    if (!light) return;
+    light.position.copy(this._bottomLightOffset)
+      .applyQuaternion(this.mesh.quaternion)
+      .add(this.mesh.position);
+  }
+
+  /**
+   * Collect the emissive-capable materials once so the supersonic glow does
+   * not have to traverse the mesh hierarchy every frame. GLB cars use
+   * MeshBasicMaterial (no emissive) so the list is empty and the glow is skipped.
+   */
+  _collectEmissiveMaterials() {
+    this._emissiveMaterials = [];
+    const seen = new Set();
+    this.mesh.traverse((child) => {
+      if (!child.isMesh || !child.material) return;
+      const mats = Array.isArray(child.material) ? child.material : [child.material];
+      for (let i = 0; i < mats.length; i++) {
+        const mat = mats[i];
+        if (mat.emissiveIntensity === undefined || seen.has(mat)) continue;
+        seen.add(mat);
+        this._emissiveMaterials.push({ material: mat, orig: mat.emissiveIntensity });
+      }
+    });
+  }
+
+  _restoreEmissive() {
+    const list = this._emissiveMaterials;
+    for (let i = 0; i < list.length; i++) {
+      list[i].material.emissiveIntensity = list[i].orig;
+    }
+  }
+
+  /**
+   * Show/hide the car visuals. The bottom light stays in the scene (constant
+   * light count) and is dimmed to 0 instead of being hidden.
+   */
+  setVisible(visible) {
+    visible = !!visible;
+    this._visible = visible;
+    this.mesh.visible = visible;
+    if (this.bottomLight) {
+      if (visible) {
+        this.bottomLight.intensity = this._bottomLightIntensity;
+      } else {
+        if (this.bottomLight.intensity > 0) {
+          this._bottomLightIntensity = this.bottomLight.intensity;
+        }
+        this.bottomLight.intensity = 0;
+      }
+    }
   }
 
   // ---- State property accessors (delegate to _state) ----
@@ -90,7 +167,7 @@ export class Car {
       mass: CAR.MASS,
       position: new CANNON.Vec3(position.x, position.y, position.z),
       linearDamping: 0.01,
-      angularDamping: 0.5,
+      angularDamping: 0.03,
       allowSleep: false,
       collisionFilterGroup: COLLISION_GROUPS.CAR,
       collisionFilterMask: COLLISION_GROUPS.ARENA_BOXES | COLLISION_GROUPS.BALL | COLLISION_GROUPS.CAR,
@@ -233,11 +310,11 @@ export class Car {
       this._flameParticles.push(flame);
     }
 
-    // Boost point light
-    const flameLight = new THREE.PointLight(COLORS.ORANGE, 0, 10);
-    flameLight.position.z = -CAR.LENGTH / 2 - 1;
-    this.boostFlame.add(flameLight);
-    this.flameLight = flameLight;
+    // No boost point light: the car body is unlit (MeshBasicMaterial) so it
+    // only ever lit the floor, and toggling it with the flame group changed
+    // the scene's light count every boost tap (shader recompiles). Kept as a
+    // detached no-op object so external code that writes `.intensity` is safe.
+    this.flameLight = new THREE.PointLight(COLORS.ORANGE, 0, 10);
 
     this.boostFlame.visible = false;
     this.mesh.add(this.boostFlame);
@@ -334,9 +411,12 @@ export class Car {
     this.mesh.quaternion.copy(this.body.quaternion);
 
     const speed = this.body.velocity.length();
-    this.wheels.forEach((wheel) => {
-      wheel.rotation.x += speed * 0.05;
-    });
+    const wheels = this.wheels;
+    for (let i = 0; i < wheels.length; i++) {
+      wheels[i].rotation.x += speed * 0.05;
+    }
+
+    this._syncBottomLight();
   }
 
   _updateEffects(input, dt) {
@@ -366,36 +446,29 @@ export class Car {
           flame.material.color.setHex(COLORS.ORANGE);
         }
       }
-      this.flameLight.intensity = (1 + Math.random() * 1.5) * (isSupersonic ? 2.0 : 1.0);
-      this.bottomLight.intensity = 2.0;
+      if (this._visible) this.bottomLight.intensity = 2.0;
     } else {
-      this.bottomLight.intensity = 1.0;
-      this.flameLight.intensity = 0;
+      if (this._visible) this.bottomLight.intensity = 1.0;
     }
 
     // --- Supersonic visual effects ---
 
-    // Smooth emissive glow transition
+    // Smooth emissive glow transition (skipped entirely for cars with no
+    // emissive-capable materials, e.g. GLB models)
     const targetGlow = isSupersonic ? 1 : 0;
     this._supersonicGlow += (targetGlow - this._supersonicGlow) * Math.min(1, 6 * dt);
-    if (this._supersonicGlow > 0.01) {
-      // Increase emissive on car body meshes
-      this.mesh.traverse((child) => {
-        if (child.isMesh && child.material && child.material.emissiveIntensity !== undefined) {
-          // Store original emissive intensity if not cached
-          if (child._origEmissiveIntensity === undefined) {
-            child._origEmissiveIntensity = child.material.emissiveIntensity;
-          }
-          child.material.emissiveIntensity = child._origEmissiveIntensity + this._supersonicGlow * 0.8;
-        }
-      });
-    } else if (this._supersonicGlow <= 0.01 && this._supersonicGlow > 0) {
+    const emissive = this._emissiveMaterials;
+    if (emissive.length === 0) {
+      if (this._supersonicGlow <= 0.01) this._supersonicGlow = 0;
+    } else if (this._supersonicGlow > 0.01) {
+      // Increase emissive on car body materials
+      const add = this._supersonicGlow * 0.8;
+      for (let i = 0; i < emissive.length; i++) {
+        emissive[i].material.emissiveIntensity = emissive[i].orig + add;
+      }
+    } else if (this._supersonicGlow > 0) {
       // Restore original emissive
-      this.mesh.traverse((child) => {
-        if (child.isMesh && child._origEmissiveIntensity !== undefined) {
-          child.material.emissiveIntensity = child._origEmissiveIntensity;
-        }
-      });
+      this._restoreEmissive();
       this._supersonicGlow = 0;
     }
 
@@ -441,11 +514,7 @@ export class Car {
       line.visible = false;
     }
     // Restore original emissive intensities
-    this.mesh.traverse((child) => {
-      if (child.isMesh && child._origEmissiveIntensity !== undefined) {
-        child.material.emissiveIntensity = child._origEmissiveIntensity;
-      }
-    });
+    this._restoreEmissive();
   }
 
   demolish() {
@@ -455,7 +524,7 @@ export class Car {
     this.body.angularVelocity.set(0, 0, 0);
     this.body.position.y = -100;
     this.body.collisionFilterMask = 0;
-    this.mesh.visible = false;
+    this.setVisible(false);
     if (this.isLocalPlayer && this._wasBoosting) {
       audioManager.stopBoost();
       this._wasBoosting = false;
@@ -468,7 +537,7 @@ export class Car {
     if (this._state.respawnTimer <= 0) {
       this._state.demolished = false;
       this.body.collisionFilterMask = COLLISION_GROUPS.ARENA_BOXES | COLLISION_GROUPS.BALL | COLLISION_GROUPS.CAR;
-      this.mesh.visible = true;
+      this.setVisible(true);
       this.reset(spawnPos, direction);
     }
   }

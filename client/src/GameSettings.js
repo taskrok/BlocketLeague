@@ -9,6 +9,8 @@ const CAMERA_STORAGE_KEY = 'blocket-camera-settings';
 const AUDIO_STORAGE_KEY = 'blocket-audio-settings';
 const GENERAL_STORAGE_KEY = 'blocket-general-settings';
 const DISPLAY_STORAGE_KEY = 'blocket-display-settings';
+// Slider 'input' events fire at pointer-move rate; persistence is trailing-debounced
+const SAVE_DEBOUNCE_MS = 250;
 
 export const DISPLAY_DEFAULTS = {
   bloom: true,
@@ -106,6 +108,9 @@ export class GameSettings {
     this._gpButtons = {};
     this._gpSliders = {};
     this._gpRebindRaf = null;
+    this._saveTimers = {};     // name → { timer, fn } for debounced persistence
+    this._pendingGp = null;    // gamepad settings not yet pushed to InputManager
+    this._onFSChange = null;
 
     this._loadCameraSettings();
     this._loadAudioSettings();
@@ -131,7 +136,53 @@ export class GameSettings {
   }
 
   _saveCameraSettings() {
-    localStorage.setItem(CAMERA_STORAGE_KEY, JSON.stringify(this.cameraValues));
+    this._cancelSave('camera');
+    try { localStorage.setItem(CAMERA_STORAGE_KEY, JSON.stringify(this.cameraValues)); } catch {}
+  }
+
+  // --- Debounced persistence ---
+  // Settings are applied live on every 'input' event; only the localStorage
+  // write is deferred. Pending writes are flushed on slider release ('change'),
+  // on panel close, and on destroy, so a drag never loses its final value.
+  _scheduleSave(name, fn) {
+    this._cancelSave(name);
+    const timer = setTimeout(() => {
+      delete this._saveTimers[name];
+      fn();
+    }, SAVE_DEBOUNCE_MS);
+    this._saveTimers[name] = { timer, fn };
+  }
+
+  _cancelSave(name) {
+    const pending = this._saveTimers[name];
+    if (!pending) return;
+    clearTimeout(pending.timer);
+    delete this._saveTimers[name];
+  }
+
+  _flushSave(name) {
+    const pending = this._saveTimers[name];
+    if (!pending) return;
+    clearTimeout(pending.timer);
+    delete this._saveTimers[name];
+    pending.fn();
+  }
+
+  _flushAllSaves() {
+    for (const name of Object.keys(this._saveTimers)) this._flushSave(name);
+  }
+
+  // Gamepad settings go through InputManager.setGpSettings (which persists),
+  // so the call itself is what gets debounced.
+  _queueGpSetting(partial) {
+    this._pendingGp = { ...(this._pendingGp || {}), ...partial };
+    this._scheduleSave('gp', () => this._commitGpSettings());
+  }
+
+  _commitGpSettings() {
+    const pending = this._pendingGp;
+    this._pendingGp = null;
+    if (pending) this.input.setGpSettings(pending);
   }
 
   // --- Audio persistence ---
@@ -147,7 +198,8 @@ export class GameSettings {
   }
 
   _saveAudioSettings() {
-    localStorage.setItem(AUDIO_STORAGE_KEY, JSON.stringify({ musicVolume: this._audioVolume }));
+    this._cancelSave('audio');
+    try { localStorage.setItem(AUDIO_STORAGE_KEY, JSON.stringify({ musicVolume: this._audioVolume })); } catch {}
   }
 
   _applyAudioVolume() {
@@ -290,8 +342,9 @@ export class GameSettings {
         this.cameraValues[cfg.key] = v;
         valSpan.textContent = v % 1 === 0 ? v : v.toFixed(1);
         this.controller.setSettings({ [cfg.key]: v });
-        this._saveCameraSettings();
+        this._scheduleSave('camera', () => this._saveCameraSettings());
       });
+      input.addEventListener('change', () => this._flushSave('camera'));
 
       this.cameraSliders[cfg.key] = { input, valSpan };
       row.appendChild(label);
@@ -405,8 +458,9 @@ export class GameSettings {
     dzInput.addEventListener('input', () => {
       const v = parseFloat(dzInput.value);
       dzVal.textContent = v.toFixed(2);
-      this.input.setGpSettings({ deadzone: v });
+      this._queueGpSetting({ deadzone: v });
     });
+    dzInput.addEventListener('change', () => this._flushSave('gp'));
     dzRow.appendChild(dzLabel);
     dzRow.appendChild(dzInput);
     dzRow.appendChild(dzVal);
@@ -432,8 +486,9 @@ export class GameSettings {
     ttInput.addEventListener('input', () => {
       const v = parseFloat(ttInput.value);
       ttVal.textContent = v.toFixed(2);
-      this.input.setGpSettings({ triggerThreshold: v });
+      this._queueGpSetting({ triggerThreshold: v });
     });
+    ttInput.addEventListener('change', () => this._flushSave('gp'));
     ttRow.appendChild(ttLabel);
     ttRow.appendChild(ttInput);
     ttRow.appendChild(ttVal);
@@ -479,8 +534,9 @@ export class GameSettings {
       this._audioVolume = v;
       valSpan.textContent = Math.round(v * 100);
       this._applyAudioVolume();
-      this._saveAudioSettings();
+      this._scheduleSave('audio', () => this._saveAudioSettings());
     });
+    input.addEventListener('change', () => this._flushSave('audio'));
     this._audioSlider = { input, valSpan };
     row.appendChild(label);
     row.appendChild(input);
@@ -526,11 +582,13 @@ export class GameSettings {
         }
       }
     });
-    const _onFSChange = () => {
+    // Stored on the instance so destroy() can remove them (GameSettings is
+    // created per match; unremoved listeners would retain the detached panel)
+    this._onFSChange = () => {
       fsBtn.textContent = _isFS() ? 'Exit Fullscreen' : 'Enter Fullscreen';
     };
-    document.addEventListener('fullscreenchange', _onFSChange);
-    document.addEventListener('webkitfullscreenchange', _onFSChange);
+    document.addEventListener('fullscreenchange', this._onFSChange);
+    document.addEventListener('webkitfullscreenchange', this._onFSChange);
     pane.appendChild(fsBtn);
 
     // Auto-fullscreen on game start checkbox
@@ -763,6 +821,8 @@ export class GameSettings {
   _resetGpBindings() {
     const defaults = InputManager.getDefaultGpBindings();
     const defaultSettings = InputManager.getDefaultGpSettings();
+    this._cancelSave('gp');
+    this._pendingGp = null;
     this.input.setGpBindings(defaults);
     this.input.setGpSettings(defaultSettings);
     for (const action of Object.keys(GP_ACTION_LABELS)) {
@@ -809,6 +869,7 @@ export class GameSettings {
 
   close() {
     this._cancelAnyRebind();
+    this._flushAllSaves();
     this.open = false;
     this.panel.classList.remove('open');
     this.gearBtn.classList.remove('active');
@@ -816,8 +877,14 @@ export class GameSettings {
 
   destroy() {
     this._cancelAnyRebind();
+    this._flushAllSaves();
     document.removeEventListener('keydown', this._onKeydown);
     document.removeEventListener('pointerdown', this._onPointerdown);
+    if (this._onFSChange) {
+      document.removeEventListener('fullscreenchange', this._onFSChange);
+      document.removeEventListener('webkitfullscreenchange', this._onFSChange);
+      this._onFSChange = null;
+    }
     if (this.panel && this.panel.parentNode) this.panel.parentNode.removeChild(this.panel);
     if (this.gearBtn && this.gearBtn.parentNode) this.gearBtn.parentNode.removeChild(this.gearBtn);
   }

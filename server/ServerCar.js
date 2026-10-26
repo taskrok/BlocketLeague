@@ -63,7 +63,7 @@ export class ServerCar {
       mass: CAR.MASS,
       position: new CANNON.Vec3(position.x, position.y, position.z),
       linearDamping: 0.01,
-      angularDamping: 0.5,
+      angularDamping: 0.03,
       allowSleep: false,
       collisionFilterGroup: COLLISION_GROUPS.CAR,
       collisionFilterMask: COLLISION_GROUPS.ARENA_BOXES | COLLISION_GROUPS.BALL | COLLISION_GROUPS.CAR,

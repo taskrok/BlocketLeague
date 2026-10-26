@@ -5,7 +5,7 @@
 
 import * as CANNON from 'cannon-es';
 import { ARENA, COLLISION_GROUPS } from '../shared/constants.js';
-import { createArenaGeometry } from '../client/src/ArenaGeometry.js';
+import { getArenaTrimeshData } from '../client/src/ArenaGeometry.js';
 
 const HW = ARENA.WIDTH / 2;
 const HL = ARENA.LENGTH / 2;
@@ -15,6 +15,20 @@ const GH = ARENA.GOAL_HEIGHT;
 const GD = ARENA.GOAL_DEPTH;
 const R  = ARENA.CURVE_RADIUS;
 const CR = ARENA.CORNER_RADIUS;
+
+// One ball-collision trimesh per process, shared by every room's trimeshBody.
+// Trimesh builds its octree in the constructor, and the shape holds no per-body
+// state (cannon-es Body.addShape only writes `shape.body`, which is never read),
+// so sharing it between bodies in different worlds is safe. The tessellation is
+// identical to the client's, so client prediction and server stay in agreement.
+let cachedTrimeshShape = null;
+function getArenaTrimeshShape() {
+  if (!cachedTrimeshShape) {
+    const { vertices, indices } = getArenaTrimeshData();
+    cachedTrimeshShape = new CANNON.Trimesh(vertices, indices);
+  }
+  return cachedTrimeshShape;
+}
 
 export class ServerArena {
   constructor(world) {
@@ -27,24 +41,12 @@ export class ServerArena {
   // ========== TRIMESH COLLIDER (ball only) ==========
 
   _buildTrimeshCollider() {
-    const geometry = createArenaGeometry();
-    const posAttr = geometry.getAttribute('position');
-    const index = geometry.index;
-
-    const vertices = new Float32Array(posAttr.array);
-    const indices = new Int32Array(index.array);
-
-    const trimesh = new CANNON.Trimesh(
-      Array.from(vertices),
-      Array.from(indices)
-    );
-
     this.trimeshBody = new CANNON.Body({
       type: CANNON.Body.STATIC,
       collisionFilterGroup: COLLISION_GROUPS.ARENA_TRIMESH,
       collisionFilterMask: COLLISION_GROUPS.BALL,
     });
-    this.trimeshBody.addShape(trimesh);
+    this.trimeshBody.addShape(getArenaTrimeshShape());
     this.world.addBody(this.trimeshBody);
 
     const bg = COLLISION_GROUPS.ARENA_TRIMESH;

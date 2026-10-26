@@ -44,6 +44,26 @@ let db = null;
 // Prepared statements (cached after init)
 let stmts = {};
 
+// Leaderboard result cache: key -> { rows, expires }. Leaderboards are read
+// by every client that opens the menu but only change when a match is saved,
+// so results are served from memory for a few seconds and invalidated on write.
+const LEADERBOARD_CACHE_TTL_MS = 5000;
+const leaderboardCache = new Map();
+
+function invalidateLeaderboardCache() {
+  leaderboardCache.clear();
+}
+
+// ensurePlayer only rewrites last_seen when it is older than this (or the
+// display name changed), so reconnect storms don't turn into a write each.
+const LAST_SEEN_REFRESH_MS = 60 * 1000;
+
+/** Parse SQLite's `datetime('now')` text (UTC, 'YYYY-MM-DD HH:MM:SS') to ms. */
+function sqliteDateToMs(text) {
+  if (!text) return NaN;
+  return Date.parse(text.replace(' ', 'T') + 'Z');
+}
+
 function getDB() {
   if (db) return db;
 
@@ -60,6 +80,9 @@ function getDB() {
   try {
     db = new Database(DB_PATH);
     db.pragma('journal_mode = WAL');
+    // With WAL, NORMAL only fsyncs at checkpoints; durable against process
+    // crashes (not power loss) and avoids an fsync per transaction commit.
+    db.pragma('synchronous = NORMAL');
     db.pragma('foreign_keys = ON');
     _initSchema();
     _migrateSchema();
@@ -197,6 +220,13 @@ function _migrateSchema() {
     console.log('Migrated: copied mmr to mmr_1v1/mmr_2v2, set matches_played_ranked');
   }
 
+  // Leaderboard ordering indexes. Created here (not in _initSchema) because
+  // the per-mode MMR columns are added by the migration above.
+  db.exec(`
+    CREATE INDEX IF NOT EXISTS idx_player_stats_mmr_1v1 ON player_stats(mmr_1v1 DESC);
+    CREATE INDEX IF NOT EXISTS idx_player_stats_mmr_2v2 ON player_stats(mmr_2v2 DESC);
+  `);
+
   // Recalculate levels with new formula (level = floor(sqrt(xp / 200)))
   db.exec(`
     UPDATE player_stats
@@ -315,7 +345,18 @@ export function ensurePlayer(playerId, displayName = '') {
       stmts.insertPlayerStats.run(playerId);
       player = stmts.getPlayer.get(playerId);
     } else {
-      stmts.updateLastSeen.run(displayName || player.display_name, playerId);
+      // Read-first: only write when something actually changes.
+      const newName = displayName || player.display_name;
+      const nameChanged = newName !== player.display_name;
+      const lastSeenMs = sqliteDateToMs(player.last_seen);
+      const lastSeenStale = !(Date.now() - lastSeenMs < LAST_SEEN_REFRESH_MS); // also true if unparseable
+      if (nameChanged || lastSeenStale) {
+        stmts.updateLastSeen.run(newName, playerId);
+        if (nameChanged) {
+          player.display_name = newName;
+          invalidateLeaderboardCache(); // leaderboard rows carry display_name
+        }
+      }
     }
     return player;
   } catch (err) {
@@ -355,13 +396,12 @@ export function saveMatch(matchData) {
       for (const p of matchData.players) {
         if (!p.playerId) continue; // skip bots without playerId
 
-        // Ensure player_stats row exists
-        const existing = stmts.getPlayerStats.get(p.playerId);
-        if (!existing) {
+        // Read the player's stats row once; create it only if missing
+        let currentStats = stmts.getPlayerStats.get(p.playerId);
+        if (!currentStats) {
           stmts.insertPlayerStats.run(p.playerId);
+          currentStats = stmts.getPlayerStats.get(p.playerId);
         }
-
-        const currentStats = stmts.getPlayerStats.get(p.playerId);
         const currentMMR = currentStats ? currentStats[mmrColumn] : 1000;
         const opponentMMR = p.opponentMMR !== undefined ? p.opponentMMR : currentMMR;
         const winStreak = currentStats ? currentStats.win_streak : 0;
@@ -455,6 +495,7 @@ export function saveMatch(matchData) {
     });
 
     saveTransaction();
+    invalidateLeaderboardCache();
     return { matchId, playerResults };
   } catch (err) {
     console.error('saveMatch error:', err.message);
@@ -494,20 +535,29 @@ export function getPlayerStats(playerId) {
 
 /**
  * Get leaderboard sorted by MMR.
+ * Results are cached per limit for LEADERBOARD_CACHE_TTL_MS and invalidated
+ * whenever a match is saved. Callers must treat the returned array as
+ * read-only (the same array may be handed to several callers).
  * @param {number} limit - Number of entries to return (default 20)
  */
 export function getLeaderboard(limit = 20) {
   const database = getDB();
   if (!database) return [];
 
+  const clamped = Math.min(limit, 100);
+  const now = Date.now();
+  const cached = leaderboardCache.get(clamped);
+  if (cached && cached.expires > now) return cached.rows;
+
   try {
-    const rows = stmts.getLeaderboard.all(Math.min(limit, 100));
-    return rows.map(row => ({
+    const rows = stmts.getLeaderboard.all(clamped).map(row => ({
       ...row,
       rank1v1: getRankFromMMR(row.mmr_1v1 || 1000),
       rank2v2: getRankFromMMR(row.mmr_2v2 || 1000),
       levelTitle: getLevelTitle(row.level || 0),
     }));
+    leaderboardCache.set(clamped, { rows, expires: now + LEADERBOARD_CACHE_TTL_MS });
+    return rows;
   } catch (err) {
     console.error('getLeaderboard error:', err.message);
     return [];

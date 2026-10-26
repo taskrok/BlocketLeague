@@ -208,6 +208,9 @@ class AudioManager {
     this._engineSampleGain = null;
     this._engineSpeed = 0;
     this._engineMode = null;     // 'hybrid' | 'procedural'
+    // Engine automation throttling: last applied speed ratio + last apply time
+    this._engineLastRatio = -1;
+    this._engineLastUpdateTime = -Infinity;
 
     // Boost state
     this._boostSource = null;
@@ -481,9 +484,24 @@ class AudioManager {
 
     source.connect(gain);
     gain.connect(destination);
+    // One-shots tear down their own graph when they finish. Looping sources
+    // never fire 'ended' until stopped, at which point the same cleanup runs.
+    this._autoDisconnect(source, gain);
     source.start(t);
 
     return { source, gain };
+  }
+
+  /**
+   * Disconnect a source and its gain node once the source has finished playing,
+   * so finished one-shots do not linger in the audio graph.
+   */
+  _autoDisconnect(source, gain) {
+    source.onended = () => {
+      source.onended = null;
+      try { source.disconnect(); } catch (_) {}
+      if (gain) { try { gain.disconnect(); } catch (_) {} }
+    };
   }
 
   // --- Procedural utility (fallback) ---
@@ -584,6 +602,8 @@ class AudioManager {
     this._engineHarmGain = null;
     this._engineFilter = null;
     this._engineMode = null;
+    this._engineLastRatio = -1;
+    this._engineLastUpdateTime = -Infinity;
   }
 
   setEngineSpeed(speed, maxSpeed) {
@@ -597,6 +617,14 @@ class AudioManager {
     const ratio = Math.min(Math.abs(speed) / maxSpeed, 1);
     const t = this.ctx.currentTime;
     this._engineSpeed = speed;
+
+    // Called every render frame: skip the ~6 automation events when the
+    // ratio barely moved, and cap applies to ~30Hz. The 60ms setTargetAtTime
+    // smoothing already hides the coarser update rate.
+    if (Math.abs(ratio - this._engineLastRatio) < 0.005) return;
+    if (t - this._engineLastUpdateTime < 1 / 30) return;
+    this._engineLastRatio = ratio;
+    this._engineLastUpdateTime = t;
 
     const params = this._getMotorParams();
 
@@ -662,6 +690,7 @@ class AudioManager {
 
       startSource.connect(startGain);
       startGain.connect(this.masterGain);
+      this._autoDisconnect(startSource, startGain);
       startSource.start(t);
       this._boostStartSource = startSource;
     }
@@ -679,6 +708,7 @@ class AudioManager {
 
       loopSource.connect(loopGain);
       loopGain.connect(this.masterGain);
+      this._autoDisconnect(loopSource, loopGain);
       loopSource.start(t + loopDelay * 0.5);
 
       this._boostSource = loopSource;
@@ -695,6 +725,7 @@ class AudioManager {
 
       source.connect(gain);
       gain.connect(this.masterGain);
+      this._autoDisconnect(source, gain);
       source.start(t);
 
       this._boostSource = source;
@@ -750,6 +781,18 @@ class AudioManager {
     this._boostSineOsc.connect(boostSineGain);
     boostSineGain.connect(this.masterGain);
 
+    // Tear down the procedural chain once the sources are stopped
+    const noiseSrc = this._boostNoiseSource;
+    const noiseFilter = this._boostFilter;
+    const noiseGain = this._boostGain;
+    noiseSrc.onended = () => {
+      noiseSrc.onended = null;
+      try { noiseSrc.disconnect(); } catch (_) {}
+      try { noiseFilter.disconnect(); } catch (_) {}
+      try { noiseGain.disconnect(); } catch (_) {}
+    };
+    this._autoDisconnect(this._boostSineOsc, boostSineGain);
+
     this._boostNoiseSource.start(t);
     this._boostSineOsc.start(t);
     this._boostMode = 'procedural';
@@ -775,13 +818,13 @@ class AudioManager {
       this._boostSineGain.gain.linearRampToValueAtTime(0, t + fadeOut);
     }
 
-    // Hard stop all sources after short fade
-    const refs = [this._boostSource, this._boostStartSource, this._boostNoiseSource, this._boostSineOsc];
-    setTimeout(() => {
-      for (const ref of refs) {
-        try { ref?.stop(); } catch (_) {}
-      }
-    }, fadeOut * 1000 + 30);
+    // Hard stop all sources after the fade, scheduled on the audio clock.
+    // Each source's onended handler disconnects its graph.
+    const stopAt = t + fadeOut + 0.03;
+    try { this._boostSource?.stop(stopAt); } catch (_) {}
+    try { this._boostStartSource?.stop(stopAt); } catch (_) {}
+    try { this._boostNoiseSource?.stop(stopAt); } catch (_) {}
+    try { this._boostSineOsc?.stop(stopAt); } catch (_) {}
 
     this._boostSource = null;
     this._boostStartSource = null;
@@ -884,6 +927,7 @@ class AudioManager {
         gain.gain.linearRampToValueAtTime(0.4, t + 0.5);
         source.connect(gain);
         gain.connect(this.masterGain);
+        this._autoDisconnect(source, gain);
         source.start(t + 0.3);
       }
     } else {
@@ -1261,6 +1305,7 @@ class AudioManager {
 
       source.connect(gain);
       gain.connect(this.masterGain);
+      this._autoDisconnect(source, gain);
       source.start(t);
 
       this._crowdSource = source;
@@ -1281,10 +1326,8 @@ class AudioManager {
       this._crowdGain.gain.linearRampToValueAtTime(0, t + fadeOut);
     }
 
-    const srcRef = this._crowdSource;
-    setTimeout(() => {
-      try { srcRef?.stop(); } catch (_) {}
-    }, fadeOut * 1000 + 50);
+    // Stop on the audio clock after the fade; onended disconnects the graph
+    try { this._crowdSource?.stop(t + fadeOut + 0.05); } catch (_) {}
 
     this._crowdSource = null;
     this._crowdGain = null;

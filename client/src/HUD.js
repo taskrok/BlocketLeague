@@ -42,6 +42,21 @@ export class HUD {
     // Track active timeouts so we can clear them on reset/destroy
     this._timeouts = [];
 
+    // Dirty-check caches: these updaters run every frame, so only touch the
+    // DOM when the displayed value actually changes.
+    this._lastTimerText = null;
+    this._lastBlueScore = null;
+    this._lastOrangeScore = null;
+    this._lastBoostOffset = null;
+    this._lastBoostText = null;
+    this._lastBoostStroke = null;
+    this._lastSpeedPct = null;
+    this._lastPing = null;
+    this._lastPingColor = null;
+    this._liveScoreboardVisible = false;
+    this._liveScoreboardKey = null;
+    this._liveScoreboardTime = 0;
+
     // Hide controls hint after 8 seconds
     this._addTimeout(() => {
       if (this.controlsHint) {
@@ -68,32 +83,51 @@ export class HUD {
   updateTimer(secondsRemaining) {
     const mins = Math.floor(secondsRemaining / 60);
     const secs = Math.floor(secondsRemaining % 60);
-    this.timerEl.textContent = `${mins}:${secs.toString().padStart(2, '0')}`;
+    const text = `${mins}:${secs.toString().padStart(2, '0')}`;
+    if (text === this._lastTimerText) return;
+    this._lastTimerText = text;
+    this.timerEl.textContent = text;
   }
 
   updateScore(blueScore, orangeScore) {
-    this.scoreBlueEl.textContent = blueScore;
-    this.scoreOrangeEl.textContent = orangeScore;
+    if (blueScore !== this._lastBlueScore) {
+      this._lastBlueScore = blueScore;
+      this.scoreBlueEl.textContent = blueScore;
+    }
+    if (orangeScore !== this._lastOrangeScore) {
+      this._lastOrangeScore = orangeScore;
+      this.scoreOrangeEl.textContent = orangeScore;
+    }
   }
 
   updateBoost(boostAmount) {
     const pct = boostAmount / CAR.MAX_BOOST;
-    const offset = this.boostCircumference * (1 - pct);
-    this.boostArc.style.strokeDashoffset = offset;
-    this.boostText.textContent = Math.round(boostAmount);
+    // Round to 0.1px — finer changes are invisible on a r=52 arc
+    const offset = Math.round(this.boostCircumference * (1 - pct) * 10) / 10;
+    if (offset !== this._lastBoostOffset) {
+      this._lastBoostOffset = offset;
+      this.boostArc.style.strokeDashoffset = offset;
+    }
+
+    const text = Math.round(boostAmount);
+    if (text !== this._lastBoostText) {
+      this._lastBoostText = text;
+      this.boostText.textContent = text;
+    }
 
     // Color shift: orange when low, golden when high
-    if (pct > 0.5) {
-      this.boostArc.style.stroke = '#ff8800';
-    } else if (pct > 0.2) {
-      this.boostArc.style.stroke = '#ff6600';
-    } else {
-      this.boostArc.style.stroke = '#ff3300';
+    const stroke = pct > 0.5 ? '#ff8800' : pct > 0.2 ? '#ff6600' : '#ff3300';
+    if (stroke !== this._lastBoostStroke) {
+      this._lastBoostStroke = stroke;
+      this.boostArc.style.stroke = stroke;
     }
   }
 
   updateSpeed(speed, maxSpeed) {
-    const pct = Math.min(speed / maxSpeed * 100, 100);
+    // Round to 0.1% — sub-pixel on any realistic bar width
+    const pct = Math.round(Math.min(speed / maxSpeed * 100, 100) * 10) / 10;
+    if (pct === this._lastSpeedPct) return;
+    this._lastSpeedPct = pct;
     this.speedFill.style.width = `${pct}%`;
   }
 
@@ -155,6 +189,7 @@ export class HUD {
 
   showOvertime() {
     this.timerEl.textContent = 'OVERTIME';
+    this._lastTimerText = 'OVERTIME';
     this.timerEl.style.color = '#ff3300';
     this.timerEl.style.textShadow = '0 0 20px rgba(255, 51, 0, 0.7)';
   }
@@ -202,8 +237,13 @@ export class HUD {
       document.body.appendChild(this.pingEl);
     }
     const ping = Math.round(rttMs);
+    if (ping === this._lastPing) return;
+    this._lastPing = ping;
     const color = ping < 60 ? '#0f0' : ping < 120 ? '#ff0' : '#f00';
-    this.pingEl.style.color = color;
+    if (color !== this._lastPingColor) {
+      this._lastPingColor = color;
+      this.pingEl.style.color = color;
+    }
     this.pingEl.textContent = `${ping}ms`;
   }
 
@@ -279,13 +319,32 @@ export class HUD {
     }
 
     const el = this._liveScoreboardEl;
-    el.style.display = '';
-    if (this.hudTop) this.hudTop.style.opacity = '0';
+    if (!this._liveScoreboardVisible) {
+      this._liveScoreboardVisible = true;
+      el.style.display = '';
+      if (this.hudTop) this.hudTop.style.opacity = '0';
+    }
+
+    // Only rebuild the table when its inputs changed, and at most ~5Hz
+    // (pings drift continuously; stats change rarely).
+    const now = performance.now();
+    if (this._liveScoreboardKey !== null && now - this._liveScoreboardTime < 200) return;
+
+    let key = `${blueScore}|${orangeScore}|${maxPlayers}|${hasPings ? 1 : 0}`;
+    for (let i = 0; i < maxPlayers; i++) {
+      const s = stats[i];
+      if (s) key += `|${s.goals},${s.assists},${s.saves},${s.shots},${s.demos},${s.score}`;
+      else key += '|-';
+      if (hasPings) key += `,${Math.round(pings[i])}`;
+      key += `,${this._getPlayerLabel(i, maxPlayers)}`;
+    }
+    if (key === this._liveScoreboardKey) return;
+    this._liveScoreboardKey = key;
+    this._liveScoreboardTime = now;
 
     const cols = hasPings ? 8 : 7;
     const pingHeader = hasPings ? '<th class="sb-ping-col">Ping</th>' : '';
 
-    // Rebuild content (cheap, runs only while held)
     let html = `<table class="scoreboard-table live">
       <thead><tr>
         <th class="sb-player-col">Player</th>
@@ -318,6 +377,8 @@ export class HUD {
   }
 
   hideLiveScoreboard() {
+    if (!this._liveScoreboardVisible) return;
+    this._liveScoreboardVisible = false;
     if (this._liveScoreboardEl) {
       this._liveScoreboardEl.style.display = 'none';
     }
@@ -327,11 +388,12 @@ export class HUD {
   _showScoreboard(blueScore, orangeScore, stats, mvpIdx, maxPlayers) {
     if (this._scoreboardEl) this._scoreboardEl.remove();
 
-    // Hide conflicting HUD elements
-    if (this.hudTop) this.hudTop.style.opacity = '0';
+    // Hide conflicting HUD elements. (hud-top itself stays visible behind the
+    // final board, as it always effectively did: hideLiveScoreboard restores it.)
     this.goalTextEl.style.opacity = '0';
     this.showReplayIndicator(false);
     this.hideLiveScoreboard();
+    if (this.hudTop) this.hudTop.style.opacity = '1';
 
     const blueWins = blueScore > orangeScore;
     const winColor = blueWins ? '#0088ff' : '#ff6600';
@@ -461,6 +523,19 @@ export class HUD {
     this.timerEl.style.textShadow = '';
     this.scoreBlueEl.textContent = '0';
     this.scoreOrangeEl.textContent = '0';
+    // Invalidate dirty-check caches so the next update writes through
+    this._lastTimerText = null;
+    this._lastBlueScore = null;
+    this._lastOrangeScore = null;
+    this._lastBoostOffset = null;
+    this._lastBoostText = null;
+    this._lastBoostStroke = null;
+    this._lastSpeedPct = null;
+    this._lastPing = null;
+    this._lastPingColor = null;
+    this._liveScoreboardVisible = false;
+    this._liveScoreboardKey = null;
+    if (this.hudTop) this.hudTop.style.opacity = '1';
     this.countdownEl.style.opacity = '0';
     this.goalTextEl.style.opacity = '0';
     if (this.statusText) this.statusText.style.opacity = '0';

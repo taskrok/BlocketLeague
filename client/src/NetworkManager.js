@@ -7,10 +7,20 @@
 
 import { io } from 'socket.io-client';
 import { NETWORK } from '../../shared/constants.js';
-import { decodeGameState, encodeInput } from '../../shared/BinaryProtocol.js';
+import { decodeGameStateInto, createGameStateTarget, encodeInput } from '../../shared/BinaryProtocol.js';
 
 // Max players we'll ever support (for pre-allocating player arrays)
 const MAX_SUPPORTED_PLAYERS = 4;
+
+// Cap on pendingInputs length (~3 seconds at 60Hz). Oldest entries are
+// dropped beyond this during network stalls.
+const MAX_PENDING = 180;
+
+// Input pool must hold more objects than pendingInputs can retain, so a
+// pooled object is never overwritten while still referenced by the pending
+// buffer. sendInput() only *claims* a pool slot when the caller commits the
+// object via addPendingInput(); uncommitted sends reuse the same slot.
+const INPUT_POOL_SIZE = MAX_PENDING + 16;
 
 export class NetworkManager {
   constructor() {
@@ -52,78 +62,27 @@ export class NetworkManager {
     // Pre-allocated interpolation result (reused every frame, avoids GC)
     this._interpResult = this._createEmptySnapshot();
 
-    // Pre-allocated input object for sendInput (reused, copy returned)
-    this._inputPool = [];
-    this._inputPoolSize = 120; // enough for ~2s of inputs at 60Hz
-    for (let i = 0; i < this._inputPoolSize; i++) {
-      this._inputPool.push({
+    // Pooled input objects for sendInput(). The returned object IS the pooled
+    // object; addPendingInput() claims its slot so it is not reused while the
+    // pending buffer still references it.
+    this._inputPool = new Array(INPUT_POOL_SIZE);
+    this._inputPoolSize = INPUT_POOL_SIZE;
+    for (let i = 0; i < INPUT_POOL_SIZE; i++) {
+      this._inputPool[i] = {
         seq: 0, throttle: 0, steer: 0, jump: false, jumpPressed: false,
         boost: false, airRoll: 0, pitchUp: false, pitchDown: false,
         handbrake: false, dodgeForward: 0, dodgeSteer: 0,
-      });
+      };
     }
     this._inputPoolHead = 0;
   }
 
+  // Snapshot shape shared with BinaryProtocol.decodeGameStateInto(), plus the
+  // client-side arrival timestamp used for interpolation.
   _createEmptySnapshot() {
-    const players = [];
-    for (let i = 0; i < MAX_SUPPORTED_PLAYERS; i++) {
-      players.push({
-        px: 0, py: 0, pz: 0,
-        vx: 0, vy: 0, vz: 0,
-        qx: 0, qy: 0, qz: 0, qw: 1,
-        avx: 0, avy: 0, avz: 0,
-        boost: 0, demolished: false, lastProcessedInput: 0,
-      });
-    }
-    return {
-      tick: 0,
-      ball: { px: 0, py: 0, pz: 0, vx: 0, vy: 0, vz: 0, qx: 0, qy: 0, qz: 0, qw: 1 },
-      players,
-      playerCount: 0,
-      boostPads: new Uint8Array(5),
-      score: { blue: 0, orange: 0 },
-      timer: 0,
-      state: 'waiting',
-      localTime: 0,
-      serverTime: 0,
-    };
-  }
-
-  // Deep-copy a decoded snapshot into a pre-allocated target
-  _copySnapshotInto(target, src) {
-    target.tick = src.tick;
-    target.state = src.state;
-    target.timer = src.timer;
-    target.score.blue = src.score.blue;
-    target.score.orange = src.score.orange;
-    target.localTime = src.localTime || 0;
-    target.serverTime = src.serverTime || 0;
-
-    // Copy boost pads
-    const srcPads = src.boostPads;
-    const tgtPads = target.boostPads;
-    for (let i = 0; i < 5; i++) tgtPads[i] = srcPads[i];
-
-    // Copy ball
-    const sb = src.ball, tb = target.ball;
-    tb.px = sb.px; tb.py = sb.py; tb.pz = sb.pz;
-    tb.vx = sb.vx; tb.vy = sb.vy; tb.vz = sb.vz;
-    tb.qx = sb.qx; tb.qy = sb.qy; tb.qz = sb.qz; tb.qw = sb.qw;
-
-    // Copy players
-    const playerCount = src.players.length;
-    target.playerCount = playerCount;
-    for (let i = 0; i < playerCount; i++) {
-      const sp = src.players[i], tp = target.players[i];
-      tp.px = sp.px; tp.py = sp.py; tp.pz = sp.pz;
-      tp.vx = sp.vx; tp.vy = sp.vy; tp.vz = sp.vz;
-      tp.qx = sp.qx; tp.qy = sp.qy; tp.qz = sp.qz; tp.qw = sp.qw;
-      tp.avx = sp.avx; tp.avy = sp.avy; tp.avz = sp.avz;
-      tp.boost = sp.boost;
-      tp.demolished = sp.demolished;
-      tp.lastProcessedInput = sp.lastProcessedInput;
-    }
+    const snap = createGameStateTarget(MAX_SUPPORTED_PLAYERS);
+    snap.localTime = 0;
+    return snap;
   }
 
   connect(playerId, playerName) {
@@ -159,15 +118,14 @@ export class NetworkManager {
     });
 
     this.socket.on('gameState', (data) => {
-      // Decode binary protocol (returns a pooled object — we must copy it)
-      const decoded = decodeGameState(data);
-      if (!decoded) return; // version mismatch or decode failure
+      // Decode the binary packet straight into the ring buffer's pre-allocated
+      // snapshot slot (no intermediate objects). The slot is not committed
+      // (head not advanced) until decode succeeds, so a bad packet leaves the
+      // ring untouched.
+      const snapshot = this._snapshotBuf[this._snapshotHead];
+      if (decodeGameStateInto(data, snapshot) === null) return; // version mismatch / not binary
 
       const now = performance.now();
-
-      // Copy decoded state into our ring buffer's pre-allocated snapshot
-      const snapshot = this._snapshotBuf[this._snapshotHead];
-      this._copySnapshotInto(snapshot, decoded);
       snapshot.localTime = now;
 
       // Update adaptive interpolation delay
@@ -281,12 +239,15 @@ export class NetworkManager {
 
   // ========== INPUT (binary encoded, always sent reliably) ==========
 
+  // Encodes and sends the input, and returns a pooled input object holding a
+  // copy of it (seq included). The pool slot is only consumed if the caller
+  // passes that object to addPendingInput(); otherwise the next sendInput()
+  // overwrites it, so callers must not retain the return value any other way.
   sendInput(inputState) {
     this.seq++;
 
-    // Get a pooled input object instead of allocating a new one
+    // Fill the pool object at the head (slot is claimed by addPendingInput)
     const input = this._inputPool[this._inputPoolHead];
-    this._inputPoolHead = (this._inputPoolHead + 1) % this._inputPoolSize;
 
     input.seq = this.seq;
     input.throttle = inputState.throttle;
@@ -307,22 +268,7 @@ export class NetworkManager {
       this.socket.emit('input', encodeInput(input));
     }
 
-    // Return a shallow copy of essential fields so pendingInputs doesn't hold
-    // a reference to the pooled object (which gets overwritten when the pool wraps)
-    return {
-      seq: input.seq,
-      throttle: input.throttle,
-      steer: input.steer,
-      jump: input.jump,
-      jumpPressed: input.jumpPressed,
-      boost: input.boost,
-      airRoll: input.airRoll,
-      pitchUp: input.pitchUp,
-      pitchDown: input.pitchDown,
-      handbrake: input.handbrake,
-      dodgeForward: input.dodgeForward,
-      dodgeSteer: input.dodgeSteer,
-    };
+    return input;
   }
 
   // ========== RING BUFFER ACCESS ==========
@@ -343,22 +289,46 @@ export class NetworkManager {
       return count > 0 ? this._getSnapshot(count - 1) : null;
     }
 
-    // Find the two snapshots bracketing renderTime
+    // Find the two snapshots bracketing renderTime. renderTime sits just behind
+    // the newest snapshot, so walk the ring backward from the newest entry with
+    // direct index arithmetic (no per-step modulo). localTime is non-decreasing
+    // in ring order, so once a pair's 'after' is older than renderTime nothing
+    // older can match either.
+    const buf = this._snapshotBuf;
+    const cap = this.maxSnapshots;
     let before = null;
     let after = null;
 
-    for (let i = 0; i < count - 1; i++) {
-      const a = this._getSnapshot(i);
-      const b = this._getSnapshot(i + 1);
-      if (a.localTime <= renderTime && b.localTime >= renderTime) {
+    let idxB = this._snapshotHead === 0 ? cap - 1 : this._snapshotHead - 1; // newest
+    let b = buf[idxB];
+    for (let remaining = count - 1; remaining > 0; remaining--) {
+      if (b.localTime < renderTime) break; // no older pair can bracket renderTime
+      let idxA = idxB === 0 ? cap - 1 : idxB - 1;
+      let a = buf[idxA];
+      if (a.localTime <= renderTime) {
         before = a;
         after = b;
+        // Match the oldest bracketing pair (same choice as a forward scan) when
+        // several snapshots share renderTime's exact timestamp.
+        let older = remaining - 1;
+        while (older > 0 && a.localTime === renderTime) {
+          const idxP = idxA === 0 ? cap - 1 : idxA - 1;
+          const p = buf[idxP];
+          if (p.localTime > renderTime) break;
+          before = p;
+          after = a;
+          idxA = idxP;
+          a = p;
+          older--;
+        }
         break;
       }
+      idxB = idxA;
+      b = a;
     }
 
     if (!before || !after) {
-      return this._getSnapshot(count - 1);
+      return buf[this._snapshotHead === 0 ? cap - 1 : this._snapshotHead - 1];
     }
 
     const range = after.localTime - before.localTime;
@@ -495,13 +465,21 @@ export class NetworkManager {
   // ========== PENDING INPUT BUFFER ==========
 
   addPendingInput(input) {
-    this.pendingInputs.push(input);
+    // If this is the pooled object sendInput() just filled, claim its slot so
+    // subsequent sendInput() calls move on to the next pool entry.
+    if (input === this._inputPool[this._inputPoolHead]) {
+      this._inputPoolHead = (this._inputPoolHead + 1) % this._inputPoolSize;
+    }
+
+    const pending = this.pendingInputs;
+    pending.push(input);
 
     // Cap pending inputs to prevent unbounded growth during network stalls.
-    // 180 = ~3 seconds at 60Hz. Drop oldest entries if exceeded.
-    const MAX_PENDING = 180;
-    if (this.pendingInputs.length > MAX_PENDING) {
-      this.pendingInputs.splice(0, this.pendingInputs.length - MAX_PENDING);
+    // Drop oldest entries in place (splice would allocate the removed array).
+    if (pending.length > MAX_PENDING) {
+      const drop = pending.length - MAX_PENDING;
+      for (let i = drop; i < pending.length; i++) pending[i - drop] = pending[i];
+      pending.length = MAX_PENDING;
     }
   }
 
@@ -537,6 +515,13 @@ export class NetworkManager {
       this._callbacks[event] = [];
     }
     this._callbacks[event].push(fn);
+  }
+
+  off(event, fn) {
+    const cbs = this._callbacks[event];
+    if (!cbs) return;
+    const i = cbs.indexOf(fn);
+    if (i !== -1) cbs.splice(i, 1);
   }
 
   _emit(event, data) {

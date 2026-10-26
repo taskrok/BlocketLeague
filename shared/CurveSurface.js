@@ -7,9 +7,21 @@
 import * as CANNON from 'cannon-es';
 import { CAR, ARENA } from './constants.js';
 
+// Hoisted to module scope: iterating `[-1, 1]` literals per call allocated an
+// array + iterator for every loop, every tick, every car.
+const SIDES = [-1, 1];
+
+// Single pre-allocated result object. checkCurveSurface() writes into this in
+// place and returns it, so the RETURN VALUE IS REUSED ACROSS CALLS: callers
+// must copy anything they need (e.g. `.copy()` the normal) before the next
+// call and must never retain the reference across ticks.
+const _result = { sx: 0, sy: 0, sz: 0, dist: 0, normal: new CANNON.Vec3() };
+
 /**
  * Analytically compute the nearest arena curve surface from a position.
- * Returns { sx, sy, sz, normal } or null if not near any curve/wall.
+ * Returns the shared `_result` object { sx, sy, sz, dist, normal } or null if
+ * not near any curve/wall. The returned object is reused on every call -- do
+ * not hold onto it.
  * Handles: floor-to-wall fillets, flat walls, wall-to-ceiling fillets,
  * XZ corner arcs with toroidal floor/ceiling transitions.
  */
@@ -22,11 +34,13 @@ export function checkCurveSurface(pos) {
   const flatHL = hl - r;
   const detectRange = CAR.HEIGHT * 3.5;
 
-  let best = null;
+  const best = _result;
+  let found = false;
   let bestDist = Infinity;
 
   // --- Side walls (left/right, XY plane) ---
-  for (const side of [-1, 1]) {
+  for (let si = 0; si < 2; si++) {
+    const side = SIDES[si];
     const dx = side * pos.x - flatHW;
     if (dx <= 0) continue;
 
@@ -49,7 +63,9 @@ export function checkCurveSurface(pos) {
             const sx = cx + r * ux;
             const sy = cy + r * uy;
             bestDist = distToSurf;
-            best = { sx, sy, sz: pos.z, normal: new CANNON.Vec3(-ux, -uy, 0) };
+            found = true;
+            best.sx = sx; best.sy = sy; best.sz = pos.z;
+            best.normal.set(-ux, -uy, 0);
           }
         }
       }
@@ -59,7 +75,9 @@ export function checkCurveSurface(pos) {
     if (distToWall < detectRange && pos.y >= r - 1 && pos.y <= H - r) {
       if (distToWall < bestDist) {
         bestDist = distToWall;
-        best = { sx: wallX, sy: pos.y, sz: pos.z, normal: new CANNON.Vec3(-side, 0, 0) };
+        found = true;
+        best.sx = wallX; best.sy = pos.y; best.sz = pos.z;
+        best.normal.set(-side, 0, 0);
       }
     }
 
@@ -79,7 +97,9 @@ export function checkCurveSurface(pos) {
             const sx = cx + r * ux;
             const sy = cy + r * uy;
             bestDist = distToSurf;
-            best = { sx, sy, sz: pos.z, normal: new CANNON.Vec3(-ux, -uy, 0) };
+            found = true;
+            best.sx = sx; best.sy = sy; best.sz = pos.z;
+            best.normal.set(-ux, -uy, 0);
           }
         }
       }
@@ -87,7 +107,8 @@ export function checkCurveSurface(pos) {
   }
 
   // --- End walls (front/back, YZ plane, skip goal opening) ---
-  for (const side of [-1, 1]) {
+  for (let si = 0; si < 2; si++) {
+    const side = SIDES[si];
     const dz = side * pos.z - flatHL;
     if (dz <= 0) continue;
 
@@ -112,7 +133,9 @@ export function checkCurveSurface(pos) {
             const sz = cz + r * uz;
             const sy = cy + r * uy;
             bestDist = distToSurf;
-            best = { sx: pos.x, sy, sz, normal: new CANNON.Vec3(0, -uy, -uz) };
+            found = true;
+            best.sx = pos.x; best.sy = sy; best.sz = sz;
+            best.normal.set(0, -uy, -uz);
           }
         }
       }
@@ -122,7 +145,9 @@ export function checkCurveSurface(pos) {
     if (distToWall < detectRange && pos.y >= r - 1 && pos.y <= H - r && !(inGoalX && inGoalY)) {
       if (distToWall < bestDist) {
         bestDist = distToWall;
-        best = { sx: pos.x, sy: pos.y, sz: wallZ, normal: new CANNON.Vec3(0, 0, -side) };
+        found = true;
+        best.sx = pos.x; best.sy = pos.y; best.sz = wallZ;
+        best.normal.set(0, 0, -side);
       }
     }
 
@@ -143,7 +168,9 @@ export function checkCurveSurface(pos) {
             const sz = cz + r * uz;
             const sy = cy + r * uy;
             bestDist = distToSurf;
-            best = { sx: pos.x, sy, sz, normal: new CANNON.Vec3(0, -uy, -uz) };
+            found = true;
+            best.sx = pos.x; best.sy = sy; best.sz = sz;
+            best.normal.set(0, -uy, -uz);
           }
         }
       }
@@ -155,8 +182,10 @@ export function checkCurveSurface(pos) {
   const cornerFlatHW = hw - CR;
   const cornerFlatHL = hl - CR;
 
-  for (const sx of [-1, 1]) {
-    for (const sz of [-1, 1]) {
+  for (let xi = 0; xi < 2; xi++) {
+    const sx = SIDES[xi];
+    for (let zi = 0; zi < 2; zi++) {
+      const sz = SIDES[zi];
       const ccx = sx * cornerFlatHW;
       const ccz = sz * cornerFlatHL;
 
@@ -194,7 +223,9 @@ export function checkCurveSurface(pos) {
             const nz = -sz * dirZ * uRad;
 
             bestDist = distToSurf;
-            best = { sx: surfX, sy: surfY, sz: surfZ, normal: new CANNON.Vec3(nx, ny, nz) };
+            found = true;
+            best.sx = surfX; best.sy = surfY; best.sz = surfZ;
+            best.normal.set(nx, ny, nz);
           }
         }
       }
@@ -206,10 +237,9 @@ export function checkCurveSurface(pos) {
           bestDist = arcDist;
           const surfX = ccx + sx * CR * dirX;
           const surfZ = ccz + sz * CR * dirZ;
-          best = {
-            sx: surfX, sy: pos.y, sz: surfZ,
-            normal: new CANNON.Vec3(-sx * dirX, 0, -sz * dirZ)
-          };
+          found = true;
+          best.sx = surfX; best.sy = pos.y; best.sz = surfZ;
+          best.normal.set(-sx * dirX, 0, -sz * dirZ);
         }
       }
 
@@ -236,7 +266,9 @@ export function checkCurveSurface(pos) {
               const cnz = -sz * dirZ * cuRad;
 
               bestDist = distToSurf;
-              best = { sx: surfX, sy: surfY, sz: surfZ, normal: new CANNON.Vec3(cnx, cny, cnz) };
+              found = true;
+              best.sx = surfX; best.sy = surfY; best.sz = surfZ;
+              best.normal.set(cnx, cny, cnz);
             }
           }
         }
@@ -246,11 +278,13 @@ export function checkCurveSurface(pos) {
 
   // Floor baseline: if a fillet/wall claimed the car but the flat floor is
   // actually closer, the floor wins.
-  if (best && pos.y < detectRange && pos.y < bestDist) {
+  if (found && pos.y < detectRange && pos.y < bestDist) {
     bestDist = pos.y;
-    best = { sx: pos.x, sy: 0, sz: pos.z, normal: new CANNON.Vec3(0, 1, 0) };
+    best.sx = pos.x; best.sy = 0; best.sz = pos.z;
+    best.normal.set(0, 1, 0);
   }
 
-  if (best) best.dist = bestDist;
+  if (!found) return null;
+  best.dist = bestDist;
   return best;
 }

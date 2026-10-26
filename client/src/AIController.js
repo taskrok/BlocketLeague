@@ -1,6 +1,11 @@
 // ============================================
 // AIController - AI bot logic for singleplayer modes
 // Extracted from Game.js
+//
+// Hot path is allocation-free: difficulty params are static tables, per-car
+// bookkeeping (slot index, team, role, input object) is cached and only
+// rebuilt when the car list changes, roles are recomputed every N frames,
+// and ball-position math uses a module-level scratch object.
 // ============================================
 
 import * as CANNON from 'cannon-es';
@@ -8,6 +13,12 @@ import { ARENA as ARENA_CONST } from '../../shared/constants.js';
 
 // Reusable temp vector for AI euler extraction
 const _aiEuler = new CANNON.Vec3();
+
+// Reusable scratch ball position (lead/jitter/reaction adjustments applied in place)
+const _ballPos = { x: 0, y: 0, z: 0 };
+
+// Recompute 2v2 attacker/support roles every N frames
+const ROLE_REFRESH_FRAMES = 10;
 
 // AI team definitions for 2v2 mode -- each team has a name and two car model IDs
 export const AI_TEAMS = [
@@ -36,6 +47,121 @@ export function pickOpponentTeam(availableModelIds, excludeTeam) {
   return valid[Math.floor(Math.random() * valid.length)];
 }
 
+// Static difficulty parameter tables (resolved once per difficulty change)
+const AI_PARAMS = {
+  rookie: Object.freeze({
+    approachOffset: 14,
+    attackAngle: 0.6,
+    defenseZ: 25,
+    clearDist: 18,
+    steerDeadzone: 0.15,
+    maxThrottle: 0.75,
+    rotateSlowAngle: 0.8,
+    rotateThrottle: 0.4,
+    useBoost: true,
+    boostThreshold: 0.7,    // only boosts when close and facing ball
+    handbrakeAngle: 1.5,
+    handbrakeSpeed: 15,
+    jumpBall: false,
+    dodgeBall: false,
+    canJump: false,
+    canDodge: false,
+    reactionDelay: 0.15,
+    aimJitter: 3.0,
+  }),
+  platinum: Object.freeze({
+    approachOffset: 10,
+    attackAngle: 0.35,
+    defenseZ: 35,
+    clearDist: 12,
+    steerDeadzone: 0.04,
+    maxThrottle: 1.0,
+    rotateSlowAngle: 1.2,
+    rotateThrottle: 0.6,
+    useBoost: true,
+    handbrakeAngle: 1.0,
+    handbrakeSpeed: 8,
+    jumpBall: true,
+    jumpHeight: 2.5,
+    jumpDist: 10,
+    dodgeBall: true,
+    dodgeDist: 8,
+    canJump: true,
+    canDodge: true,
+    reactionDelay: 0.05,
+    aimJitter: 0.5,
+    leadBall: true,
+    leadTime: 0.3,
+    shadowDefense: true,
+  }),
+  allstar: Object.freeze({
+    approachOffset: 7,
+    attackAngle: 0.25,
+    defenseZ: 40,
+    clearDist: 10,
+    steerDeadzone: 0.02,
+    maxThrottle: 1,
+    rotateSlowAngle: 1.4,
+    rotateThrottle: 0.8,
+    useBoost: true,
+    handbrakeAngle: 0.8,
+    handbrakeSpeed: 6,
+    jumpBall: true,
+    jumpHeight: 2.0,
+    jumpDist: 14,
+    dodgeBall: true,
+    dodgeDist: 7,
+    canJump: true,
+    canDodge: true,
+    reactionDelay: 0,
+    aimJitter: 0,
+    leadBall: true,
+    leadTime: 0.6,
+    aerialBoost: true,
+    shadowDefense: true,
+    boostForSpeed: true,
+  }),
+  pro: Object.freeze({
+    approachOffset: 12,
+    attackAngle: 0.4,
+    defenseZ: 30,
+    clearDist: 15,
+    steerDeadzone: 0.05,
+    maxThrottle: 1,
+    rotateSlowAngle: 1.0,
+    rotateThrottle: 0.5,
+    useBoost: true,
+    handbrakeAngle: 1.2,
+    handbrakeSpeed: 10,
+    jumpBall: true,
+    jumpHeight: 3,
+    jumpDist: 8,
+    dodgeBall: false,
+    canJump: true,
+    canDodge: false,
+    reactionDelay: 0,
+    aimJitter: 0,
+    leadBall: false,
+  }),
+};
+
+function createAIInput() {
+  return {
+    throttle: 0,
+    steer: 0,
+    jump: false,
+    jumpPressed: false,
+    boost: false,
+    ballCam: true,
+    airRoll: 0,
+    pitchUp: false,
+    pitchDown: false,
+    handbrake: false,
+    dodgeForward: 0,
+    dodgeSteer: 0,
+  };
+}
+
 export class AIController {
   /**
    * @param {object} opts
@@ -51,187 +177,149 @@ export class AIController {
     this.ball = ball;
     this.difficulty = difficulty;
     this.aiMode = aiMode;
+
+    // Cached params (resolved on difficulty change)
+    this._params = null;
+    this._paramsDifficulty = undefined;
+
+    // Per-AI-car cached bookkeeping, parallel to this.aiCars:
+    // { car, idx, teamDir, role, input }
+    this._carInfo = [];
+    this._carInfoAllCarsLen = -1;
+    this._roleFrame = 0;
   }
 
+  /** Difficulty params, resolved once per difficulty change (returned object is shared and frozen). */
   _getAIParams() {
-    switch (this.difficulty) {
-      case 'rookie':
-        return {
-          approachOffset: 14,
-          attackAngle: 0.6,
-          defenseZ: 25,
-          clearDist: 18,
-          steerDeadzone: 0.15,
-          maxThrottle: 0.75,
-          rotateSlowAngle: 0.8,
-          rotateThrottle: 0.4,
-          useBoost: true,
-          boostThreshold: 0.7,    // only boosts when close and facing ball
-          handbrakeAngle: 1.5,
-          handbrakeSpeed: 15,
-          jumpBall: false,
-          dodgeBall: false,
-          canJump: false,
-          canDodge: false,
-          reactionDelay: 0.15,
-          aimJitter: 3.0,
-        };
-      case 'platinum':
-        return {
-          approachOffset: 10,
-          attackAngle: 0.35,
-          defenseZ: 35,
-          clearDist: 12,
-          steerDeadzone: 0.04,
-          maxThrottle: 1.0,
-          rotateSlowAngle: 1.2,
-          rotateThrottle: 0.6,
-          useBoost: true,
-          handbrakeAngle: 1.0,
-          handbrakeSpeed: 8,
-          jumpBall: true,
-          jumpHeight: 2.5,
-          jumpDist: 10,
-          dodgeBall: true,
-          dodgeDist: 8,
-          canJump: true,
-          canDodge: true,
-          reactionDelay: 0.05,
-          aimJitter: 0.5,
-          leadBall: true,
-          leadTime: 0.3,
-          shadowDefense: true,
-        };
-      case 'allstar':
-        return {
-          approachOffset: 7,
-          attackAngle: 0.25,
-          defenseZ: 40,
-          clearDist: 10,
-          steerDeadzone: 0.02,
-          maxThrottle: 1,
-          rotateSlowAngle: 1.4,
-          rotateThrottle: 0.8,
-          useBoost: true,
-          handbrakeAngle: 0.8,
-          handbrakeSpeed: 6,
-          jumpBall: true,
-          jumpHeight: 2.0,
-          jumpDist: 14,
-          dodgeBall: true,
-          dodgeDist: 7,
-          canJump: true,
-          canDodge: true,
-          reactionDelay: 0,
-          aimJitter: 0,
-          leadBall: true,
-          leadTime: 0.6,
-          aerialBoost: true,
-          shadowDefense: true,
-          boostForSpeed: true,
-        };
-      default: // pro
-        return {
-          approachOffset: 12,
-          attackAngle: 0.4,
-          defenseZ: 30,
-          clearDist: 15,
-          steerDeadzone: 0.05,
-          maxThrottle: 1,
-          rotateSlowAngle: 1.0,
-          rotateThrottle: 0.5,
-          useBoost: true,
-          handbrakeAngle: 1.2,
-          handbrakeSpeed: 10,
-          jumpBall: true,
-          jumpHeight: 3,
-          jumpDist: 8,
-          dodgeBall: false,
-          canJump: true,
-          canDodge: false,
-          reactionDelay: 0,
-          aimJitter: 0,
-          leadBall: false,
-        };
+    if (this._params === null || this._paramsDifficulty !== this.difficulty) {
+      this._params = AI_PARAMS[this.difficulty] || AI_PARAMS.pro;
+      this._paramsDifficulty = this.difficulty;
+    }
+    return this._params;
+  }
+
+  /** Validate the per-car cache against the live car lists; rebuild only when they changed. */
+  _syncCarInfo() {
+    const aiCars = this.aiCars;
+    const info = this._carInfo;
+    let dirty = info.length !== aiCars.length || this._carInfoAllCarsLen !== this.allCars.length;
+    if (!dirty) {
+      for (let i = 0; i < aiCars.length; i++) {
+        const ci = info[i];
+        if (ci.car !== aiCars[i]) { dirty = true; break; }
+        // Slot moved within allCars (idx -1 = not in allCars; nothing to re-check)
+        if (ci.idx >= 0 && this.allCars[ci.idx] !== ci.car) { dirty = true; break; }
+      }
+    }
+    if (!dirty) return;
+
+    const half = Math.floor(this.allCars.length / 2);
+    info.length = 0;
+    for (let i = 0; i < aiCars.length; i++) {
+      const car = aiCars[i];
+      const idx = this.allCars.indexOf(car);
+      info.push({
+        car,
+        idx,
+        teamDir: idx < half ? 1 : -1,
+        role: 'attacker',
+        input: createAIInput(),
+      });
+    }
+    this._carInfoAllCarsLen = this.allCars.length;
+    this._roleFrame = 0; // force role recompute on next update
+  }
+
+  /** 2v2 roles: on each team, AI car closest to ball = attacker, others = support. Allocation-free. */
+  _assignRoles() {
+    const info = this._carInfo;
+    const ballPos = this.ball.getPosition();
+    // Two passes, one per team (teamDir 1 = blue, -1 = orange)
+    for (let pass = 0; pass < 2; pass++) {
+      const teamDir = pass === 0 ? 1 : -1;
+      let count = 0;
+      let best = null;
+      let bestD = Infinity;
+      for (let i = 0; i < info.length; i++) {
+        const ci = info[i];
+        if (ci.teamDir !== teamDir) continue;
+        count++;
+        const cp = ci.car.getPosition();
+        const d = (cp.x - ballPos.x) ** 2 + (cp.z - ballPos.z) ** 2;
+        if (d < bestD) { bestD = d; best = ci; }
+      }
+      if (count === 0) continue;
+      for (let i = 0; i < info.length; i++) {
+        const ci = info[i];
+        if (ci.teamDir !== teamDir) continue;
+        ci.role = (count <= 1 || ci === best) ? 'attacker' : 'support';
+      }
     }
   }
 
   update(dt) {
-    // In 2v2, assign roles: on each team, car closest to ball = attacker, farther = support
-    let roles = null;
+    this._syncCarInfo();
+
     if (this.aiMode === '2v2') {
-      const rawBallPos = this.ball.getPosition();
-      roles = new Map();
-      const half = Math.floor(this.allCars.length / 2);
-      const blueAI = [];
-      const orangeAI = [];
-      for (const car of this.aiCars) {
-        const idx = this.allCars.indexOf(car);
-        if (idx < half) blueAI.push(car);
-        else orangeAI.push(car);
+      if (this._roleFrame <= 0) {
+        this._assignRoles();
+        this._roleFrame = ROLE_REFRESH_FRAMES;
       }
-      for (const team of [blueAI, orangeAI]) {
-        if (team.length <= 1) {
-          for (const c of team) roles.set(c, 'attacker');
-          continue;
-        }
-        const sorted = [...team].sort((a, b) => {
-          const ap = a.getPosition();
-          const bp = b.getPosition();
-          const da = (ap.x - rawBallPos.x) ** 2 + (ap.z - rawBallPos.z) ** 2;
-          const db = (bp.x - rawBallPos.x) ** 2 + (bp.z - rawBallPos.z) ** 2;
-          return da - db;
-        });
-        roles.set(sorted[0], 'attacker');
-        for (let i = 1; i < sorted.length; i++) roles.set(sorted[i], 'support');
-      }
+      this._roleFrame--;
     }
 
-    for (const car of this.aiCars) {
-      if (car.demolished) continue;
-      const idx = this.allCars.indexOf(car);
-      const half = Math.floor(this.allCars.length / 2);
-      const teamDir = idx < half ? 1 : -1;
-      const role = roles ? roles.get(car) : 'attacker';
-      this._updateAICar(car, teamDir, role, dt);
+    const info = this._carInfo;
+    for (let i = 0; i < info.length; i++) {
+      const ci = info[i];
+      if (ci.car.demolished) continue;
+      const role = this.aiMode === '2v2' ? ci.role : 'attacker';
+      this._updateAICar(ci.car, ci.teamDir, role, dt, ci.input);
     }
   }
 
-  _updateAICar(car, teamDir, role, dt) {
+  /**
+   * @param {object} car
+   * @param {number} teamDir
+   * @param {string} role
+   * @param {number} dt
+   * @param {object} [input] - persistent per-car input object to fill (allocated if omitted)
+   */
+  _updateAICar(car, teamDir, role, dt, input) {
     const p = this._getAIParams();
+    const aiInput = input || createAIInput();
     const ENEMY_GOAL_Z = teamDir === 1 ? ARENA_CONST.LENGTH / 2 : -ARENA_CONST.LENGTH / 2;
     const OWN_GOAL_Z = teamDir === 1 ? -ARENA_CONST.LENGTH / 2 : ARENA_CONST.LENGTH / 2;
 
-    let ballPos = this.ball.getPosition();
+    const rawBallPos = this.ball.getPosition();
     const ballVel = this.ball.body.velocity;
     const carPos = car.getPosition();
+
+    // Work on a scratch copy of the ball position
+    const ballPos = _ballPos;
+    ballPos.x = rawBallPos.x;
+    ballPos.y = rawBallPos.y;
+    ballPos.z = rawBallPos.z;
 
     // Lead the ball by predicting its future position
     if (p.leadBall) {
       const t = p.leadTime;
-      ballPos = {
-        x: ballPos.x + ballVel.x * t,
-        y: ballPos.y + ballVel.y * t,
-        z: ballPos.z + ballVel.z * t,
-      };
+      ballPos.x += ballVel.x * t;
+      ballPos.y += ballVel.y * t;
+      ballPos.z += ballVel.z * t;
     }
 
     // Add jitter to ball position (simulates imprecise reads)
     if (p.aimJitter > 0) {
       const jitterSeed = Math.floor(performance.now() / 200);
-      const jx = (Math.sin(jitterSeed * 1.7) * p.aimJitter);
-      const jz = (Math.cos(jitterSeed * 2.3) * p.aimJitter);
-      ballPos = { x: ballPos.x + jx, y: ballPos.y, z: ballPos.z + jz };
+      ballPos.x += Math.sin(jitterSeed * 1.7) * p.aimJitter;
+      ballPos.z += Math.cos(jitterSeed * 2.3) * p.aimJitter;
     }
 
     // Reaction delay -- use slightly stale ball position
     if (p.reactionDelay > 0) {
       const t = -p.reactionDelay;
-      ballPos = {
-        x: ballPos.x + ballVel.x * t,
-        y: ballPos.y,
-        z: ballPos.z + ballVel.z * t,
-      };
+      ballPos.x += ballVel.x * t;
+      ballPos.z += ballVel.z * t;
     }
 
     const toBallX = ballPos.x - carPos.x;
@@ -266,16 +354,20 @@ export class AIController {
       const sAbsAngle = Math.abs(sAngleDiff);
       const sDist = Math.sqrt(sDx * sDx + sDz * sDz);
 
-      const sSteer = sAngleDiff > 0.05 ? 1 : sAngleDiff < -0.05 ? -1 : 0;
-      const sThrottle = sDist > 5 ? p.maxThrottle : 0.3;
-      const sBoost = p.useBoost && sDist > 30 && sAbsAngle < 0.3;
-      const sHandbrake = sAbsAngle > p.handbrakeAngle && car.body.velocity.length() > p.handbrakeSpeed;
+      aiInput.throttle = sDist > 5 ? p.maxThrottle : 0.3;
+      aiInput.steer = sAngleDiff > 0.05 ? 1 : sAngleDiff < -0.05 ? -1 : 0;
+      aiInput.jump = false;
+      aiInput.jumpPressed = false;
+      aiInput.boost = !!(p.useBoost && sDist > 30 && sAbsAngle < 0.3);
+      aiInput.ballCam = true;
+      aiInput.airRoll = 0;
+      aiInput.pitchUp = false;
+      aiInput.pitchDown = false;
+      aiInput.handbrake = sAbsAngle > p.handbrakeAngle && car.body.velocity.length() > p.handbrakeSpeed;
+      aiInput.dodgeForward = 0;
+      aiInput.dodgeSteer = 0;
 
-      car.update({
-        throttle: sThrottle, steer: sSteer, jump: false, jumpPressed: false,
-        boost: sBoost, ballCam: true, airRoll: 0, pitchUp: false, pitchDown: false,
-        handbrake: sHandbrake, dodgeForward: 0, dodgeSteer: 0,
-      }, dt);
+      car.update(aiInput, dt);
       return;
     }
 
@@ -394,20 +486,18 @@ export class AIController {
       dodgeSteer = toBallNX > 0.3 ? 1 : toBallNX < -0.3 ? -1 : 0;
     }
 
-    const aiInput = {
-      throttle,
-      steer,
-      jump: false,
-      jumpPressed,
-      boost,
-      ballCam: true,
-      airRoll: 0,
-      pitchUp: false,
-      pitchDown: false,
-      handbrake,
-      dodgeForward,
-      dodgeSteer,
-    };
+    aiInput.throttle = throttle;
+    aiInput.steer = steer;
+    aiInput.jump = false;
+    aiInput.jumpPressed = jumpPressed;
+    aiInput.boost = boost;
+    aiInput.ballCam = true;
+    aiInput.airRoll = 0;
+    aiInput.pitchUp = false;
+    aiInput.pitchDown = false;
+    aiInput.handbrake = handbrake;
+    aiInput.dodgeForward = dodgeForward;
+    aiInput.dodgeSteer = dodgeSteer;
 
     car.update(aiInput, dt);
   }

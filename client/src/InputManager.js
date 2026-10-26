@@ -91,6 +91,27 @@ export class InputManager {
 
     // Gamepad tracking
     this._gamepadIndex = null;
+    this._gamepad = null; // raw Gamepad object from the most recent poll (null if none)
+
+    // Reusable gamepad poll result (written in place each frame by _pollGamepad)
+    this._gpState = {
+      throttle: 0,
+      steer: 0,
+      jump: false,
+      jumpPressed: false,
+      boost: false,
+      ballCamToggled: false,
+      airRollLeft: false,
+      airRollRight: false,
+      ltAirRoll: 0,
+      pitchUp: false,
+      pitchDown: false,
+      handbrake: false,
+      lookX: 0,
+      dodgeForward: 0,
+      dodgeSteer: 0,
+      scoreboard: false,
+    };
 
     // Rebind capture
     this._rebindCallback = null;
@@ -253,10 +274,22 @@ export class InputManager {
     return sign * (Math.abs(value) - dz) / (1 - dz);
   }
 
+  /**
+   * The raw Gamepad object from this frame's poll (or null). Lets other systems
+   * (e.g. QuickChat) read buttons without a second navigator.getGamepads() call.
+   */
+  getGamepad() {
+    return this._gamepad;
+  }
+
   _pollGamepad() {
-    if (this._gamepadIndex === null || !navigator.getGamepads) return null;
+    if (this._gamepadIndex === null || !navigator.getGamepads) {
+      this._gamepad = null;
+      return null;
+    }
 
     const gp = navigator.getGamepads()[this._gamepadIndex];
+    this._gamepad = gp || null;
     if (!gp) return null;
 
     const gpb = this._gpBindings;
@@ -304,24 +337,25 @@ export class InputManager {
     const dodgeForward = -stickY; // stick-forward (negative Y) = positive dodge
     const dodgeSteer = steer;     // same as steering direction
 
-    return {
-      throttle,
-      steer,
-      jump: jumpDown,
-      jumpPressed,
-      boost,
-      ballCamToggled,
-      airRollLeft,
-      airRollRight,
-      ltAirRoll,
-      pitchUp,
-      pitchDown,
-      handbrake,
-      lookX,
-      dodgeForward,
-      dodgeSteer,
-      scoreboard,
-    };
+    // Write into the reusable poll object (no per-frame allocation)
+    const s = this._gpState;
+    s.throttle = throttle;
+    s.steer = steer;
+    s.jump = jumpDown;
+    s.jumpPressed = jumpPressed;
+    s.boost = boost;
+    s.ballCamToggled = ballCamToggled;
+    s.airRollLeft = airRollLeft;
+    s.airRollRight = airRollRight;
+    s.ltAirRoll = ltAirRoll;
+    s.pitchUp = pitchUp;
+    s.pitchDown = pitchDown;
+    s.handbrake = handbrake;
+    s.lookX = lookX;
+    s.dodgeForward = dodgeForward;
+    s.dodgeSteer = dodgeSteer;
+    s.scoreboard = scoreboard;
+    return s;
   }
 
   update() {
@@ -479,9 +513,18 @@ export class InputManager {
     setTimeout(() => { el.remove(); }, 3000);
   }
 
-  // Get the input state (for sending to server)
+  /**
+   * Get the current input state.
+   *
+   * Returns the live `this.state` object (no per-frame copy). It is only
+   * mutated inside `update()`, which the game loop calls once per frame
+   * before reading it. Callers must treat it as read-only and must not retain
+   * it across frames: Game.js reads fields / builds derived objects,
+   * `_applyAimAssist` spreads into a new object before modifying, and
+   * NetworkManager.sendInput copies fields into its own pooled objects.
+   */
   getState() {
-    return { ...this.state };
+    return this.state;
   }
 
   destroy() {
