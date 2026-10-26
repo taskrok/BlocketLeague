@@ -107,24 +107,10 @@
         </div>
         <button id="btn-howtoplay-close" class="lobby-btn lobby-btn-back">Got it</button>
       </div>
-      <div id="lobby-settings-panel" class="howtoplay-panel" style="display:none;">
+      <div id="lobby-settings-panel" class="howtoplay-panel lobby-settings-panel" style="display:none;">
         <h3 class="howtoplay-title">Settings</h3>
-        <div class="howtoplay-content">
-          <div class="lobby-settings-list">
-            <label class="lobby-setting-row">
-              <input type="checkbox" id="setting-auto-fullscreen" />
-              <span>Auto-fullscreen when game starts</span>
-            </label>
-            <label class="lobby-setting-row">
-              <input type="checkbox" id="setting-sfx-mute" />
-              <span>Mute sound effects</span>
-            </label>
-            <label class="lobby-setting-row" style="display:flex;align-items:center;gap:10px;">
-              <span style="min-width:100px">SFX Volume</span>
-              <input type="range" id="setting-sfx-volume" min="0" max="1" step="0.01" value="0.5" class="lmc-slider" style="flex:1" />
-            </label>
-          </div>
-        </div>
+        <!-- Tabbed settings built by LobbySettings.js (shares storage with the in-match panel) -->
+        <div id="lobby-settings-root" class="lobby-settings-root"></div>
         <button id="btn-lobby-settings-close" class="lobby-btn lobby-btn-back">Done</button>
       </div>
       <div id="changelog-panel" class="howtoplay-panel" style="display:none;">

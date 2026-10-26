@@ -3,6 +3,13 @@
 // ============================================
 
 import { CAR, GAME } from '../../shared/constants.js';
+import { progression } from './Progression.js';
+import { xpForLevel, getLevelTitle } from '../../shared/Ranks.js';
+
+// Gamepad buttons that drive the post-match results screen. A/B stay free for
+// the celebration phase (jump/boost), so the menu uses Start / Back instead.
+const GP_BTN_BACK = 8;
+const GP_BTN_START = 9;
 
 const RANDOM_NAMES = [
   'Donut','Penguin','Stumpy','Whicker','Shadow','Howard','Wilshire','Darling',
@@ -41,6 +48,23 @@ export class HUD {
 
     // Track active timeouts so we can clear them on reset/destroy
     this._timeouts = [];
+
+    // Post-match results screen (see showMatchEnd). main.js wires the
+    // callbacks; the screen only offers "play again" when onPlayAgain is set.
+    this.onBackToLobby = null;
+    this.onPlayAgain = null;
+    this.playAgainLabel = 'Play Again';
+    this._resultsEl = null;
+    this._resultsPrimaryBtn = null;
+    this._resultsSecondaryBtn = null;
+    this._resultsRankEl = null;
+    this._resultsKeyHandler = null;
+    this._resultsCountRaf = null;
+    this._autoReturnTimer = null;
+    this._autoReturnLeft = 0;
+    this._lastAutoReturnText = null;
+    this._gpPrevStart = false;
+    this._gpPrevBack = false;
 
     // Dirty-check caches: these updaters run every frame, so only touch the
     // DOM when the displayed value actually changes.
@@ -194,21 +218,22 @@ export class HUD {
     this.timerEl.style.textShadow = '0 0 20px rgba(255, 51, 0, 0.7)';
   }
 
-  showMatchEnd(blueScore, orangeScore, stats, mvpIdx, maxPlayers) {
-    if (!stats) {
-      // Fallback: no stats available
-      const winTeam = blueScore > orangeScore ? this._teamNames.blue : this._teamNames.orange;
-      this.goalTextEl.textContent = `${winTeam} WINS!`;
-      const color = blueScore > orangeScore ? '#0088ff' : '#ff6600';
-      this.goalTextEl.style.color = color;
-      this.goalTextEl.style.textShadow = `0 0 40px ${color}, 0 0 80px ${color}`;
-      this.goalTextEl.style.opacity = '1';
-      return;
-    }
-
-    // Hide the simple goal text, show full scoreboard
+  /**
+   * Post-match results screen: outcome, score, per-player stats, XP rewards
+   * and the next-action buttons. Replaces the old scoreboard + separate XP
+   * overlay so everything a player wants after the whistle is on one panel.
+   * @param {object} [opts]
+   * @param {number} [opts.localIdx]   slot of the local player (highlights the row)
+   * @param {string} [opts.localTeam]  'blue' | 'orange' (VICTORY / DEFEAT header)
+   * @param {object} [opts.xpResult]   return value of progression.endMatch()
+   * @param {boolean} [opts.showRank]  listen for the server rank change (online)
+   */
+  showMatchEnd(blueScore, orangeScore, stats, mvpIdx, maxPlayers, opts = {}) {
     this.goalTextEl.style.opacity = '0';
-    this._showScoreboard(blueScore, orangeScore, stats, mvpIdx, maxPlayers || stats.length);
+    this.showReplayIndicator(false);
+    this.hideLiveScoreboard();
+    if (this.hudTop) this.hudTop.style.opacity = '1';
+    this._showResults(blueScore, orangeScore, stats || null, mvpIdx, maxPlayers || (stats ? stats.length : 2), opts);
   }
 
   showDemolished() {
@@ -385,115 +410,379 @@ export class HUD {
     if (this.hudTop) this.hudTop.style.opacity = '1';
   }
 
-  _showScoreboard(blueScore, orangeScore, stats, mvpIdx, maxPlayers) {
-    if (this._scoreboardEl) this._scoreboardEl.remove();
+  _showResults(blueScore, orangeScore, stats, mvpIdx, maxPlayers, opts) {
+    this._removeResults();
 
-    // Hide conflicting HUD elements. (hud-top itself stays visible behind the
-    // final board, as it always effectively did: hideLiveScoreboard restores it.)
-    this.goalTextEl.style.opacity = '0';
-    this.showReplayIndicator(false);
-    this.hideLiveScoreboard();
-    if (this.hudTop) this.hudTop.style.opacity = '1';
-
+    const localIdx = typeof opts.localIdx === 'number' ? opts.localIdx : 0;
     const blueWins = blueScore > orangeScore;
-    const winColor = blueWins ? '#0088ff' : '#ff6600';
-    const winTeam = blueWins ? this._teamNames.blue : this._teamNames.orange;
-    const winText = `${winTeam} WINS!`;
+    const winTeam = blueWins ? 'blue' : 'orange';
     const half = Math.floor(maxPlayers / 2);
+    const localTeam = opts.localTeam || (localIdx < half ? 'blue' : 'orange');
+    const localWon = localTeam === winTeam;
 
-    const el = document.createElement('div');
-    el.id = 'match-scoreboard';
-    this._scoreboardEl = el;
+    const root = document.createElement('div');
+    root.id = 'match-results';
+    root.className = localWon ? 'mr-win' : 'mr-loss';
+    root.setAttribute('role', 'dialog');
+    root.setAttribute('aria-label', 'Match results');
+    root.tabIndex = -1;
+    this._resultsActionFired = false;
 
-    // Header
-    const header = document.createElement('div');
-    header.className = 'scoreboard-header';
-    header.style.color = winColor;
-    header.style.textShadow = `0 0 30px ${winColor}, 0 0 60px ${winColor}`;
-    header.textContent = winText;
-    el.appendChild(header);
+    const panel = document.createElement('div');
+    panel.className = 'mr-panel';
+    root.appendChild(panel);
 
-    // Score row
+    // Outcome + winning team
+    const outcome = document.createElement('div');
+    outcome.className = `mr-outcome ${winTeam}`;
+    outcome.textContent = localWon ? 'VICTORY' : 'DEFEAT';
+    panel.appendChild(outcome);
+
+    const sub = document.createElement('div');
+    sub.className = 'mr-subtitle';
+    sub.textContent = `${this._teamNames[winTeam]} WINS`;
+    panel.appendChild(sub);
+
     const scoreRow = document.createElement('div');
-    scoreRow.className = 'scoreboard-score-row';
-    scoreRow.innerHTML = `<span class="sb-blue">${blueScore}</span> <span class="sb-dash">-</span> <span class="sb-orange">${orangeScore}</span>`;
-    el.appendChild(scoreRow);
+    scoreRow.className = 'mr-score';
+    scoreRow.innerHTML = `<span class="sb-blue">${blueScore}</span><span class="sb-dash">-</span><span class="sb-orange">${orangeScore}</span>`;
+    panel.appendChild(scoreRow);
 
-    // Table
-    const table = document.createElement('table');
-    table.className = 'scoreboard-table';
+    const body = document.createElement('div');
+    body.className = 'mr-body';
+    panel.appendChild(body);
 
-    // Header row
-    const thead = document.createElement('thead');
-    thead.innerHTML = `<tr>
-      <th class="sb-player-col">Player</th>
-      <th>Goals</th>
-      <th>Assists</th>
-      <th>Saves</th>
-      <th>Shots</th>
-      <th>Demos</th>
-      <th class="sb-score-col">Score</th>
-    </tr>`;
-    table.appendChild(thead);
+    // Stats table
+    if (stats) {
+      const tableWrap = document.createElement('div');
+      tableWrap.className = 'mr-table-wrap';
+      const table = document.createElement('table');
+      table.className = 'scoreboard-table mr-table';
+      table.innerHTML = `<thead><tr>
+        <th class="sb-player-col">Player</th>
+        <th title="Goals">G</th><th title="Assists">A</th><th title="Saves">Sv</th>
+        <th title="Shots">Sh</th><th title="Demolitions">D</th><th class="sb-score-col">Pts</th>
+      </tr></thead>`;
+      const tbody = document.createElement('tbody');
+      for (let i = 0; i < half; i++) {
+        tbody.appendChild(this._makeStatRow(i, stats[i], mvpIdx, maxPlayers, 'blue', i === localIdx));
+      }
+      const sepRow = document.createElement('tr');
+      sepRow.className = 'scoreboard-separator';
+      sepRow.innerHTML = '<td colspan="7"><div class="sb-sep-line"></div></td>';
+      tbody.appendChild(sepRow);
+      for (let i = half; i < maxPlayers; i++) {
+        tbody.appendChild(this._makeStatRow(i, stats[i], mvpIdx, maxPlayers, 'orange', i === localIdx));
+      }
+      table.appendChild(tbody);
+      tableWrap.appendChild(table);
 
-    const tbody = document.createElement('tbody');
-
-    // Blue team rows
-    for (let i = 0; i < half; i++) {
-      tbody.appendChild(this._makeStatRow(i, stats[i], mvpIdx, maxPlayers, 'blue'));
+      if (typeof mvpIdx === 'number' && mvpIdx >= 0 && stats[mvpIdx]) {
+        const mvp = document.createElement('div');
+        mvp.className = 'mr-mvp-line';
+        mvp.innerHTML = `<span class="sb-mvp">&#9733;</span> MVP <strong>${this._escape(this._getPlayerLabel(mvpIdx, maxPlayers))}</strong> &middot; ${stats[mvpIdx].score} pts`;
+        tableWrap.appendChild(mvp);
+      }
+      body.appendChild(tableWrap);
     }
 
-    // Separator
-    const sepRow = document.createElement('tr');
-    sepRow.className = 'scoreboard-separator';
-    sepRow.innerHTML = `<td colspan="7"><div class="sb-sep-line"></div></td>`;
-    tbody.appendChild(sepRow);
-
-    // Orange team rows
-    for (let i = half; i < maxPlayers; i++) {
-      tbody.appendChild(this._makeStatRow(i, stats[i], mvpIdx, maxPlayers, 'orange'));
+    // Rewards (XP) column
+    if (opts.xpResult && opts.xpResult.entries && opts.xpResult.entries.length) {
+      body.appendChild(this._buildRewards(opts.xpResult, !!opts.showRank));
     }
 
-    table.appendChild(tbody);
-    el.appendChild(table);
+    // Actions
+    const actions = document.createElement('div');
+    actions.className = 'mr-actions';
+    if (this.onPlayAgain) {
+      const primary = document.createElement('button');
+      primary.className = 'lobby-btn mr-primary';
+      primary.textContent = this.playAgainLabel || 'Play Again';
+      primary.addEventListener('click', () => this._firePlayAgain());
+      actions.appendChild(primary);
+      this._resultsPrimaryBtn = primary;
+    }
+    const secondary = document.createElement('button');
+    secondary.className = 'lobby-btn lobby-btn-back mr-secondary';
+    secondary.textContent = 'Back to Lobby';
+    secondary.addEventListener('click', () => this._fireBackToLobby());
+    actions.appendChild(secondary);
+    this._resultsSecondaryBtn = secondary;
+    panel.appendChild(actions);
 
-    // Back to Lobby button
-    const btn = document.createElement('button');
-    btn.className = 'lobby-btn';
-    btn.textContent = 'Back to Lobby';
-    Object.assign(btn.style, {
-      marginTop: '18px',
-      fontSize: '16px',
-      padding: '10px 32px',
-      cursor: 'pointer',
-    });
-    btn.addEventListener('click', () => {
-      if (this.onBackToLobby) this.onBackToLobby();
-    });
-    el.appendChild(btn);
+    // Input hints (keyboard + gamepad); hidden on coarse-pointer devices via CSS
+    const hints = document.createElement('div');
+    hints.className = 'mr-hints';
+    const hasPad = !!(navigator.getGamepads && Array.from(navigator.getGamepads()).some(Boolean));
+    let hintHtml = '';
+    if (this.onPlayAgain) {
+      hintHtml += `<span><kbd>Enter</kbd>${hasPad ? '<kbd class="mr-kbd-pad">Start</kbd>' : ''} ${this._escape(this.playAgainLabel || 'Play Again')}</span>`;
+    }
+    hintHtml += hasPad ? '<span><kbd class="mr-kbd-pad">Back</kbd> Lobby</span>' : '<span><kbd>Esc</kbd> Settings</span>';
+    hintHtml += '<span class="mr-hint-celebrate">Jump &amp; boost to celebrate</span>';
+    hints.innerHTML = hintHtml;
+    panel.appendChild(hints);
 
     const container = document.getElementById('game-container');
-    (container || document.body).appendChild(el);
+    (container || document.body).appendChild(root);
+    this._resultsEl = root;
+
+    // Keyboard: Enter = primary action. Esc is left to the settings panel.
+    this._resultsKeyHandler = (e) => {
+      if (e.key === 'Enter' && this._resultsPrimaryBtn && !e.repeat) {
+        e.preventDefault();
+        this._firePlayAgain();
+      }
+    };
+    window.addEventListener('keydown', this._resultsKeyHandler);
+
+    // Prime gamepad edge detection so a held button doesn't fire instantly
+    this._gpPrevStart = true;
+    this._gpPrevBack = true;
+
+    // Focus the dialog itself (not a button): Space must keep jumping during
+    // the celebration, and Enter is handled above. Tab reaches the buttons.
+    this._addTimeout(() => { if (root.isConnected) root.focus({ preventScroll: true }); }, 450);
+
+    // Entrance animation
+    requestAnimationFrame(() => root.classList.add('mr-visible'));
   }
 
-  _makeStatRow(idx, stat, mvpIdx, maxPlayers, team) {
+  _buildRewards(xpResult, showRank) {
+    const box = document.createElement('div');
+    box.className = 'mr-rewards';
+
+    const title = document.createElement('div');
+    title.className = 'mr-rewards-title';
+    title.textContent = 'MATCH REWARDS';
+    box.appendChild(title);
+
+    const list = document.createElement('div');
+    list.className = 'mr-xp-list';
+    xpResult.entries.forEach((entry, i) => {
+      const row = document.createElement('div');
+      row.className = 'mr-xp-row';
+      row.style.setProperty('--i', i);
+      row.innerHTML = `<span>${this._escape(entry.label)}</span><span class="mr-xp-amt">+${entry.amount}</span>`;
+      list.appendChild(row);
+    });
+    box.appendChild(list);
+
+    const total = document.createElement('div');
+    total.className = 'mr-xp-total';
+    total.innerHTML = '+<span class="mr-xp-count">0</span> XP';
+    box.appendChild(total);
+    const countEl = total.querySelector('.mr-xp-count');
+
+    // Level + progress bar (animates from pre-match progress to post-match)
+    const levelAfter = typeof xpResult.newLevel === 'number' ? xpResult.newLevel : progression.level;
+    const levelBefore = typeof xpResult.levelBefore === 'number' ? xpResult.levelBefore : levelAfter;
+    const xpAfter = typeof xpResult.xpAfter === 'number' ? xpResult.xpAfter : progression.xp;
+    const xpBefore = typeof xpResult.xpBefore === 'number' ? xpResult.xpBefore : xpAfter - xpResult.totalXP;
+    const leveledUp = levelAfter > levelBefore;
+
+    const levelRow = document.createElement('div');
+    levelRow.className = 'mr-level-row';
+    const prestigePrefix = progression.prestige > 0 ? '★'.repeat(Math.min(progression.prestige, 10)) + ' ' : '';
+    levelRow.innerHTML = `<span class="mr-level">${prestigePrefix}LVL ${levelAfter} &middot; ${this._escape(getLevelTitle(levelAfter))}</span>` +
+      (leveledUp ? '<span class="mr-levelup">LEVEL UP</span>' : '');
+    box.appendChild(levelRow);
+
+    const bar = document.createElement('div');
+    bar.className = 'mr-bar';
+    const fill = document.createElement('div');
+    fill.className = 'mr-bar-fill';
+    bar.appendChild(fill);
+    box.appendChild(bar);
+
+    const xpText = document.createElement('div');
+    xpText.className = 'mr-xp-text';
+    xpText.textContent = `${xpAfter} / ${xpForLevel(levelAfter + 1)} XP`;
+    box.appendChild(xpText);
+
+    // Rank change line (online). Rendered now if already known, otherwise
+    // when the server's progression event lands.
+    if (showRank) {
+      const rank = document.createElement('div');
+      rank.className = 'mr-rank';
+      rank.textContent = 'Updating rank…';
+      box.appendChild(rank);
+      this._resultsRankEl = rank;
+      const existing = progression.getLastRankChange();
+      if (existing) this._renderRankChange(existing);
+      progression.onRankChange = (rc) => this._renderRankChange(rc);
+    }
+
+    const progressOf = (xp, level) => {
+      const lo = xpForLevel(level);
+      const hi = xpForLevel(level + 1);
+      return hi > lo ? Math.max(0, Math.min(1, (xp - lo) / (hi - lo))) : 1;
+    };
+    const startPct = Math.round(progressOf(xpBefore, levelBefore) * 100);
+    const endPct = Math.round(progressOf(xpAfter, levelAfter) * 100);
+    fill.style.width = `${startPct}%`;
+
+    // Count-up + bar animation, started after the row stagger finishes.
+    const rowsDone = 350 + xpResult.entries.length * 90;
+    this._addTimeout(() => {
+      this._animateCount(countEl, xpResult.totalXP, 900);
+      if (leveledUp) {
+        fill.style.width = '100%';
+        this._addTimeout(() => {
+          fill.classList.add('mr-bar-snap');
+          fill.style.width = '0%';
+          this._addTimeout(() => {
+            fill.classList.remove('mr-bar-snap');
+            fill.style.width = `${endPct}%`;
+          }, 60);
+        }, 950);
+      } else {
+        fill.style.width = `${endPct}%`;
+      }
+    }, rowsDone);
+
+    return box;
+  }
+
+  // Bounded count-up (<1s); writes only when the rounded value changes.
+  _animateCount(el, target, durationMs) {
+    if (this._resultsCountRaf) cancelAnimationFrame(this._resultsCountRaf);
+    const start = performance.now();
+    let last = -1;
+    const tick = (now) => {
+      const t = Math.min(1, (now - start) / durationMs);
+      const eased = 1 - Math.pow(1 - t, 3);
+      const v = Math.round(target * eased);
+      if (v !== last) { last = v; el.textContent = v; }
+      if (t < 1) this._resultsCountRaf = requestAnimationFrame(tick);
+      else this._resultsCountRaf = null;
+    };
+    this._resultsCountRaf = requestAnimationFrame(tick);
+  }
+
+  _renderRankChange(rc) {
+    const el = this._resultsRankEl;
+    if (!el || !rc || rc.mmrDelta === null || rc.mmrDelta === undefined) return;
+    const up = rc.mmrDelta >= 0;
+    const rankName = rc.rankAfter || '';
+    const changed = rc.rankBefore && rc.rankAfter && rc.rankBefore !== rc.rankAfter;
+    const color = rc.rankColor || (up ? '#00ff88' : '#ff4444');
+    el.innerHTML = `<span class="mr-rank-name" style="color:${color}">${this._escape(String(rankName).toUpperCase())}</span>` +
+      `<span class="mr-rank-delta ${up ? 'up' : 'down'}">${up ? '+' : ''}${rc.mmrDelta} MMR</span>` +
+      (changed ? `<span class="mr-rank-tag ${up ? 'up' : 'down'}">${up ? 'RANK UP' : 'RANK DOWN'}</span>` : '') +
+      `<span class="mr-rank-mode">${this._escape(String(rc.matchMode || '1v1').toUpperCase())}</span>`;
+    el.classList.add('mr-rank-ready');
+  }
+
+  _makeStatRow(idx, stat, mvpIdx, maxPlayers, team, isLocal) {
     const tr = document.createElement('tr');
-    tr.className = `scoreboard-row ${team}`;
-
-    const isMVP = idx === mvpIdx;
-    const label = this._getPlayerLabel(idx, maxPlayers);
-    const mvpStar = isMVP ? '<span class="sb-mvp">&#9733;</span> ' : '';
-
+    tr.className = `scoreboard-row ${team}${isLocal ? ' you' : ''}`;
+    const s = stat || { goals: 0, assists: 0, saves: 0, shots: 0, demos: 0, score: 0 };
+    const mvpStar = idx === mvpIdx ? '<span class="sb-mvp" title="MVP">&#9733;</span> ' : '';
+    const youTag = isLocal ? '<span class="sb-you">YOU</span>' : '';
     tr.innerHTML = `
-      <td class="sb-player-col">${mvpStar}${label}</td>
-      <td>${stat.goals}</td>
-      <td>${stat.assists}</td>
-      <td>${stat.saves}</td>
-      <td>${stat.shots}</td>
-      <td>${stat.demos}</td>
-      <td class="sb-score">${stat.score}</td>
+      <td class="sb-player-col">${mvpStar}${this._escape(this._getPlayerLabel(idx, maxPlayers))}${youTag}</td>
+      <td>${s.goals}</td>
+      <td>${s.assists}</td>
+      <td>${s.saves}</td>
+      <td>${s.shots}</td>
+      <td>${s.demos}</td>
+      <td class="sb-score">${s.score}</td>
     `;
     return tr;
+  }
+
+  _escape(str) {
+    return String(str).replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
+  }
+
+  // Both actions tear the match down, so they fire at most once per screen.
+  _firePlayAgain() {
+    if (!this.onPlayAgain || !this._resultsEl || this._resultsActionFired) return;
+    this._resultsActionFired = true;
+    this.stopAutoReturn();
+    this.onPlayAgain();
+  }
+
+  _fireBackToLobby() {
+    if (this._resultsActionFired) return;
+    this._resultsActionFired = true;
+    this.stopAutoReturn();
+    if (this.onBackToLobby) this.onBackToLobby();
+  }
+
+  /**
+   * Per-frame gamepad hook for the results screen (Game calls this while the
+   * match is in the 'ended' state). Start = primary action, Back = lobby.
+   */
+  pollMatchEndGamepad(gp) {
+    if (!this._resultsEl) return;
+    if (!gp) { this._gpPrevStart = false; this._gpPrevBack = false; return; }
+    const start = !!(gp.buttons[GP_BTN_START] && gp.buttons[GP_BTN_START].pressed);
+    const back = !!(gp.buttons[GP_BTN_BACK] && gp.buttons[GP_BTN_BACK].pressed);
+    if (start && !this._gpPrevStart && this._resultsPrimaryBtn) this._firePlayAgain();
+    else if (back && !this._gpPrevBack) this._fireBackToLobby();
+    this._gpPrevStart = start;
+    this._gpPrevBack = back;
+  }
+
+  /**
+   * Count down to an automatic return to the lobby (online matches: the room
+   * is torn down server-side). Shown on the lobby button when the results
+   * screen is up, otherwise in the status line.
+   */
+  startAutoReturn(seconds) {
+    this.stopAutoReturn();
+    this._autoReturnLeft = Math.max(1, Math.round(seconds));
+    this._lastAutoReturnText = null;
+    // Keep whatever the status line was saying (e.g. "A player disconnected")
+    const statusVisible = this.statusText && this.statusText.style.opacity === '1' && this.statusText.textContent;
+    const prefix = statusVisible ? `${this.statusText.textContent} — ` : '';
+    const tick = () => {
+      const text = this._resultsSecondaryBtn
+        ? `Back to Lobby (${this._autoReturnLeft})`
+        : `${prefix}Returning to lobby in ${this._autoReturnLeft}…`;
+      if (text !== this._lastAutoReturnText) {
+        this._lastAutoReturnText = text;
+        if (this._resultsSecondaryBtn) this._resultsSecondaryBtn.textContent = text;
+        else this.showStatus(text);
+      }
+      if (this._autoReturnLeft <= 0) {
+        this.stopAutoReturn();
+        if (this.onBackToLobby) this.onBackToLobby();
+        return;
+      }
+      this._autoReturnLeft--;
+    };
+    tick();
+    this._autoReturnTimer = setInterval(tick, 1000);
+  }
+
+  stopAutoReturn() {
+    if (this._autoReturnTimer) {
+      clearInterval(this._autoReturnTimer);
+      this._autoReturnTimer = null;
+    }
+  }
+
+  _removeResults() {
+    this.stopAutoReturn();
+    if (this._resultsKeyHandler) {
+      window.removeEventListener('keydown', this._resultsKeyHandler);
+      this._resultsKeyHandler = null;
+    }
+    if (this._resultsCountRaf) {
+      cancelAnimationFrame(this._resultsCountRaf);
+      this._resultsCountRaf = null;
+    }
+    progression.onRankChange = null;
+    if (this._resultsEl) {
+      this._resultsEl.remove();
+      this._resultsEl = null;
+    }
+    this._resultsPrimaryBtn = null;
+    this._resultsSecondaryBtn = null;
+    this._resultsRankEl = null;
   }
 
   setPlayerNames(names) {
@@ -544,10 +833,8 @@ export class HUD {
       this.pingEl.remove();
       this.pingEl = null;
     }
-    if (this._scoreboardEl) {
-      this._scoreboardEl.remove();
-      this._scoreboardEl = null;
-    }
+    this._removeResults();
+    progression.clearLastRankChange();
     if (this._liveScoreboardEl) {
       this._liveScoreboardEl.remove();
       this._liveScoreboardEl = null;

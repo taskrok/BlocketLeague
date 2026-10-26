@@ -10,6 +10,7 @@ import { buildCarMesh } from './CarMeshBuilder.js';
 import { modelLoader } from './ModelLoader.js';
 import { COLORS, RANDOM_NAMES } from '../../shared/constants.js';
 import { getGeneralSettings } from './GameSettings.js';
+import { buildLobbySettings } from './LobbySettings.js';
 import { ARENA_THEMES } from './ArenaThemes.js';
 import { audioManager } from './AudioManager.js';
 import { progression } from './Progression.js';
@@ -75,20 +76,10 @@ window.addEventListener('DOMContentLoaded', async () => {
   const btnChangelog = document.getElementById('btn-changelog');
   const changelogPanel = document.getElementById('changelog-panel');
   const btnChangelogClose = document.getElementById('btn-changelog-close');
-  const settingAutoFullscreen = document.getElementById('setting-auto-fullscreen');
-  const settingSfxMute = document.getElementById('setting-sfx-mute');
-  const settingSfxVolume = document.getElementById('setting-sfx-volume');
 
-  // Init lobby settings from stored values
-  const initGeneralSettings = getGeneralSettings();
-  settingAutoFullscreen.checked = initGeneralSettings.autoFullscreen;
-
-  // Init SFX settings from stored values
-  try {
-    const audioSettings = JSON.parse(localStorage.getItem('blocket-audio-settings') || '{}');
-    if (audioSettings.sfxMuted) settingSfxMute.checked = true;
-    if (typeof audioSettings.sfxVolume === 'number') settingSfxVolume.value = audioSettings.sfxVolume;
-  } catch {}
+  // Full tabbed settings (camera / keys / pad / audio / display) in the lobby.
+  // Same storage keys as the in-match panel, so changes carry into the game.
+  const lobbySettings = buildLobbySettings(document.getElementById('lobby-settings-root'));
 
   // Room lobby elements
   const roomLobby = document.getElementById('room-lobby');
@@ -160,7 +151,6 @@ window.addEventListener('DOMContentLoaded', async () => {
   let currentModelIndex = 0;
   let availableModelIds = [];
   let activeGame = null;
-  let matchEndTimeoutId = null;
 
   // Lobby gamepad navigation poller controls; assigned in the
   // GAMEPAD LOBBY NAVIGATION section below, called whenever the lobby is shown/hidden.
@@ -298,12 +288,20 @@ window.addEventListener('DOMContentLoaded', async () => {
     skipTrack();
   });
 
+  // Persist on a trailing debounce (input fires at pointer-move rate) and
+  // merge into the existing object so the SFX keys survive.
+  let lobbyVolumeSaveTimer = null;
   lobbyVolumeSlider.addEventListener('input', () => {
     const v = parseFloat(lobbyVolumeSlider.value);
     titleMusic.volume = v;
-    try {
-      localStorage.setItem('blocket-audio-settings', JSON.stringify({ musicVolume: v }));
-    } catch {}
+    clearTimeout(lobbyVolumeSaveTimer);
+    lobbyVolumeSaveTimer = setTimeout(() => {
+      try {
+        const audioSettings = JSON.parse(localStorage.getItem('blocket-audio-settings') || '{}');
+        audioSettings.musicVolume = v;
+        localStorage.setItem('blocket-audio-settings', JSON.stringify(audioSettings));
+      } catch {}
+    }, 250);
   });
 
   // Room lobby state
@@ -602,10 +600,6 @@ window.addEventListener('DOMContentLoaded', async () => {
   }
 
   function returnToLobby() {
-    if (matchEndTimeoutId) {
-      clearTimeout(matchEndTimeoutId);
-      matchEndTimeoutId = null;
-    }
     stopQueueTimer();
     destroyActiveGame();
     if (networkManager) {
@@ -794,6 +788,9 @@ window.addEventListener('DOMContentLoaded', async () => {
       whenModelsReady([localModelId], () => {
         const game = new Game(canvas, { mode: 'singleplayer', playerVariant: chosenVariant, aiDifficulty: selectedDifficulty, aiMode: selectedAIMode, arenaTheme: selectedArena });
         game.hud.onBackToLobby = () => returnToLobby();
+        // Rematch with the same mode / difficulty / car / arena
+        game.hud.onPlayAgain = () => startGame();
+        game.hud.playAgainLabel = 'Rematch';
         activeGame = game;
         window.game = game;
       });
@@ -925,8 +922,24 @@ window.addEventListener('DOMContentLoaded', async () => {
         if (networkManager !== network) return;
         const game = new Game(canvas, { mode: 'multiplayer', networkManager: network, playerVariant: chosenVariant, joinedData: data, arenaTheme: selectedArena });
         game.hud.onBackToLobby = () => returnToLobby();
-        game.onMatchEnd = () => {
-          matchEndTimeoutId = setTimeout(() => returnToLobby(), 4000);
+        if (isQuickMatch) {
+          // Re-queue for the same mode straight from the results screen
+          const qmMode = selectedQMMode || '1v1';
+          game.hud.onPlayAgain = () => {
+            returnToLobby();
+            selectedMode = 'multiplayer';
+            selectedQMMode = qmMode;
+            selectedRoomMode = qmMode;
+            roomCode = '__quickmatch__';
+            isRoomCreator = false;
+            startGame();
+          };
+          game.hud.playAgainLabel = 'Find New Match';
+        }
+        // The server tears the room down 30s after the whistle: give players
+        // time to read the results, less if someone already left.
+        game.onMatchEnd = (reason) => {
+          game.hud.startAutoReturn(reason === 'gameOver' ? 15 : 4);
         };
         activeGame = game;
         window.game = game;
@@ -1193,6 +1206,8 @@ window.addEventListener('DOMContentLoaded', async () => {
   });
 
   btnLobbySettingsClose.addEventListener('click', () => {
+    lobbySettings.cancelAnyRebind();
+    lobbySettings.flushSaves();
     lobbySettingsPanel.style.display = 'none';
     lobbyMusicControls.classList.remove('hidden');
     showScreen(lobbyButtons);
@@ -1209,34 +1224,6 @@ window.addEventListener('DOMContentLoaded', async () => {
     changelogPanel.style.display = 'none';
     lobbyMusicControls.classList.remove('hidden');
     showScreen(lobbyButtons);
-  });
-
-  settingAutoFullscreen.addEventListener('change', () => {
-    const settings = getGeneralSettings();
-    settings.autoFullscreen = settingAutoFullscreen.checked;
-    localStorage.setItem('blocket-general-settings', JSON.stringify(settings));
-  });
-
-  // SFX mute toggle
-  settingSfxMute.addEventListener('change', () => {
-    const muted = settingSfxMute.checked;
-    audioManager.setMuted(muted);
-    try {
-      const audioSettings = JSON.parse(localStorage.getItem('blocket-audio-settings') || '{}');
-      audioSettings.sfxMuted = muted;
-      localStorage.setItem('blocket-audio-settings', JSON.stringify(audioSettings));
-    } catch {}
-  });
-
-  // SFX volume slider
-  settingSfxVolume.addEventListener('input', () => {
-    const v = parseFloat(settingSfxVolume.value);
-    audioManager.setMasterVolume(v);
-    try {
-      const audioSettings = JSON.parse(localStorage.getItem('blocket-audio-settings') || '{}');
-      audioSettings.sfxVolume = v;
-      localStorage.setItem('blocket-audio-settings', JSON.stringify(audioSettings));
-    } catch {}
   });
 
   // Prev/Next model buttons
@@ -1337,11 +1324,18 @@ window.addEventListener('DOMContentLoaded', async () => {
       attributeFilter: ['style', 'class', 'disabled'],
     });
 
+    // Focusable controls, in DOM order. Besides the lobby buttons this covers
+    // the settings panel: tabs, key/pad bind buttons, reset buttons, sliders
+    // and checkboxes, so the whole panel is reachable from a controller.
+    const GP_FOCUSABLE = '.lobby-btn, .lobby-btn-nav, .lobby-link-btn, .gs-tab, .gs-bind-key, .cs-reset, .cs-slider, .cs-row input[type="checkbox"]';
+    // Controls that act in place (no screen change) when pressed with A
+    const GP_IN_PLACE = '.gs-tab, .gs-bind-key, .cs-reset, .cs-slider, input';
+
     // Get all visible, clickable buttons on the current lobby screen (cached)
     function getVisibleButtons() {
       if (!gpButtonsDirty) return gpButtons;
       const btns = [];
-      lobby.querySelectorAll('.lobby-btn, .lobby-btn-nav, .lobby-link-btn').forEach(el => {
+      lobby.querySelectorAll(GP_FOCUSABLE).forEach(el => {
         if (el.offsetParent !== null && !el.disabled && el.style.display !== 'none') {
           btns.push(el);
         }
@@ -1349,6 +1343,33 @@ window.addEventListener('DOMContentLoaded', async () => {
       gpButtons = btns;
       gpButtonsDirty = false;
       return btns;
+    }
+
+    // Left/right on the focused control. Returns true when the input was
+    // consumed (so the caller doesn't also move focus).
+    function gpAdjustFocused(el, dir) {
+      if (!el) return false;
+      if (el.classList.contains('lobby-btn-nav')) {
+        el.click();
+        return true;
+      }
+      if (el.tagName === 'INPUT' && el.type === 'range') {
+        if (dir < 0) el.stepDown(); else el.stepUp();
+        el.dispatchEvent(new Event('input', { bubbles: true }));
+        el.dispatchEvent(new Event('change', { bubbles: true }));
+        return true;
+      }
+      if (el.classList.contains('gs-tab')) {
+        const sib = dir < 0 ? el.previousElementSibling : el.nextElementSibling;
+        if (sib && sib.classList.contains('gs-tab')) {
+          sib.click();
+          gpButtonsDirty = true;
+          const list = getVisibleButtons();
+          setGpFocus(list, Math.max(0, list.indexOf(sib)));
+        }
+        return true;
+      }
+      return false;
     }
 
     function setGpFocus(btns, idx) {
@@ -1411,31 +1432,31 @@ window.addEventListener('DOMContentLoaded', async () => {
       if (down && !gpPrevDown && btns.length > 0) {
         setGpFocus(btns, gpFocusIdx + 1);
       }
-      // Left/right for nav buttons (car/arena selectors)
+      // Left/right: nav buttons (car/arena), sliders and tabs act in place;
+      // anything else just moves focus.
       if (left && !gpPrevLeft && btns.length > 0) {
-        const cur = btns[gpFocusIdx];
-        if (cur && cur.classList.contains('lobby-btn-nav')) {
-          cur.click();
-        } else {
-          // Find prev nav button or just navigate up
-          setGpFocus(btns, gpFocusIdx - 1);
-        }
+        if (!gpAdjustFocused(btns[gpFocusIdx], -1)) setGpFocus(btns, gpFocusIdx - 1);
       }
       if (right && !gpPrevRight && btns.length > 0) {
-        const cur = btns[gpFocusIdx];
-        if (cur && cur.classList.contains('lobby-btn-nav')) {
-          cur.click();
-        } else {
-          setGpFocus(btns, gpFocusIdx + 1);
-        }
+        if (!gpAdjustFocused(btns[gpFocusIdx], 1)) setGpFocus(btns, gpFocusIdx + 1);
       }
 
       // A = select
       if (aBtn && !gpPrevA && btns.length > 0) {
-        if (gpFocusIdx < btns.length) {
-          btns[gpFocusIdx].click();
-          // Reset focus for new screen
-          scheduleRefocus();
+        const cur = btns[gpFocusIdx];
+        if (cur) {
+          if (cur.matches(GP_IN_PLACE)) {
+            // Toggle / activate without losing our place in the panel
+            if (!(cur.tagName === 'INPUT' && cur.type === 'range')) cur.click();
+            gpButtonsDirty = true;
+            const list = getVisibleButtons();
+            const idx = list.indexOf(cur);
+            if (idx >= 0) setGpFocus(list, idx);
+          } else {
+            cur.click();
+            // Reset focus for new screen
+            scheduleRefocus();
+          }
         }
       }
 

@@ -4,6 +4,7 @@
 // ============================================
 
 import { InputManager } from './InputManager.js';
+import { audioManager } from './AudioManager.js';
 
 const CAMERA_STORAGE_KEY = 'blocket-camera-settings';
 const AUDIO_STORAGE_KEY = 'blocket-audio-settings';
@@ -188,18 +189,28 @@ export class GameSettings {
   // --- Audio persistence ---
   _loadAudioSettings() {
     this._audioVolume = 0.5;
+    this._sfxVolume = 0.5;
+    this._sfxMuted = false;
     try {
       const saved = localStorage.getItem(AUDIO_STORAGE_KEY);
       if (saved) {
         const parsed = JSON.parse(saved);
         if (typeof parsed.musicVolume === 'number') this._audioVolume = parsed.musicVolume;
+        if (typeof parsed.sfxVolume === 'number') this._sfxVolume = parsed.sfxVolume;
+        if (typeof parsed.sfxMuted === 'boolean') this._sfxMuted = parsed.sfxMuted;
       }
     } catch {}
   }
 
   _saveAudioSettings() {
     this._cancelSave('audio');
-    try { localStorage.setItem(AUDIO_STORAGE_KEY, JSON.stringify({ musicVolume: this._audioVolume })); } catch {}
+    try {
+      localStorage.setItem(AUDIO_STORAGE_KEY, JSON.stringify({
+        musicVolume: this._audioVolume,
+        sfxVolume: this._sfxVolume,
+        sfxMuted: this._sfxMuted,
+      }));
+    } catch {}
   }
 
   _applyAudioVolume() {
@@ -542,7 +553,62 @@ export class GameSettings {
     row.appendChild(input);
     row.appendChild(valSpan);
     slidersWrap.appendChild(row);
+
+    // SFX volume (applied live through the AudioManager master gain)
+    const sfxRow = document.createElement('div');
+    sfxRow.className = 'cs-row';
+    const sfxLabel = document.createElement('label');
+    sfxLabel.className = 'cs-label';
+    sfxLabel.textContent = 'SFX Volume';
+    const sfxVal = document.createElement('span');
+    sfxVal.className = 'cs-value';
+    sfxVal.textContent = Math.round(this._sfxVolume * 100);
+    const sfxInput = document.createElement('input');
+    sfxInput.type = 'range';
+    sfxInput.className = 'cs-slider';
+    sfxInput.min = 0;
+    sfxInput.max = 1;
+    sfxInput.step = 0.01;
+    sfxInput.value = this._sfxVolume;
+    sfxInput.addEventListener('input', () => {
+      const v = parseFloat(sfxInput.value);
+      this._sfxVolume = v;
+      sfxVal.textContent = Math.round(v * 100);
+      audioManager.setMasterVolume(v);
+      this._scheduleSave('audio', () => this._saveAudioSettings());
+    });
+    sfxInput.addEventListener('change', () => this._flushSave('audio'));
+    this._sfxSlider = { input: sfxInput, valSpan: sfxVal };
+    sfxRow.appendChild(sfxLabel);
+    sfxRow.appendChild(sfxInput);
+    sfxRow.appendChild(sfxVal);
+    slidersWrap.appendChild(sfxRow);
     pane.appendChild(slidersWrap);
+
+    // Mute SFX
+    const muteRow = document.createElement('div');
+    muteRow.className = 'cs-row';
+    muteRow.style.cursor = 'pointer';
+    const muteCheck = document.createElement('input');
+    muteCheck.type = 'checkbox';
+    muteCheck.id = 'gs-sfx-mute';
+    muteCheck.checked = this._sfxMuted;
+    muteCheck.style.accentColor = '#00ffff';
+    muteCheck.style.cursor = 'pointer';
+    const muteLabel = document.createElement('label');
+    muteLabel.className = 'cs-label';
+    muteLabel.htmlFor = 'gs-sfx-mute';
+    muteLabel.textContent = 'Mute sound effects';
+    muteLabel.style.cursor = 'pointer';
+    muteCheck.addEventListener('change', () => {
+      this._sfxMuted = muteCheck.checked;
+      audioManager.setMuted(this._sfxMuted);
+      this._saveAudioSettings();
+    });
+    this._sfxMuteCheck = muteCheck;
+    muteRow.appendChild(muteCheck);
+    muteRow.appendChild(muteLabel);
+    pane.appendChild(muteRow);
 
     const resetBtn = document.createElement('button');
     resetBtn.className = 'cs-reset';
@@ -550,9 +616,16 @@ export class GameSettings {
     resetBtn.textContent = 'Reset to Defaults';
     resetBtn.addEventListener('click', () => {
       this._audioVolume = 0.5;
+      this._sfxVolume = 0.5;
+      this._sfxMuted = false;
       this._audioSlider.input.value = 0.5;
       this._audioSlider.valSpan.textContent = '50';
+      this._sfxSlider.input.value = 0.5;
+      this._sfxSlider.valSpan.textContent = '50';
+      this._sfxMuteCheck.checked = false;
       this._applyAudioVolume();
+      audioManager.setMasterVolume(0.5);
+      audioManager.setMuted(false);
       this._saveAudioSettings();
     });
     pane.appendChild(resetBtn);
