@@ -291,6 +291,20 @@ export class Car {
   _createBoostTrail() {
     this.boostFlame = new THREE.Group();
 
+    // Equipped boost trail color (unlockable cosmetic, server-validated for
+    // remote cars via variantConfig.boostColor); null = classic orange flame.
+    const bc = this.variantConfig ? this.variantConfig.boostColor : null;
+    this._boostColor = (typeof bc === 'number' && bc >= 0 && bc <= 0xffffff) ? bc : COLORS.ORANGE;
+    // Supersonic tint: classic flame keeps its golden tint; custom colors
+    // brighten toward white so the effect reads for every palette entry.
+    if (this._boostColor === COLORS.ORANGE) {
+      this._boostColorSupersonic = 0xffcc44;
+    } else {
+      const _c = new THREE.Color(this._boostColor);
+      _c.lerp(new THREE.Color(0xffffff), 0.45);
+      this._boostColorSupersonic = _c.getHex();
+    }
+
     // Improved boost trail: 10 particles with size variation
     const particleCount = 10;
     this._flameParticles = [];
@@ -298,7 +312,7 @@ export class Car {
       const baseSize = 0.35 - (i / particleCount) * 0.2;
       const geo = new THREE.SphereGeometry(baseSize, 6, 6);
       const flameMat = new THREE.MeshBasicMaterial({
-        color: COLORS.ORANGE,
+        color: this._boostColor,
         transparent: true,
         opacity: 0.8,
       });
@@ -441,9 +455,9 @@ export class Car {
         flame.position.z = flame._baseZ + (Math.random() - 0.5) * 0.15;
         // Brighter at supersonic
         if (isSupersonic) {
-          flame.material.color.setHex(0xffcc44);
+          flame.material.color.setHex(this._boostColorSupersonic);
         } else {
-          flame.material.color.setHex(COLORS.ORANGE);
+          flame.material.color.setHex(this._boostColor);
         }
       }
       if (this._visible) this.bottomLight.intensity = 2.0;

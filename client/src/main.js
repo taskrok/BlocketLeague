@@ -13,6 +13,7 @@ import { getGeneralSettings } from './GameSettings.js';
 import { ARENA_THEMES } from './ArenaThemes.js';
 import { audioManager } from './AudioManager.js';
 import { progression } from './Progression.js';
+import { metaClient } from './MetaClient.js';
 
 window.addEventListener('DOMContentLoaded', async () => {
   const canvas = document.getElementById('game-canvas');
@@ -403,6 +404,96 @@ window.addEventListener('DOMContentLoaded', async () => {
     nameInput.parentNode.insertBefore(lobbyXPDisplay, nameInput);
   }
 
+  // --- Retention loop: lobby meta connection, daily challenge widget, profile panel ---
+  const btnProfile = document.getElementById('btn-profile');
+  const profilePanel = document.getElementById('profile-panel');
+  let profileHandle = null;
+
+  // Compact daily-challenge card under the XP bar; click opens Profile > Challenges
+  const lobbyChallenges = document.createElement('button');
+  lobbyChallenges.id = 'lobby-challenges';
+  lobbyChallenges.type = 'button';
+  lobbyChallenges.innerHTML = '<div class="lc-head"><span>DAILY CHALLENGES</span></div><div class="lc-empty">Play online to see today\'s challenges</div>';
+  if (nameInput && nameInput.parentNode) {
+    nameInput.parentNode.insertBefore(lobbyChallenges, nameInput);
+  }
+  let renderedChallengeProfile = null;
+  function renderLobbyChallenges(p) {
+    if (p === renderedChallengeProfile) return; // dirty check: profile object identity
+    renderedChallengeProfile = p;
+    const esc = (s) => String(s == null ? '' : s).replace(/[&<>"]/g, (ch) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[ch]));
+    const c = p && p.challenges;
+    if (!c || !Array.isArray(c.daily)) return;
+    const streak = c.streak || 0;
+    const streakHtml = c.playedToday
+      ? `<span class="lc-streak">&#128293; DAY ${esc(streak)}</span>`
+      : `<span class="lc-streak lc-pending">${streak > 0 ? `&#128293; DAY ${esc(streak)} &middot; PLAY TODAY` : 'PLAY TODAY FOR +XP'}</span>`;
+    const rows = c.daily.map((ch) => {
+      const pct = Math.round(Math.min(1, ch.progress / Math.max(1, ch.target)) * 100);
+      return `<div class="lc-row ${ch.completed ? 'lc-done' : ''}"><span class="lc-name">${esc(ch.name)} &middot; ${esc(ch.desc)}</span><span class="lc-count">${ch.completed ? '&#10003;' : `${esc(ch.progress)}/${esc(ch.target)}`}</span><div class="lc-bar"><div class="lc-bar-fill" style="width:${pct}%"></div></div></div>`;
+    }).join('');
+    lobbyChallenges.innerHTML = `<div class="lc-head"><span>DAILY CHALLENGES</span>${streakHtml}</div>${rows}`;
+  }
+  metaClient.onProfile((p) => {
+    renderLobbyChallenges(p);
+    // Keep the lobby XP/rank display in sync with the server profile
+    if (p && p.stats) {
+      const s = p.stats;
+      progression.syncFromServer({
+        xp: s.xp, level: s.level, mmr_1v1: s.mmr_1v1, mmr_2v2: s.mmr_2v2,
+        rank1v1: s.rank1v1, rank2v2: s.rank2v2, levelTitle: s.levelTitle, prestige: s.prestige,
+      });
+    }
+  });
+  if (metaClient.profile) renderLobbyChallenges(metaClient.profile);
+
+  function connectMeta() {
+    metaClient.connect(localPlayerId, playerNameInput.value.trim(), (data) => {
+      if (data && data.playerId) {
+        localPlayerId = data.playerId;
+        try { localStorage.setItem(PLAYER_ID_KEY, data.playerId); } catch {}
+        progression.syncFromServer(data);
+      }
+    });
+  }
+
+  function closeProfilePanel() {
+    if (profileHandle) {
+      profileHandle.close();
+      profileHandle = null;
+    }
+    profilePanel.style.display = 'none';
+  }
+
+  function openProfile(tab = 'overview') {
+    lobbyButtons.style.display = 'none';
+    profilePanel.innerHTML = '<div class="pp-empty">Loading...</div>';
+    showScreen(profilePanel);
+    import('./ProfilePanel.js').then((m) => {
+      if (profilePanel.style.display === 'none') return; // closed while loading
+      if (profileHandle) profileHandle.close();
+      profileHandle = m.openProfilePanel({
+        container: profilePanel,
+        meta: metaClient,
+        initialTab: tab,
+        onClose: () => {
+          profileHandle = null;
+          profilePanel.style.display = 'none';
+          showScreen(lobbyButtons);
+        },
+      });
+    }).catch((err) => {
+      console.warn('Profile panel failed to load', err);
+      closeProfilePanel();
+      showScreen(lobbyButtons);
+    });
+  }
+
+  btnProfile.addEventListener('click', () => openProfile('overview'));
+  lobbyChallenges.addEventListener('click', () => openProfile('challenges'));
+
+  connectMeta();
+
   // --- Screen transition helper ---
   function showScreen(el, displayType = 'flex') {
     el.style.display = displayType;
@@ -627,13 +718,15 @@ window.addEventListener('DOMContentLoaded', async () => {
     changelogPanel.style.display = 'none';
     quickmatchModeSelector.style.display = 'none';
     queueSearching.style.display = 'none';
+    closeProfilePanel();
     roomCode = null;
     selectedRoomMode = null;
     selectedQMMode = null;
     isRoomCreator = false;
 
-    // Update lobby progression display
+    // Update lobby progression display, then refresh challenges/profile from the server
     progression.updateLobbyDisplay();
+    connectMeta();
 
     // Restart particle animation if stopped
     if (!particleRafId) animateParticles();
@@ -746,6 +839,8 @@ window.addEventListener('DOMContentLoaded', async () => {
   function hideLobbyForMatch() {
     lobby.style.display = 'none';
     stopLobbyGamepadPoll();
+    closeProfilePanel();
+    metaClient.disconnect(); // the match owns its own socket; reconnect on return
   }
 
   // Model ids of every player in a multiplayer 'joined' payload
@@ -785,6 +880,11 @@ window.addEventListener('DOMContentLoaded', async () => {
 
     const selectedArena = ARENA_THEMES[currentArenaIndex];
     const localModelId = chosenVariant && chosenVariant.modelId;
+
+    // Equipped cosmetics for the local car (boost trail color + title). What
+    // other players see is stamped on by the server from its own loadout
+    // record, so this only affects the local view.
+    if (chosenVariant) Object.assign(chosenVariant, metaClient.getLoadoutVariantFields());
 
     // Offline modes: AI cars pick from modelLoader.getModelIds() (loaded models
     // only), so the player's own model is the only one that must be awaited.

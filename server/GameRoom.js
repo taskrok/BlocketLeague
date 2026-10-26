@@ -1156,6 +1156,11 @@ export class GameRoom {
               xpEarned: rankResult ? rankResult.xpEarned : null,
               matchMode: mode,
             });
+            // Retention loop results (challenge progress, streak bonus,
+            // achievements, cosmetic unlocks) computed by saveMatch.
+            if (rankResult && rankResult.rewards) {
+              p.socket.emit('matchRewards', rankResult.rewards);
+            }
           }
         }
       }

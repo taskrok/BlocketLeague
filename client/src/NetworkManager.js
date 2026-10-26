@@ -104,6 +104,10 @@ export class NetworkManager {
       this._emit('progression', data);
     });
 
+    this.socket.on('matchRewards', (data) => {
+      this._emit('matchRewards', data);
+    });
+
     this.socket.on('waiting', (data) => {
       this._emit('waiting', data);
     });
